@@ -1,0 +1,35 @@
+# --- Secrets ---
+.env
+*.pem
+*.key
+id_rsa*
+id_ed25519*
+
+# --- Data ---
+data/
+*.sqlite3
+*.sqlite3-journal
+*.db
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+env/
+.python-version
+
+# --- IDE ---
+.idea/
+.vscode/
+*.swp
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+
+# --- Logs ---
+*.log
+logs/

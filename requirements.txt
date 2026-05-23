@@ -1,0 +1,11 @@
+aiogram>=3.4,<4.0
+SQLAlchemy[asyncio]>=2.0,<3.0
+aiosqlite>=0.20
+alembic>=1.13
+pydantic>=2.6
+pydantic-settings>=2.2
+asyncssh>=2.14
+cryptography>=42.0
+qrcode[pil]>=7.4
+loguru>=0.7
+cachetools>=5.3

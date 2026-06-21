@@ -66,6 +66,13 @@ async def get_user_by_tg_id(session: AsyncSession, tg_id: int) -> User | None:
     ).scalar_one_or_none()
 
 
+async def get_user_by_id(session: AsyncSession, user_id: int) -> User | None:
+    """Получить юзера по внутреннему id (PK), а не tg_id.
+    Нужно для admin-панели: пир может принадлежать чужому юзеру (инвайт).
+    """
+    return await session.get(User, user_id)
+
+
 # --- Servers ------------------------------------------------------------------
 
 async def create_server(session: AsyncSession, **fields: object) -> Server:

@@ -1,4 +1,4 @@
-"""Список серверов админа, карточка, peers, каскадное удаление."""
+"""Список серверов админа, карточка, peers сервера с управлением, каскадное удаление."""
 from __future__ import annotations
 
 import contextlib
@@ -10,13 +10,16 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.db import repo
-from bot.db.models import ServerStatus
+from bot.db.models import PeerStatus, ServerStatus
 from bot.filters.admin import AdminFilter
 from bot.keyboards.inline import (
+    CB_ADMIN,
     CB_SERVERS,
+    admin_peer_card,
     back_to_menu,
     confirm_delete_server,
     server_card,
+    server_peers_admin,
     servers_list,
 )
 from bot.services import amnezia
@@ -26,6 +29,8 @@ from bot.texts import t
 router = Router(name="menu")
 router.callback_query.filter(AdminFilter())
 
+
+# --- Список серверов ---------------------------------------------------------
 
 @router.callback_query(F.data == f"{CB_SERVERS}:list")
 async def cb_servers_list(call: CallbackQuery, session: AsyncSession) -> None:
@@ -40,6 +45,8 @@ async def cb_servers_list(call: CallbackQuery, session: AsyncSession) -> None:
     )
     await call.answer()
 
+
+# --- Карточка сервера --------------------------------------------------------
 
 @router.callback_query(F.data.startswith(f"{CB_SERVERS}:open:"))
 async def cb_server_open(call: CallbackQuery, session: AsyncSession) -> None:
@@ -66,6 +73,8 @@ async def cb_server_open(call: CallbackQuery, session: AsyncSession) -> None:
     await call.answer()
 
 
+# --- Удаление сервера --------------------------------------------------------
+
 @router.callback_query(F.data.startswith(f"{CB_SERVERS}:del:"))
 async def cb_server_del_ask(call: CallbackQuery, session: AsyncSession) -> None:
     server_id = int(call.data.rsplit(":", 1)[-1])
@@ -91,7 +100,6 @@ async def cb_server_del_ok(call: CallbackQuery, session: AsyncSession) -> None:
     await call.message.edit_text(t.server_deleting)
     await call.answer()
 
-    # Best-effort удалённая зачистка: имеет смысл только если бот ходил на сервер.
     cleanup_text: str
     if server.status in (ServerStatus.READY, ServerStatus.INSTALLING):
         async def progress(step: str) -> None:
@@ -124,8 +132,11 @@ async def cb_server_del_ok(call: CallbackQuery, session: AsyncSession) -> None:
     await call.message.edit_text(cleanup_text, reply_markup=back_to_menu())
 
 
+# --- Peers сервера (admin-панель) --------------------------------------------
+
 @router.callback_query(F.data.startswith(f"{CB_SERVERS}:peers:"))
 async def cb_server_peers(call: CallbackQuery, session: AsyncSession) -> None:
+    """Список всех пиров сервера — включая выданные через инвайт чужим юзерам."""
     server_id = int(call.data.rsplit(":", 1)[-1])
     server = await repo.get_server(session, server_id)
     if server is None or server.owner_tg_id != call.from_user.id:
@@ -139,11 +150,82 @@ async def cb_server_peers(call: CallbackQuery, session: AsyncSession) -> None:
         )
         await call.answer()
         return
-    lines = [f"👥 <b>Peers на {server.name}</b>\n"]
-    for p in peers:
-        mark = "✅" if p.status == "active" else "🚫"
-        lines.append(f"{mark} <code>{p.label}</code> — {p.ip} (user_id={p.user_id})")
+    active = sum(1 for p in peers if p.status == PeerStatus.ACTIVE)
     await call.message.edit_text(
-        "\n".join(lines), reply_markup=server_card(server.id)
+        f"👥 <b>Peers — {server.name}</b>\n"
+        f"Активных: <b>{active}</b> / всего: <b>{len(peers)}</b>",
+        reply_markup=server_peers_admin(peers, server_id),
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith(f"{CB_ADMIN}:peer:"))
+async def cb_admin_peer_open(call: CallbackQuery, session: AsyncSession) -> None:
+    """Карточка пира в admin-просмотре. Работает для пиров любого юзера."""
+    peer_id = int(call.data.rsplit(":", 1)[-1])
+    peer = await repo.get_peer(session, peer_id)
+    if peer is None:
+        await call.answer("Не найдено", show_alert=True)
+        return
+    server = await repo.get_server(session, peer.server_id)
+    if server is None or server.owner_tg_id != call.from_user.id:
+        await call.answer("Нет доступа", show_alert=True)
+        return
+
+    # Получаем инфо о владельце пира (может быть чужой юзер из инвайта)
+    owner = await repo.get_user_by_id(session, peer.user_id)
+    if owner and owner.username:
+        owner_info = f"@{owner.username}"
+    elif owner:
+        owner_info = f"id <code>{owner.tg_id}</code>"
+    else:
+        owner_info = "неизвестен"
+
+    status_icon = "✅" if peer.status == PeerStatus.ACTIVE else "🚫"
+    text = (
+        f"👤 <b>{peer.label}</b> {status_icon}\n"
+        f"• IP: <code>{peer.ip}</code>\n"
+        f"• Статус: <b>{peer.status}</b>\n"
+        f"• Владелец: {owner_info}\n"
+        f"• Сервер: <code>{server.name}</code>"
+    )
+    await call.message.edit_text(
+        text,
+        reply_markup=admin_peer_card(
+            peer.id, server.id, can_revoke=peer.status == PeerStatus.ACTIVE
+        ),
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith(f"{CB_ADMIN}:revoke:"))
+async def cb_admin_peer_revoke(call: CallbackQuery, session: AsyncSession) -> None:
+    """Отзыв пира из admin-панели. Фикс бага: работает для пиров из инвайтов."""
+    peer_id = int(call.data.rsplit(":", 1)[-1])
+    peer = await repo.get_peer(session, peer_id)
+    if peer is None:
+        await call.answer("Не найдено", show_alert=True)
+        return
+    server = await repo.get_server(session, peer.server_id)
+    if server is None or server.owner_tg_id != call.from_user.id:
+        await call.answer("Нет доступа", show_alert=True)
+        return
+
+    try:
+        async with SSHClient(repo.creds_from_server(server)) as ssh:
+            await amnezia.remove_peer_on_server(ssh, public_key=peer.public_key)
+    except SSHError as exc:
+        # SSH упал, но статус в БД всё равно меняем
+        logger.warning("Admin peer revoke ssh error: {}", exc)
+
+    await repo.revoke_peer(session, peer.id)
+    await session.commit()
+
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+    kb = InlineKeyboardBuilder()
+    kb.button(text="« К пирам сервера", callback_data=f"{CB_SERVERS}:peers:{server.id}")
+    await call.message.edit_text(
+        t.peer_revoked.format(label=peer.label),
+        reply_markup=kb.as_markup(),
     )
     await call.answer()

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from bot.db.models import Server
+from bot.db.models import Peer, Server
 
 # --- Callback prefixes --------------------------------------------------------
 # Формат: "<ns>:<action>[:<arg>]"
@@ -12,6 +12,7 @@ CB_INSTALL = "install"
 CB_SERVERS = "srv"
 CB_PEERS = "peer"
 CB_INVITES = "inv"
+CB_ADMIN = "adm"          # admin-панель: управление пирами любого юзера
 CB_NOP = "nop"
 CB_CANCEL = "cancel"
 
@@ -96,7 +97,7 @@ def pick_server(servers: list[Server], action_prefix: str) -> InlineKeyboardMark
     return kb.as_markup()
 
 
-# --- Peers --------------------------------------------------------------------
+# --- Peers (пользовательский вид) --------------------------------------------
 
 def peers_list(peers: list[tuple[int, str, str, str]]) -> InlineKeyboardMarkup:
     """peers: list of (peer_id, label, server_name, status)."""
@@ -121,6 +122,34 @@ def peer_card(peer_id: int, can_revoke: bool) -> InlineKeyboardMarkup:
     kb.adjust(1)
     return kb.as_markup()
 
+
+# --- Admin: управление пирами любого юзера -----------------------------------
+
+def server_peers_admin(peers: list[Peer], server_id: int) -> InlineKeyboardMarkup:
+    """Список пиров сервера для админа — каждый пир кликабелен."""
+    kb = InlineKeyboardBuilder()
+    for p in peers:
+        mark = "✅" if p.status == "active" else "🚫"
+        kb.button(
+            text=f"{mark} {p.label} ({p.ip})",
+            callback_data=f"{CB_ADMIN}:peer:{p.id}",
+        )
+    kb.button(text="« К серверу", callback_data=f"{CB_SERVERS}:open:{server_id}")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def admin_peer_card(peer_id: int, server_id: int, can_revoke: bool) -> InlineKeyboardMarkup:
+    """Карточка пира в admin-просмотре с кнопкой отзыва."""
+    kb = InlineKeyboardBuilder()
+    if can_revoke:
+        kb.button(text="🗑 Отозвать", callback_data=f"{CB_ADMIN}:revoke:{peer_id}")
+    kb.button(text="« К пирам", callback_data=f"{CB_SERVERS}:peers:{server_id}")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+# --- Навигация ----------------------------------------------------------------
 
 def back_to_menu() -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()

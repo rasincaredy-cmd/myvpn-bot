@@ -70,14 +70,32 @@ def servers_list(servers: list[Server]) -> InlineKeyboardMarkup:
 
 def server_card(server_id: int) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-    kb.button(text="➕ Создать peer", callback_data=f"{CB_PEERS}:new:{server_id}")
-    kb.button(text="🎟 Инвайт", callback_data=f"{CB_INVITES}:new:{server_id}")
-    kb.button(text="👥 Peers сервера", callback_data=f"{CB_SERVERS}:peers:{server_id}")
-    kb.button(text="🗑 Удалить", callback_data=f"{CB_SERVERS}:del:{server_id}")
-    kb.button(text="« К списку", callback_data=f"{CB_SERVERS}:list")
-    kb.adjust(2, 1, 1, 1)
+    kb.button(text="➕ Создать peer",      callback_data=f"{CB_PEERS}:new:{server_id}")
+    kb.button(text="🎟 Инвайт",            callback_data=f"{CB_INVITES}:new:{server_id}")
+    kb.button(text="👥 Peers сервера",     callback_data=f"{CB_SERVERS}:peers:{server_id}")
+    kb.button(text="📊 Трафик",            callback_data=f"{CB_SERVERS}:traffic:{server_id}")
+    kb.button(text="🖥 Состояние",         callback_data=f"{CB_SERVERS}:stats:{server_id}")
+    kb.button(text="🗑 Удалить",           callback_data=f"{CB_SERVERS}:del:{server_id}")
+    kb.button(text="« К списку",           callback_data=f"{CB_SERVERS}:list")
+    kb.adjust(2, 1, 2, 1, 1)
     return kb.as_markup()
 
+
+def traffic_nav(server_id: int) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🔄 Обновить",  callback_data=f"{CB_SERVERS}:traffic:{server_id}")
+    kb.button(text="« К серверу", callback_data=f"{CB_SERVERS}:open:{server_id}")
+    kb.adjust(2)
+    return kb.as_markup()
+
+
+def stats_nav(server_id: int) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🔄 Обновить",  callback_data=f"{CB_SERVERS}:stats:{server_id}")
+    kb.button(text="« К серверу", callback_data=f"{CB_SERVERS}:open:{server_id}")
+    kb.adjust(2)
+    return kb.as_markup()
+    
 
 def confirm_delete_server(server_id: int) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()

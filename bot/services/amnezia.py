@@ -402,3 +402,116 @@ def build_peer_conf(
         f"Endpoint = {endpoint}\n"
         "PersistentKeepalive = 25\n"
     )
+# --- Monitoring -------------------------------------------------------------
+
+def fmt_bytes(n: int) -> str:
+    """Форматирует байты в читаемый вид (B → TB)."""
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024.0:
+            return f"{n:.1f} {unit}"
+        n /= 1024.0  # type: ignore[assignment]
+    return f"{n:.1f} TB"
+
+
+@dataclass(slots=True)
+class PeerTrafficInfo:
+    public_key: str
+    rx_bytes: int          # байты, принятые сервером от пира (= upload пира)
+    tx_bytes: int          # байты, отправленные сервером пиру  (= download пира)
+    last_handshake_ts: int # unix-timestamp; 0 = ни разу не подключался
+
+
+async def get_peer_traffic(
+    ssh: SSHClient, interface: str = WG_INTERFACE
+) -> list[PeerTrafficInfo]:
+    """awg show transfer + latest-handshakes → список по всем пирам интерфейса."""
+    transfer_res   = await ssh.run(f"awg show {interface} transfer")
+    handshake_res  = await ssh.run(f"awg show {interface} latest-handshakes")
+
+    hs_map: dict[str, int] = {}
+    for line in handshake_res.stdout.splitlines():
+        parts = line.split()
+        if len(parts) == 2:
+            try:
+                hs_map[parts[0]] = int(parts[1])
+            except ValueError:
+                pass
+
+    result: list[PeerTrafficInfo] = []
+    for line in transfer_res.stdout.splitlines():
+        parts = line.split()
+        if len(parts) == 3:
+            pub, rx, tx = parts
+            try:
+                result.append(
+                    PeerTrafficInfo(
+                        public_key=pub,
+                        rx_bytes=int(rx),
+                        tx_bytes=int(tx),
+                        last_handshake_ts=hs_map.get(pub, 0),
+                    )
+                )
+            except ValueError:
+                pass
+    return result
+
+
+@dataclass(slots=True)
+class ServerStats:
+    uptime: str
+    load_1: float
+    load_5: float
+    load_15: float
+    cpu_count: int
+    ram_used_mb: int
+    ram_total_mb: int
+    disk_used_gb: float
+    disk_total_gb: float
+
+
+async def get_server_stats(ssh: SSHClient) -> ServerStats:
+    """CPU/RAM/диск/uptime одной составной командой без sleep."""
+    cmd = (
+        "printf '---UPTIME---\\n'; uptime -p; "
+        "printf '---LOAD---\\n'; cat /proc/loadavg; "
+        "printf '---CPUS---\\n'; nproc; "
+        "printf '---RAM---\\n'; free -m | awk 'NR==2{print $2, $3}'; "
+        "printf '---DISK---\\n'; "
+        "df -BG / | awk 'NR==2{gsub(/G/,\"\",$2); gsub(/G/,\"\",$3); print $2, $3}'"
+    )
+    res = await ssh.run(cmd)
+
+    sections: dict[str, str] = {}
+    current = ""
+    for line in res.stdout.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("---") and stripped.endswith("---"):
+            current = stripped.strip("-")
+        elif current and stripped:
+            sections[current] = stripped
+
+    def _f(key: str, idx: int = 0) -> float:
+        try:
+            return float(sections.get(key, "").split()[idx].replace(",", "."))
+        except (IndexError, ValueError):
+            return 0.0
+
+    def _i(key: str, idx: int = 0) -> int:
+        try:
+            return int(sections.get(key, "").split()[idx])
+        except (IndexError, ValueError):
+            return 0
+
+    load_raw = sections.get("LOAD", "")
+    load_parts = load_raw.split()
+    return ServerStats(
+        uptime=sections.get("UPTIME", "—"),
+        load_1=_f("LOAD", 0),
+        load_5=_f("LOAD", 1),
+        load_15=_f("LOAD", 2),
+        cpu_count=_i("CPUS"),
+        ram_total_mb=_i("RAM", 0),
+        ram_used_mb=_i("RAM", 1),
+        disk_total_gb=_f("DISK", 0),
+        disk_used_gb=_f("DISK", 1),
+)

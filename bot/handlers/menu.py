@@ -340,3 +340,66 @@ async def cb_admin_peer_revoke(call: CallbackQuery, session: AsyncSession) -> No
         reply_markup=kb.as_markup(),
     )
     await call.answer()
+
+
+@router.callback_query(F.data.startswith(f"{CB_ADMIN}:revive:"))
+async def cb_admin_peer_revive(call: CallbackQuery, session: AsyncSession) -> None:
+    peer_id = int(call.data.rsplit(":", 1)[-1])
+    peer = await repo.get_peer(session, peer_id)
+    if peer is None:
+        await call.answer("Не найдено", show_alert=True)
+        return
+    server = await repo.get_server(session, peer.server_id)
+    if server is None or server.owner_tg_id != call.from_user.id:
+        await call.answer("Нет доступа", show_alert=True)
+        return
+
+    await call.answer("⏳ Возобновляю...")
+    try:
+        async with SSHClient(repo.creds_from_server(server)) as ssh:
+            await amnezia.add_peer_on_server(ssh, public_key=peer.public_key, peer_ip=peer.ip)
+    except SSHError as exc:
+        logger.warning("Peer revive ssh error: {}", exc)
+        await call.message.edit_text(
+            f"❌ SSH-ошибка: <code>{exc}</code>",
+            reply_markup=admin_peer_card(peer.id, server.id, can_revoke=False),
+        )
+        return
+
+    await repo.revive_peer(session, peer.id)
+    await session.commit()
+    await call.message.edit_text(
+        f"♻️ Peer <code>{peer.label}</code> возобновлён.\n"
+        f"IP: <code>{peer.ip}</code> — прежний конфиг снова работает.",
+        reply_markup=admin_peer_card(peer.id, server.id, can_revoke=True),
+    )
+
+
+@router.callback_query(F.data.startswith(f"{CB_ADMIN}:delete:"))
+async def cb_admin_peer_delete(call: CallbackQuery, session: AsyncSession) -> None:
+    peer_id = int(call.data.rsplit(":", 1)[-1])
+    peer = await repo.get_peer(session, peer_id)
+    if peer is None:
+        await call.answer("Не найдено", show_alert=True)
+        return
+    server = await repo.get_server(session, peer.server_id)
+    if server is None or server.owner_tg_id != call.from_user.id:
+        await call.answer("Нет доступа", show_alert=True)
+        return
+    if peer.status == PeerStatus.ACTIVE:
+        await call.answer("Сначала отзови peer.", show_alert=True)
+        return
+
+    label = peer.label
+    server_id = server.id
+    await repo.delete_peer(session, peer.id)
+    await session.commit()
+
+    from aiogram.utils.keyboard import InlineKeyboardBuilder as IKB
+    kb = IKB()
+    kb.button(text="« К пирам сервера", callback_data=f"{CB_SERVERS}:peers:{server_id}")
+    await call.message.edit_text(
+        f"🗑 Peer <code>{label}</code> удалён из БД.",
+        reply_markup=kb.as_markup(),
+    )
+    await call.answer()

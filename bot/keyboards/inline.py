@@ -158,10 +158,13 @@ def server_peers_admin(peers: list[Peer], server_id: int) -> InlineKeyboardMarku
 
 
 def admin_peer_card(peer_id: int, server_id: int, can_revoke: bool) -> InlineKeyboardMarkup:
-    """Карточка пира в admin-просмотре с кнопкой отзыва."""
+    """Карточка пира в admin-просмотре."""
     kb = InlineKeyboardBuilder()
     if can_revoke:
-        kb.button(text="🗑 Отозвать", callback_data=f"{CB_ADMIN}:revoke:{peer_id}")
+        kb.button(text="🗑 Отозвать",      callback_data=f"{CB_ADMIN}:revoke:{peer_id}")
+    else:
+        kb.button(text="♻️ Возобновить",   callback_data=f"{CB_ADMIN}:revive:{peer_id}")
+        kb.button(text="❌ Удалить из БД", callback_data=f"{CB_ADMIN}:delete:{peer_id}")
     kb.button(text="« К пирам", callback_data=f"{CB_SERVERS}:peers:{server_id}")
     kb.adjust(1)
     return kb.as_markup()

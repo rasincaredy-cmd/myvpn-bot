@@ -141,6 +141,20 @@ async def revoke_peer(session: AsyncSession, peer_id: int) -> None:
     )
 
 
+async def revive_peer(session: AsyncSession, peer_id: int) -> None:
+    await session.execute(
+        update(Peer)
+        .where(Peer.id == peer_id)
+        .values(status=PeerStatus.ACTIVE, revoked_at=None)
+    )
+
+
+async def delete_peer(session: AsyncSession, peer_id: int) -> None:
+    peer = await session.get(Peer, peer_id)
+    if peer is not None:
+        await session.delete(peer)
+        await session.flush()
+
 # --- Invites ------------------------------------------------------------------
 
 async def get_invite(session: AsyncSession, token: str) -> Invite | None:

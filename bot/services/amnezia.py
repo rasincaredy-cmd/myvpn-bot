@@ -472,11 +472,11 @@ class ServerStats:
 async def get_server_stats(ssh: SSHClient) -> ServerStats:
     """CPU/RAM/диск/uptime одной составной командой без sleep."""
     cmd = (
-        "printf '---UPTIME---\\n'; uptime -p; "
-        "printf '---LOAD---\\n'; cat /proc/loadavg; "
-        "printf '---CPUS---\\n'; nproc; "
-        "printf '---RAM---\\n'; free -m | awk 'NR==2{print $2, $3}'; "
-        "printf '---DISK---\\n'; "
+        "echo '---UPTIME---'; uptime -p; "
+        "echo '---LOAD---'; cat /proc/loadavg; "
+        "echo '---CPUS---'; nproc; "
+        "echo '---RAM---'; free -m | awk 'NR==2{print $2, $3}'; "
+        "echo '---DISK---'; "
         "df -BG / | awk 'NR==2{gsub(/G/,\"\",$2); gsub(/G/,\"\",$3); print $2, $3}'"
     )
     res = await ssh.run(cmd)

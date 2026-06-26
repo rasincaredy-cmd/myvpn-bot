@@ -13,6 +13,7 @@ CB_SERVERS = "srv"
 CB_PEERS = "peer"
 CB_INVITES = "inv"
 CB_ADMIN = "adm"          # admin-панель: управление пирами любого юзера
+CB_PANEL = "pnl"   # admin-панель
 CB_NOP = "nop"
 CB_CANCEL = "cancel"
 
@@ -24,9 +25,10 @@ def main_menu(is_admin: bool) -> InlineKeyboardMarkup:
     kb.button(text="📁 Мои конфиги", callback_data=f"{CB_PEERS}:list")
     if is_admin:
         kb.button(text="🛠 Установить VPN на VPS", callback_data=f"{CB_INSTALL}:start")
-        kb.button(text="🖥 Мои серверы", callback_data=f"{CB_SERVERS}:list")
-        kb.button(text="➕ Выдать конфиг peer", callback_data=f"{CB_PEERS}:new")
-        kb.button(text="🎟 Создать инвайт", callback_data=f"{CB_INVITES}:new")
+        kb.button(text="🖥 Мои серверы",           callback_data=f"{CB_SERVERS}:list")
+        kb.button(text="➕ Выдать конфиг peer",    callback_data=f"{CB_PEERS}:new")
+        kb.button(text="🎟 Создать инвайт",        callback_data=f"{CB_INVITES}:new")
+        kb.button(text="👮 Админ-панель",          callback_data=f"{CB_PANEL}:main")
     kb.button(text="🆘 Помощь", callback_data=f"{CB_MENU}:help")
     kb.adjust(1)
     return kb.as_markup()
@@ -173,6 +175,53 @@ def admin_peer_card(peer_id: int, server_id: int, can_revoke: bool) -> InlineKey
     kb.button(text="« К пирам", callback_data=f"{CB_SERVERS}:peers:{server_id}")
     kb.adjust(1)
     return kb.as_markup()
+
+
+# --- Admin panel -------------------------------------------------------------
+
+def admin_panel_menu() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="📊 Статистика",   callback_data=f"{CB_PANEL}:stats")
+    kb.button(text="👤 Пользователи", callback_data=f"{CB_PANEL}:users:0")
+    kb.button(text="📢 Рассылка",     callback_data=f"{CB_PANEL}:broadcast")
+    kb.button(text="« В меню",        callback_data=f"{CB_MENU}:open")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def back_to_panel() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="« Админ-панель", callback_data=f"{CB_PANEL}:main")
+    return kb.as_markup()
+
+
+def users_list_kb(
+    users: list, page: int, has_prev: bool, has_next: bool
+) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    for u in users:
+        icon = "🔴" if u.is_blocked else ("👑" if u.is_admin else "👤")
+        name = (f"@{u.username}" if u.username else None) or u.full_name or f"id{u.tg_id}"
+        kb.button(text=f"{icon} {name}", callback_data=f"{CB_PANEL}:user:{u.id}:{page}")
+    if has_prev:
+        kb.button(text="← Назад",   callback_data=f"{CB_PANEL}:users:{page - 1}")
+    if has_next:
+        kb.button(text="Вперёд →",  callback_data=f"{CB_PANEL}:users:{page + 1}")
+    kb.button(text="« Админ-панель", callback_data=f"{CB_PANEL}:main")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def user_card_kb(user_id: int, is_blocked: bool, page: int) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    if is_blocked:
+        kb.button(text="✅ Разблокировать", callback_data=f"{CB_PANEL}:unblock:{user_id}:{page}")
+    else:
+        kb.button(text="🚫 Заблокировать",  callback_data=f"{CB_PANEL}:block:{user_id}:{page}")
+    kb.button(text="« К списку", callback_data=f"{CB_PANEL}:users:{page}")
+    kb.adjust(1)
+    return kb.as_markup()
+
 
 # --- Навигация ----------------------------------------------------------------
 

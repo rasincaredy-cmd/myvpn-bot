@@ -81,11 +81,13 @@ def server_card(server_id: int) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def traffic_nav(server_id: int) -> InlineKeyboardMarkup:
+def traffic_nav(server_id: int, has_orphans: bool = False) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-    kb.button(text="🔄 Обновить",  callback_data=f"{CB_SERVERS}:traffic:{server_id}")
+    kb.button(text="🔄 Обновить", callback_data=f"{CB_SERVERS}:traffic:{server_id}")
+    if has_orphans:
+        kb.button(text="🧹 Убрать лишние", callback_data=f"{CB_SERVERS}:cleanup:{server_id}")
     kb.button(text="« К серверу", callback_data=f"{CB_SERVERS}:open:{server_id}")
-    kb.adjust(2)
+    kb.adjust(1)
     return kb.as_markup()
 
 
@@ -131,11 +133,14 @@ def peers_list(peers: list[tuple[int, str, str, str]]) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def peer_card(peer_id: int, can_revoke: bool) -> InlineKeyboardMarkup:
+def peer_card(peer_id: int, can_revoke: bool, can_delete: bool = False) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-    kb.button(text="📥 Получить конфиг", callback_data=f"{CB_PEERS}:send:{peer_id}")
+    if not can_delete:
+        kb.button(text="📥 Получить конфиг", callback_data=f"{CB_PEERS}:send:{peer_id}")
     if can_revoke:
         kb.button(text="🗑 Отозвать", callback_data=f"{CB_PEERS}:revoke:{peer_id}")
+    if can_delete:
+        kb.button(text="❌ Удалить из БД", callback_data=f"{CB_PEERS}:delete:{peer_id}")
     kb.button(text="« К списку", callback_data=f"{CB_PEERS}:list")
     kb.adjust(1)
     return kb.as_markup()
@@ -158,17 +163,16 @@ def server_peers_admin(peers: list[Peer], server_id: int) -> InlineKeyboardMarku
 
 
 def admin_peer_card(peer_id: int, server_id: int, can_revoke: bool) -> InlineKeyboardMarkup:
-    """Карточка пира в admin-просмотре."""
     kb = InlineKeyboardBuilder()
     if can_revoke:
-        kb.button(text="🗑 Отозвать",      callback_data=f"{CB_ADMIN}:revoke:{peer_id}")
+        kb.button(text="📥 Получить конфиг", callback_data=f"{CB_ADMIN}:conf:{peer_id}")
+        kb.button(text="🗑 Отозвать",         callback_data=f"{CB_ADMIN}:revoke:{peer_id}")
     else:
         kb.button(text="♻️ Возобновить",   callback_data=f"{CB_ADMIN}:revive:{peer_id}")
         kb.button(text="❌ Удалить из БД", callback_data=f"{CB_ADMIN}:delete:{peer_id}")
     kb.button(text="« К пирам", callback_data=f"{CB_SERVERS}:peers:{server_id}")
     kb.adjust(1)
     return kb.as_markup()
-
 
 # --- Навигация ----------------------------------------------------------------
 

@@ -44,6 +44,10 @@ async def _create_peer_for_user(
     """Создаёт peer на сервере и в БД. Возвращает (conf, ip, label)."""
     async with SSHClient(repo.creds_from_server(server)) as ssh:
         used = await amnezia.list_used_ips(ssh, server.wg_subnet)
+        # Добавляем IP активных пиров из БД — защита от рассинхрона WG↔БД
+        for p in await repo.list_peers_for_server(session, server.id):
+            if p.status == PeerStatus.ACTIVE:
+                used.add(p.ip)
         ip = amnezia.next_free_ip(server.wg_subnet, used)
         keys = await amnezia.generate_peer_keys(ssh)
         await amnezia.add_peer_on_server(ssh, public_key=keys.public_key, peer_ip=ip)
@@ -137,8 +141,14 @@ async def cb_peer_open(call: CallbackQuery, session: AsyncSession) -> None:
         f"• IP: <code>{peer.ip}</code>\n"
         f"• Статус: <b>{peer.status}</b>"
     )
+    is_revoked = peer.status == PeerStatus.REVOKED
     await call.message.edit_text(
-        text, reply_markup=peer_card(peer.id, can_revoke=user.is_admin)
+        text,
+        reply_markup=peer_card(
+            peer.id,
+            can_revoke=user.is_admin and not is_revoked,
+            can_delete=is_revoked,
+        ),
     )
     await call.answer()
 
@@ -171,6 +181,38 @@ async def cb_peer_send(call: CallbackQuery, session: AsyncSession) -> None:
     await _send_peer_artifacts(call.message.chat.id, server.name, peer.label, conf)
     await call.answer("Готово")
 
+
+@router.callback_query(F.data.startswith(f"{CB_PEERS}:delete:"))
+async def cb_peer_delete(call: CallbackQuery, session: AsyncSession) -> None:
+    peer_id = int(call.data.rsplit(":", 1)[-1])
+    peer = await repo.get_peer(session, peer_id)
+    user = await repo.get_user_by_tg_id(session, call.from_user.id)
+    if peer is None or user is None or peer.user_id != user.id:
+        await call.answer("Не найдено", show_alert=True)
+        return
+    if peer.status == PeerStatus.ACTIVE:
+        await call.answer("Сначала отзови peer.", show_alert=True)
+        return
+
+    await repo.delete_peer(session, peer.id)
+    await session.commit()
+
+    peers = await repo.list_peers_for_user(session, user.id)
+    if not peers:
+        await call.message.edit_text(
+            "У тебя больше нет конфигов.",
+            reply_markup=back_to_menu(),
+        )
+    else:
+        rows: list[tuple[int, str, str, str]] = []
+        for p in peers:
+            srv = await repo.get_server(session, p.server_id)
+            rows.append((p.id, p.label, srv.name if srv else "?", p.status))
+        await call.message.edit_text(
+            "📁 <b>Твои конфиги</b>", reply_markup=peers_list(rows)
+        )
+    await call.answer("Удалено")
+    
 
 # --- Создание peer админом --------------------------------------------------
 

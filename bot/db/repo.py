@@ -73,6 +73,35 @@ async def get_user_by_id(session: AsyncSession, user_id: int) -> User | None:
     return await session.get(User, user_id)
 
 
+async def count_users(session: AsyncSession) -> int:
+    from sqlalchemy import func
+    return (await session.execute(select(func.count(User.id)))).scalar() or 0
+
+
+async def list_all_users(
+    session: AsyncSession, offset: int = 0, limit: int = 10
+) -> list[User]:
+    result = await session.execute(
+        select(User).order_by(User.id).offset(offset).limit(limit)
+    )
+    return list(result.scalars())
+
+
+async def list_all_users_for_broadcast(session: AsyncSession) -> list[User]:
+    result = await session.execute(
+        select(User).where(User.is_blocked.is_(False)).order_by(User.id)
+    )
+    return list(result.scalars())
+
+
+async def set_user_blocked(
+    session: AsyncSession, user_id: int, blocked: bool
+) -> None:
+    await session.execute(
+        update(User).where(User.id == user_id).values(is_blocked=blocked)
+    )
+    
+
 # --- Servers ------------------------------------------------------------------
 
 async def create_server(session: AsyncSession, **fields: object) -> Server:

@@ -6,6 +6,10 @@ from datetime import datetime, timezone          # ← новое
 
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
+from aiogram.types import BufferedInputFile
+from bot.loader import bot as tg_bot
+from bot.services.crypto import decrypt
+from bot.services.qrgen import conf_to_qr_png
 from aiogram.types import CallbackQuery
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession

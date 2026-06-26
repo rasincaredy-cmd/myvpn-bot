@@ -274,8 +274,9 @@ async def cb_server_traffic(call: CallbackQuery, session: AsyncSession) -> None:
         for ti in orphans:
             lines.append(f"  <code>{ti.public_key[:24]}…</code>")
 
-    await call.message.edit_text("\n".join(lines), reply_markup=traffic_nav(server_id))
-
+    await call.message.edit_text(
+        "\n".join(lines), reply_markup=traffic_nav(server_id, has_orphans=bool(orphans))
+    )
 
 # --- Состояние сервера -------------------------------------------------------
 
@@ -407,3 +408,97 @@ async def cb_admin_peer_delete(call: CallbackQuery, session: AsyncSession) -> No
         reply_markup=kb.as_markup(),
     )
     await call.answer()
+    
+
+# --- Получить конфиг (admin) -------------------------------------------------
+
+@router.callback_query(F.data.startswith(f"{CB_ADMIN}:conf:"))
+async def cb_admin_peer_conf(call: CallbackQuery, session: AsyncSession) -> None:
+    peer_id = int(call.data.rsplit(":", 1)[-1])
+    peer = await repo.get_peer(session, peer_id)
+    if peer is None:
+        await call.answer("Не найдено", show_alert=True)
+        return
+    server = await repo.get_server(session, peer.server_id)
+    if server is None or server.owner_tg_id != call.from_user.id:
+        await call.answer("Нет доступа", show_alert=True)
+        return
+    if peer.status != PeerStatus.ACTIVE:
+        await call.answer("Peer отозван", show_alert=True)
+        return
+
+    params = amnezia.AmneziaParams.from_json(server.awg_params_json)
+    priv = decrypt(peer.private_key_enc)
+    conf = amnezia.build_peer_conf(
+        peer_private_key=priv,
+        peer_ip=peer.ip,
+        server_public_key=server.server_public_key,
+        endpoint=server.server_endpoint,
+        params=params,
+    )
+    await call.answer("Отправляю...")
+    filename = f"{server.name}-{peer.label}.conf".replace(" ", "_")
+    await tg_bot.send_document(
+        call.message.chat.id,
+        document=BufferedInputFile(conf.encode(), filename=filename),
+        caption=f"📄 <code>{filename}</code>",
+    )
+    qr = conf_to_qr_png(conf)
+    await tg_bot.send_photo(
+        call.message.chat.id,
+        photo=BufferedInputFile(qr, filename=f"{filename}.png"),
+        caption="📱 QR для AmneziaVPN",
+    )
+
+
+# --- Очистка лишних WG-пиров -------------------------------------------------
+
+@router.callback_query(F.data.startswith(f"{CB_SERVERS}:cleanup:"))
+async def cb_server_cleanup(call: CallbackQuery, session: AsyncSession) -> None:
+    server_id = int(call.data.rsplit(":", 1)[-1])
+    server = await repo.get_server(session, server_id)
+    if server is None or server.owner_tg_id != call.from_user.id:
+        await call.answer("Не найдено", show_alert=True)
+        return
+
+    await call.answer("⏳ Чищу...")
+    try:
+        async with SSHClient(repo.creds_from_server(server)) as ssh:
+            traffic_list = await amnezia.get_peer_traffic(ssh)
+    except SSHError as exc:
+        await call.message.edit_text(
+            f"❌ SSH-ошибка: <code>{exc}</code>",
+            reply_markup=server_card(server_id),
+        )
+        return
+
+    peers = await repo.list_peers_for_server(session, server_id)
+    known_keys = {p.public_key for p in peers}
+    orphans = [ti for ti in traffic_list if ti.public_key not in known_keys]
+
+    if not orphans:
+        await call.message.edit_text(
+            "✅ Лишних пиров нет.", reply_markup=traffic_nav(server_id)
+        )
+        return
+
+    removed, failed = 0, 0
+    try:
+        async with SSHClient(repo.creds_from_server(server)) as ssh:
+            for ti in orphans:
+                try:
+                    await amnezia.remove_peer_on_server(ssh, public_key=ti.public_key)
+                    removed += 1
+                except SSHError:
+                    failed += 1
+    except SSHError as exc:
+        await call.message.edit_text(
+            f"❌ SSH-ошибка: <code>{exc}</code>",
+            reply_markup=traffic_nav(server_id),
+        )
+        return
+
+    result = f"🧹 Удалено лишних пиров: <b>{removed}</b>"
+    if failed:
+        result += f"\n⚠️ Не удалось: {failed}"
+    await call.message.edit_text(result, reply_markup=traffic_nav(server_id))

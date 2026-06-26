@@ -24,3 +24,8 @@ class PeerStates(StatesGroup):
 class InviteStates(StatesGroup):
     pick_server = State()
     label = State()
+
+
+class BroadcastStates(StatesGroup):
+    text    = State()
+    confirm = State()

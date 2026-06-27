@@ -72,14 +72,15 @@ def servers_list(servers: list[Server]) -> InlineKeyboardMarkup:
 
 def server_card(server_id: int) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-    kb.button(text="➕ Создать peer",      callback_data=f"{CB_PEERS}:new:{server_id}")
-    kb.button(text="🎟 Инвайт",            callback_data=f"{CB_INVITES}:new:{server_id}")
-    kb.button(text="👥 Peers сервера",     callback_data=f"{CB_SERVERS}:peers:{server_id}")
-    kb.button(text="📊 Трафик",            callback_data=f"{CB_SERVERS}:traffic:{server_id}")
-    kb.button(text="🖥 Состояние",         callback_data=f"{CB_SERVERS}:stats:{server_id}")
-    kb.button(text="🗑 Удалить",           callback_data=f"{CB_SERVERS}:del:{server_id}")
-    kb.button(text="« К списку",           callback_data=f"{CB_SERVERS}:list")
-    kb.adjust(2, 1, 2, 1, 1)
+    kb.button(text="➕ Создать peer",  callback_data=f"{CB_PEERS}:new:{server_id}")
+    kb.button(text="🎟 Инвайт",        callback_data=f"{CB_INVITES}:new:{server_id}")
+    kb.button(text="👥 Peers сервера", callback_data=f"{CB_SERVERS}:peers:{server_id}")
+    kb.button(text="📋 Инвайты",       callback_data=f"{CB_INVITES}:list:{server_id}")
+    kb.button(text="📊 Трафик",        callback_data=f"{CB_SERVERS}:traffic:{server_id}")
+    kb.button(text="🖥 Состояние",     callback_data=f"{CB_SERVERS}:stats:{server_id}")
+    kb.button(text="🗑 Удалить",       callback_data=f"{CB_SERVERS}:del:{server_id}")
+    kb.button(text="« К списку",       callback_data=f"{CB_SERVERS}:list")
+    kb.adjust(2, 2, 2, 1, 1)
     return kb.as_markup()
 
 
@@ -118,6 +119,29 @@ def pick_server(servers: list[Server], action_prefix: str) -> InlineKeyboardMark
     kb.adjust(1)
     return kb.as_markup()
 
+
+def invites_list_kb(
+    rows: list[tuple[int, str, str]],  # (invite_id, icon, label)
+    server_id: int,
+) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    for invite_id, icon, label in rows:
+        kb.button(
+            text=f"{icon} {label}",
+            callback_data=f"{CB_INVITES}:open:{invite_id}",
+        )
+    kb.button(text="« К серверу", callback_data=f"{CB_SERVERS}:open:{server_id}")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def invite_card_kb(invite_id: int, server_id: int, can_revoke: bool) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    if can_revoke:
+        kb.button(text="🗑 Отозвать", callback_data=f"{CB_INVITES}:del:{invite_id}")
+    kb.button(text="« К инвайтам", callback_data=f"{CB_INVITES}:list:{server_id}")
+    kb.adjust(1)
+    return kb.as_markup()
 
 # --- Peers (пользовательский вид) --------------------------------------------
 

@@ -1,6 +1,8 @@
 """Выдача peer-конфигов: своим, по инвайту, отзыв."""
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import contextlib
 import secrets
 
@@ -19,6 +21,8 @@ from bot.keyboards.inline import (
     CB_PEERS,
     back_to_menu,
     cancel_only,
+    invite_card_kb,    # ← новое
+    invites_list_kb,   # ← новое
     peer_card,
     peers_list,
     pick_server,
@@ -366,6 +370,127 @@ async def cb_invite_pick(call: CallbackQuery, state: FSMContext) -> None:
     await call.message.edit_text(t.invite_ask_label, reply_markup=cancel_only())
     await call.answer()
 
+
+@router_admin.callback_query(F.data.startswith(f"{CB_INVITES}:list:"))
+async def cb_invites_list(call: CallbackQuery, session: AsyncSession) -> None:
+    server_id = int(call.data.rsplit(":", 1)[-1])
+    server = await repo.get_server(session, server_id)
+    if server is None or server.owner_tg_id != call.from_user.id:
+        await call.answer("Не найдено", show_alert=True)
+        return
+
+    invites = await repo.list_invites_for_server(session, server_id)
+    now = datetime.now(timezone.utc)
+    pending = sum(1 for i in invites if i.used_at is None)
+
+    def _icon(inv) -> str:
+        if inv.used_at:
+            return "✅"
+        if inv.expires_at and inv.expires_at < now:
+            return "⌛"
+        return "⏳"
+
+    rows = [(i.id, _icon(i), i.label or i.token[:8]) for i in invites]
+
+    await call.message.edit_text(
+        f"🎟 <b>Инвайты — {server.name}</b>\n"
+        f"Всего: <b>{len(invites)}</b> | "
+        f"⏳ Активных: <b>{pending}</b> | "
+        f"✅ Использованных: <b>{len(invites) - pending}</b>",
+        reply_markup=invites_list_kb(rows, server_id),
+    )
+    await call.answer()
+
+
+@router_admin.callback_query(F.data.startswith(f"{CB_INVITES}:open:"))
+async def cb_invite_open(call: CallbackQuery, session: AsyncSession) -> None:
+    invite_id = int(call.data.rsplit(":", 1)[-1])
+    invite = await session.get(Invite, invite_id)
+    if invite is None:
+        await call.answer("Не найдено", show_alert=True)
+        return
+    server = await repo.get_server(session, invite.server_id)
+    if server is None or server.owner_tg_id != call.from_user.id:
+        await call.answer("Нет доступа", show_alert=True)
+        return
+
+    now = datetime.now(timezone.utc)
+    if invite.used_at:
+        status = "✅ Использован"
+        extra = (
+            f"\n• Кем: tg_id <code>{invite.used_by_tg_id}</code>"
+            f"\n• Когда: {invite.used_at.strftime('%d.%m.%Y %H:%M')}"
+        )
+        can_revoke = False
+    elif invite.expires_at and invite.expires_at < now:
+        status = "⌛ Истёк"
+        extra = f"\n• Истёк: {invite.expires_at.strftime('%d.%m.%Y %H:%M')}"
+        can_revoke = True
+    else:
+        status = "⏳ Активен"
+        extra = ""
+        can_revoke = True
+
+    text = (
+        f"🎟 <b>{invite.label or 'Без метки'}</b>\n"
+        f"• Статус: {status}{extra}\n"
+        f"• Сервер: <code>{server.name}</code>\n"
+        f"• Создан: {invite.created_at.strftime('%d.%m.%Y %H:%M')}"
+    )
+    if not invite.used_at:
+        me = await bot.get_me()
+        link = f"https://t.me/{me.username}?start={invite.token}"
+        text += f"\n• Ссылка: <code>{link}</code>"
+
+    await call.message.edit_text(
+        text, reply_markup=invite_card_kb(invite.id, server.id, can_revoke)
+    )
+    await call.answer()
+
+
+@router_admin.callback_query(F.data.startswith(f"{CB_INVITES}:del:"))
+async def cb_invite_delete(call: CallbackQuery, session: AsyncSession) -> None:
+    invite_id = int(call.data.rsplit(":", 1)[-1])
+    invite = await session.get(Invite, invite_id)
+    if invite is None:
+        await call.answer("Не найдено", show_alert=True)
+        return
+    server = await repo.get_server(session, invite.server_id)
+    if server is None or server.owner_tg_id != call.from_user.id:
+        await call.answer("Нет доступа", show_alert=True)
+        return
+    if invite.used_at:
+        await call.answer("Инвайт уже использован.", show_alert=True)
+        return
+
+    label = invite.label or invite.token[:8]
+    server_id = server.id
+    await repo.delete_invite(session, invite.id)
+    await session.commit()
+
+    # Обновляем список
+    invites = await repo.list_invites_for_server(session, server_id)
+    now = datetime.now(timezone.utc)
+    pending = sum(1 for i in invites if i.used_at is None)
+
+    def _icon(inv) -> str:
+        if inv.used_at:
+            return "✅"
+        if inv.expires_at and inv.expires_at < now:
+            return "⌛"
+        return "⏳"
+
+    rows = [(i.id, _icon(i), i.label or i.token[:8]) for i in invites]
+    await call.message.edit_text(
+        f"🗑 Инвайт <code>{label}</code> отозван.\n\n"
+        f"🎟 <b>Инвайты — {server.name}</b>\n"
+        f"Всего: <b>{len(invites)}</b> | "
+        f"⏳ Активных: <b>{pending}</b> | "
+        f"✅ Использованных: <b>{len(invites) - pending}</b>",
+        reply_markup=invites_list_kb(rows, server_id),
+    )
+    await call.answer()
+    
 
 @router_admin.message(InviteStates.label, F.text)
 async def step_invite_label(

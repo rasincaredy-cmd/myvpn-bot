@@ -196,3 +196,21 @@ async def mark_invite_used(session: AsyncSession, invite: Invite, tg_id: int) ->
     invite.used_by_tg_id = tg_id
     invite.used_at = datetime.now(timezone.utc)
     await session.flush()
+
+
+async def list_invites_for_server(
+    session: AsyncSession, server_id: int
+) -> list[Invite]:
+    result = await session.execute(
+        select(Invite)
+        .where(Invite.server_id == server_id)
+        .order_by(Invite.created_at.desc())
+    )
+    return list(result.scalars())
+
+
+async def delete_invite(session: AsyncSession, invite_id: int) -> None:
+    invite = await session.get(Invite, invite_id)
+    if invite is not None:
+        await session.delete(invite)
+        await session.flush()

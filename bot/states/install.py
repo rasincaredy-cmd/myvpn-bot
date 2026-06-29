@@ -29,3 +29,8 @@ class InviteStates(StatesGroup):
 class BroadcastStates(StatesGroup):
     text    = State()
     confirm = State()
+
+
+class PeerLimitStates(StatesGroup):
+    set_expires = State()
+    set_traffic = State()

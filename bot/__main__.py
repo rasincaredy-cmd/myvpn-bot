@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from bot.services import scheduler
 import sys
 
 from loguru import logger
@@ -33,6 +34,7 @@ async def _on_startup() -> None:
     setup_middlewares(dp)
     register_handlers(dp)
     await set_bot_commands(bot)
+    asyncio.create_task(scheduler.run())
     me = await bot.get_me()
     logger.info("Bot started: @{} ({})", me.username, me.id)
 

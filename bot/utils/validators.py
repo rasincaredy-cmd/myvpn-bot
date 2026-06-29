@@ -44,3 +44,44 @@ def is_valid_label(value: str) -> bool:
 def is_valid_ssh_user(value: str) -> bool:
     v = value.strip()
     return bool(v) and v.isascii() and re.match(r"^[a-z_][a-z0-9_-]{0,31}$", v) is not None
+
+
+import re
+from datetime import datetime, timedelta, timezone
+
+
+def parse_expiry(text: str) -> datetime | None | str:
+    """
+    Возвращает datetime, None (сброс, если '-'), или 'invalid'.
+    Форматы: DD.MM.YYYY | Nд | Nd
+    """
+    text = text.strip()
+    if text == "-":
+        return None
+    m = re.match(r"^(\d+)[dдDД]$", text, re.IGNORECASE)
+    if m:
+        return datetime.now(timezone.utc) + timedelta(days=int(m.group(1)))
+    try:
+        dt = datetime.strptime(text, "%d.%m.%Y")
+        return dt.replace(hour=23, minute=59, second=59, tzinfo=timezone.utc)
+    except ValueError:
+        return "invalid"
+
+
+def parse_traffic_limit(text: str) -> int | None | str:
+    """
+    Возвращает байты, None (сброс, если '-'), или 'invalid'.
+    Форматы: 10GB | 500MB | 1TB (и кириллические ГБ/МБ/ТБ)
+    """
+    text = text.strip()
+    if text == "-":
+        return None
+    m = re.match(r"^(\d+(?:\.\d+)?)\s*(GB|MB|TB|ГБ|МБ|ТБ)$", text, re.IGNORECASE)
+    if not m:
+        return "invalid"
+    value = float(m.group(1))
+    unit = m.group(2).upper()
+    mult = {"MB": 1024**2, "МБ": 1024**2,
+            "GB": 1024**3, "ГБ": 1024**3,
+            "TB": 1024**4, "ТБ": 1024**4}.get(unit, 1024**3)
+    return int(value * mult)

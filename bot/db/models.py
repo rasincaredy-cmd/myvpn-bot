@@ -117,6 +117,8 @@ class Peer(Base):
         DateTime(timezone=True), server_default=func.now()
     )
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    expires_at:           Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    traffic_limit_bytes:  Mapped[int | None]       = mapped_column(BigInteger)
 
     server: Mapped[Server] = relationship(back_populates="peers")
     user: Mapped[User] = relationship(back_populates="peers")

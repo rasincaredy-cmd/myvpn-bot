@@ -37,6 +37,14 @@ def _humanize_left(delta: timedelta) -> str:
     return f"{max(minutes, 1)} мин"
 
 
+def _as_utc(dt: datetime) -> datetime:
+    """SQLite отдаёт datetime без таймзоны — считаем такие значения UTC.
+
+    Без этого арифметика `expires_at - now` (aware) падает с TypeError.
+    """
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
 async def _run_checks() -> None:
     now = datetime.now(timezone.utc)
 
@@ -61,11 +69,16 @@ async def _run_checks() -> None:
                     logger.warning("Expiry revoke SSH error peer {}: {}", peer.id, exc)
             await repo.revoke_peer(session, peer.id)
             logger.info("Auto-revoked expired peer {} ({})", peer.id, peer.label)
-            if user:
+            if user and user.expiry_warn_enabled:
                 await _notify(
                     user.tg_id,
                     f"⏱ Конфиг <b>{peer.label}</b> истёк и был автоматически отозван.",
                 )
+
+        # Фиксируем отзывы сразу: если что-то упадёт ниже (предупреждения/трафик),
+        # откат не должен воскресить отозванные пиры и вызвать повторную рассылку.
+        if expired:
+            await session.commit()
 
         # ── 1b. Предупреждения о скором истечении ───────────────────────────
         soon = list((await session.execute(
@@ -76,29 +89,32 @@ async def _run_checks() -> None:
         )).scalars())
 
         for peer in soon:
-            remaining = peer.expires_at - now
-            # Пороги, которые уже пора слать и которые ещё не отправляли.
-            fireable = [
-                i for i, hours in enumerate(WARN_OFFSETS_HOURS)
-                if not (peer.expiry_warn_flags & (1 << i))
-                and remaining <= timedelta(hours=hours)
-            ]
-            if not fireable:
-                continue
+            try:
+                remaining = _as_utc(peer.expires_at) - now
+                # Пороги, которые уже пора слать и которые ещё не отправляли.
+                fireable = [
+                    i for i, hours in enumerate(WARN_OFFSETS_HOURS)
+                    if not (peer.expiry_warn_flags & (1 << i))
+                    and remaining <= timedelta(hours=hours)
+                ]
+                if not fireable:
+                    continue
 
-            user = await repo.get_user_by_id(session, peer.user_id)
-            # Помечаем сработавшие пороги ВСЕГДА (даже если юзер выключил
-            # предупреждения) — чтобы не копить «долги» и не слать протухшее
-            # «истекает через 24ч», когда осталось 3. Само сообщение шлём только
-            # при включённых предупреждениях. Одно сообщение за тик — по факту.
-            for i in fireable:
-                peer.expiry_warn_flags |= (1 << i)
-            if user and user.expiry_warn_enabled:
-                await _notify(
-                    user.tg_id,
-                    f"⏳ Конфиг <b>{peer.label}</b> истекает примерно через "
-                    f"{_humanize_left(remaining)} и будет автоматически отозван.",
-                )
+                user = await repo.get_user_by_id(session, peer.user_id)
+                # Помечаем сработавшие пороги ВСЕГДА (даже если юзер выключил
+                # предупреждения) — чтобы не копить «долги» и не слать протухшее
+                # «истекает через 24ч», когда осталось 3. Само сообщение шлём
+                # только при включённых предупреждениях. Одно сообщение за тик.
+                for i in fireable:
+                    peer.expiry_warn_flags |= (1 << i)
+                if user and user.expiry_warn_enabled:
+                    await _notify(
+                        user.tg_id,
+                        f"⏳ Конфиг <b>{peer.label}</b> истекает примерно через "
+                        f"{_humanize_left(remaining)} и будет автоматически отозван.",
+                    )
+            except Exception:
+                logger.exception("Expiry-warning failed for peer {}", peer.id)
 
         # ── 2. Учёт трафика и лимиты ────────────────────────────────────────
         # Накапливаем трафик для ВСЕХ активных пиров (не только с лимитом), чтобы

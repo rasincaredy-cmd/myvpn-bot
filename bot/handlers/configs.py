@@ -68,10 +68,12 @@ async def _create_peer_for_user(
     async with _server_ip_lock(server.id):
         async with SSHClient(repo.creds_from_server(server)) as ssh:
             used = await amnezia.list_used_ips(ssh, server.wg_subnet)
-            # Добавляем IP активных пиров из БД — защита от рассинхрона WG↔БД
+            # Резервируем IP ВСЕХ пиров из БД, включая отозванных: их строка
+            # остаётся в БД, а UNIQUE(server_id, ip) не даст переиспользовать IP —
+            # иначе INSERT нового пира падает с ошибкой. Отозванный пир держит свой
+            # IP, пока его не удалят из БД.
             for p in await repo.list_peers_for_server(session, server.id):
-                if p.status == PeerStatus.ACTIVE:
-                    used.add(p.ip)
+                used.add(p.ip)
             ip = amnezia.next_free_ip(server.wg_subnet, used)
             keys = await amnezia.generate_peer_keys(ssh)
 

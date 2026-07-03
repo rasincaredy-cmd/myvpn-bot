@@ -52,19 +52,19 @@ async def _run_checks() -> None:
                     f"⏱ Конфиг <b>{peer.label}</b> истёк и был автоматически отозван.",
                 )
 
-        # ── 2. Лимит трафика ────────────────────────────────────────────────
-        limited = list((await session.execute(
-            select(Peer)
-            .where(Peer.status == PeerStatus.ACTIVE)
-            .where(Peer.traffic_limit_bytes.isnot(None))
+        # ── 2. Учёт трафика и лимиты ────────────────────────────────────────
+        # Накапливаем трафик для ВСЕХ активных пиров (не только с лимитом), чтобы
+        # счётчик пережил ребут сервера и был готов, когда лимит поставят позже.
+        active = list((await session.execute(
+            select(Peer).where(Peer.status == PeerStatus.ACTIVE)
         )).scalars())
 
-        if not limited:
+        if not active:
             return
 
         # Группируем по серверу — один SSH на сервер для получения трафика
         by_server: dict[int, list[Peer]] = {}
-        for p in limited:
+        for p in active:
             by_server.setdefault(p.server_id, []).append(p)
 
         for server_id, peers in by_server.items():
@@ -80,11 +80,20 @@ async def _run_checks() -> None:
 
             traffic_map = {ti.public_key: ti for ti in traffic_list}
 
-            # Собираем пиры под отзыв, потом один SSH на отзыв
+            # Обновляем накопленный трафик и собираем превысивших лимит
             to_revoke: list[Peer] = []
             for peer in peers:
                 ti = traffic_map.get(peer.public_key)
-                if ti and (ti.rx_bytes + ti.tx_bytes) >= peer.traffic_limit_bytes:
+                if ti is None:
+                    continue
+                raw = ti.rx_bytes + ti.tx_bytes
+                peer.traffic_used_bytes, peer.traffic_last_raw_bytes = (
+                    amnezia.accumulate_traffic(
+                        peer.traffic_used_bytes, peer.traffic_last_raw_bytes, raw
+                    )
+                )
+                if (peer.traffic_limit_bytes is not None
+                        and peer.traffic_used_bytes >= peer.traffic_limit_bytes):
                     to_revoke.append(peer)
 
             if not to_revoke:
@@ -102,11 +111,10 @@ async def _run_checks() -> None:
 
             for peer in to_revoke:
                 user = await repo.get_user_by_id(session, peer.user_id)
-                ti = traffic_map[peer.public_key]
                 await repo.revoke_peer(session, peer.id)
                 logger.info("Auto-revoked traffic-exceeded peer {} ({})", peer.id, peer.label)
                 if user:
-                    used  = amnezia.fmt_bytes(ti.rx_bytes + ti.tx_bytes)
+                    used  = amnezia.fmt_bytes(peer.traffic_used_bytes)
                     limit = amnezia.fmt_bytes(peer.traffic_limit_bytes)
                     await _notify(
                         user.tg_id,

@@ -171,10 +171,17 @@ async def revoke_peer(session: AsyncSession, peer_id: int) -> None:
 
 
 async def revive_peer(session: AsyncSession, peer_id: int) -> None:
+    # Пир заново добавляется на сервер → счётчик awg стартует с нуля; сбрасываем
+    # накопленный трафик, чтобы прежний лимит не отозвал пира сразу же.
     await session.execute(
         update(Peer)
         .where(Peer.id == peer_id)
-        .values(status=PeerStatus.ACTIVE, revoked_at=None)
+        .values(
+            status=PeerStatus.ACTIVE,
+            revoked_at=None,
+            traffic_used_bytes=0,
+            traffic_last_raw_bytes=0,
+        )
     )
 
 

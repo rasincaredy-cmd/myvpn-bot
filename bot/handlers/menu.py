@@ -204,7 +204,12 @@ async def cb_admin_peer_open(
     if peer.expires_at:
         text += f"\n• ⏱ Истекает: {peer.expires_at.strftime('%d.%m.%Y %H:%M')} UTC"
     if peer.traffic_limit_bytes:
-        text += f"\n• 📊 Лимит трафика: {amnezia.fmt_bytes(peer.traffic_limit_bytes)}"
+        text += (
+            f"\n• 📊 Трафик: {amnezia.fmt_bytes(peer.traffic_used_bytes)}"
+            f" из {amnezia.fmt_bytes(peer.traffic_limit_bytes)}"
+        )
+    elif peer.traffic_used_bytes:
+        text += f"\n• 📊 Трафик: {amnezia.fmt_bytes(peer.traffic_used_bytes)}"
 
     await call.message.edit_text(
         text,
@@ -271,8 +276,19 @@ async def cb_server_traffic(call: CallbackQuery, session: AsyncSession) -> None:
                     f"  🕐 {ago} назад"
                 )
 
+            # Накопленный трафик (persisted планировщиком) + ещё не зачтённая
+            # текущая дельта — переживает сброс счётчика awg при ребуте.
+            acc = peer.traffic_used_bytes
+            if ti is not None:
+                extra = (ti.rx_bytes + ti.tx_bytes) - peer.traffic_last_raw_bytes
+                if extra > 0:
+                    acc += extra
+            sigma = f"\n  Σ {amnezia.fmt_bytes(acc)}"
+            if peer.traffic_limit_bytes:
+                sigma += f" / {amnezia.fmt_bytes(peer.traffic_limit_bytes)}"
+
             lines.append(
-                f"{icon} <b>{peer.label}</b> • <code>{peer.ip}</code>\n{detail}"
+                f"{icon} <b>{peer.label}</b> • <code>{peer.ip}</code>\n{detail}{sigma}"
             )
 
     # Пиры на сервере, о которых БД ничего не знает (ручное добавление и т.п.)

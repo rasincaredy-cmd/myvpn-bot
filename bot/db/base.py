@@ -33,9 +33,12 @@ SessionMaker: async_sessionmaker[AsyncSession] = async_sessionmaker(
 async def init_db() -> None:
     # Импорт здесь, чтобы модели зарегистрировались в Base.metadata.
     from bot.db import models  # noqa: F401
+    from bot.db.migrate import run_migrations
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # create_all создаёт недостающие таблицы, но не колонки — добираем их.
+        await run_migrations(conn)
 
 
 @asynccontextmanager

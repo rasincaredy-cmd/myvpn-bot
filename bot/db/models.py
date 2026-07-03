@@ -120,6 +120,16 @@ class Peer(Base):
     expires_at:           Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     traffic_limit_bytes:  Mapped[int | None]       = mapped_column(BigInteger)
 
+    # Учёт трафика с защитой от сброса счётчика awg (ребут / awg-quick down-up).
+    # traffic_used_bytes     — накопленный трафик (rx+tx) за всё время пира;
+    # traffic_last_raw_bytes — последнее сырое показание awg, чтобы считать дельту.
+    traffic_used_bytes:     Mapped[int] = mapped_column(
+        BigInteger, default=0, server_default="0", nullable=False
+    )
+    traffic_last_raw_bytes: Mapped[int] = mapped_column(
+        BigInteger, default=0, server_default="0", nullable=False
+    )
+
     server: Mapped[Server] = relationship(back_populates="peers")
     user: Mapped[User] = relationship(back_populates="peers")
 

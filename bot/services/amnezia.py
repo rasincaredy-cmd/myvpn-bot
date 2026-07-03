@@ -421,6 +421,21 @@ class PeerTrafficInfo:
     last_handshake_ts: int # unix-timestamp; 0 = ни разу не подключался
 
 
+def accumulate_traffic(prev_used: int, prev_raw: int, cur_raw: int) -> tuple[int, int]:
+    """Накопление трафика с защитой от сброса счётчика awg.
+
+    `awg show transfer` считает байты с момента поднятия интерфейса; после ребута
+    VPS или `awg-quick down/up` счётчик обнуляется. Если текущее сырое значение
+    меньше предыдущего — это сброс, и мы добавляем весь `cur_raw` как новую дельту.
+
+    Возвращает (новый_накопленный, новое_сырое_значение).
+    """
+    delta = cur_raw - prev_raw
+    if delta < 0:            # счётчик обнулился → считаем с нуля
+        delta = cur_raw
+    return prev_used + delta, cur_raw
+
+
 async def get_peer_traffic(
     ssh: SSHClient, interface: str = WG_INTERFACE
 ) -> list[PeerTrafficInfo]:

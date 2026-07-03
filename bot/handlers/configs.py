@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import asyncio
 import contextlib
 import secrets
 
@@ -38,6 +39,18 @@ from bot.utils.validators import is_valid_label
 
 router = Router(name="configs")
 
+# Блокировки на каждый сервер: сериализуют аллокацию IP, чтобы два параллельных
+# создания пира (админский /newpeer и redeem инвайта) не выбрали один и тот же IP.
+_server_ip_locks: dict[int, asyncio.Lock] = {}
+
+
+def _server_ip_lock(server_id: int) -> asyncio.Lock:
+    lock = _server_ip_locks.get(server_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _server_ip_locks[server_id] = lock
+    return lock
+
 
 async def _create_peer_for_user(
     session: AsyncSession,
@@ -45,16 +58,38 @@ async def _create_peer_for_user(
     user: User,
     label: str,
 ) -> tuple[str, str, str]:
-    """Создаёт peer на сервере и в БД. Возвращает (conf, ip, label)."""
-    async with SSHClient(repo.creds_from_server(server)) as ssh:
-        used = await amnezia.list_used_ips(ssh, server.wg_subnet)
-        # Добавляем IP активных пиров из БД — защита от рассинхрона WG↔БД
-        for p in await repo.list_peers_for_server(session, server.id):
-            if p.status == PeerStatus.ACTIVE:
-                used.add(p.ip)
-        ip = amnezia.next_free_ip(server.wg_subnet, used)
-        keys = await amnezia.generate_peer_keys(ssh)
-        await amnezia.add_peer_on_server(ssh, public_key=keys.public_key, peer_ip=ip)
+    """Создаёт peer на сервере и в БД. Возвращает (conf, ip, label).
+
+    Критическая секция под per-server Lock: пока держим лок, читаем занятые IP
+    с сервера (`awg show`), выбираем свободный и добавляем peer. Так два
+    параллельных создания на один сервер не займут один IP — второй увидит
+    первый уже в выводе `awg show`.
+    """
+    async with _server_ip_lock(server.id):
+        async with SSHClient(repo.creds_from_server(server)) as ssh:
+            used = await amnezia.list_used_ips(ssh, server.wg_subnet)
+            # Добавляем IP активных пиров из БД — защита от рассинхрона WG↔БД
+            for p in await repo.list_peers_for_server(session, server.id):
+                if p.status == PeerStatus.ACTIVE:
+                    used.add(p.ip)
+            ip = amnezia.next_free_ip(server.wg_subnet, used)
+            keys = await amnezia.generate_peer_keys(ssh)
+
+            # Сначала пишем в БД (UniqueConstraint поймает дубль IP), и только
+            # потом трогаем сервер — иначе при коллизии остался бы «сирота» на VPS.
+            peer = Peer(
+                server_id=server.id,
+                user_id=user.id,
+                label=label,
+                ip=ip,
+                public_key=keys.public_key,
+                private_key_enc=encrypt(keys.private_key),
+                status=PeerStatus.ACTIVE,
+            )
+            session.add(peer)
+            await session.flush()
+
+            await amnezia.add_peer_on_server(ssh, public_key=keys.public_key, peer_ip=ip)
 
     params = amnezia.AmneziaParams.from_json(server.awg_params_json)
     conf = amnezia.build_peer_conf(
@@ -64,18 +99,6 @@ async def _create_peer_for_user(
         endpoint=server.server_endpoint,
         params=params,
     )
-
-    peer = Peer(
-        server_id=server.id,
-        user_id=user.id,
-        label=label,
-        ip=ip,
-        public_key=keys.public_key,
-        private_key_enc=encrypt(keys.private_key),
-        status=PeerStatus.ACTIVE,
-    )
-    session.add(peer)
-    await session.flush()
     return conf, ip, label
 
 
@@ -574,8 +597,9 @@ async def cb_peer_revoke(call: CallbackQuery, session: AsyncSession) -> None:
         await call.answer("Не найдено", show_alert=True)
         return
     server = await repo.get_server(session, peer.server_id)
-    if server is None:
-        await call.answer("Сервер удалён", show_alert=True)
+    # Отзывать пир может только владелец сервера — как в остальных хендлерах.
+    if server is None or server.owner_tg_id != call.from_user.id:
+        await call.answer("Нет доступа", show_alert=True)
         return
     try:
         async with SSHClient(repo.creds_from_server(server)) as ssh:

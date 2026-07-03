@@ -570,8 +570,11 @@ async def cb_admin_set_exp(call: CallbackQuery, state: FSMContext) -> None:
     kb.button(text="✖️ Отмена", callback_data=f"{CB_ADMIN}:limits:{peer_id}")
     await call.message.edit_text(
         "📅 <b>Срок действия</b>\n\n"
-        "Введи дату <code>DD.MM.YYYY</code> или период <code>Nд</code> "
+        "Введи дату <code>ДД.ММ.ГГГГ</code> или период <code>Nд</code> "
         "(например <code>30д</code>).\n"
+        "Можно добавить время <code>ЧЧ:ММ</code> в конце — например "
+        "<code>30д 18:00</code> или <code>31.12.2025 09:30</code>. "
+        "Без времени: период — от текущего момента, дата — на 23:59 UTC.\n"
         "Отправь <code>-</code>, чтобы убрать срок.",
         reply_markup=kb.as_markup(),
     )
@@ -585,7 +588,8 @@ async def step_peer_expiry(
     result = parse_expiry(message.text.strip())
     if result == "invalid":
         await message.answer(
-            "Не понял формат. Примеры: <code>30д</code>, <code>31.12.2025</code>, <code>-</code>"
+            "Не понял формат. Примеры: <code>30д</code>, <code>30д 18:00</code>, "
+            "<code>31.12.2025</code>, <code>31.12.2025 09:30</code>, <code>-</code>"
         )
         return
 
@@ -598,6 +602,7 @@ async def step_peer_expiry(
         await message.answer("Пир не найден.")
         return
     peer.expires_at = result
+    peer.expiry_warn_flags = 0  # новый срок → предупреждаем заново
     await session.commit()
 
     msg = (

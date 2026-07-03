@@ -7,7 +7,13 @@ from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.db import repo
-from bot.keyboards.inline import CB_CANCEL, CB_MENU, back_to_menu, main_menu
+from bot.keyboards.inline import (
+    CB_CANCEL,
+    CB_MENU,
+    back_to_menu,
+    main_menu,
+    notify_settings_kb,
+)
 from bot.texts import t
 
 router = Router(name="common")
@@ -90,6 +96,48 @@ async def cb_menu_open(call: CallbackQuery, session: AsyncSession, state: FSMCon
     )
     await call.message.edit_text(t.menu_title, reply_markup=main_menu(user.is_admin))
     await call.answer()
+
+
+def _notify_text(enabled: bool) -> str:
+    state = "включены ✅" if enabled else "выключены 🔕"
+    return (
+        "🔔 <b>Предупреждения об истечении</b>\n\n"
+        f"Сейчас: <b>{state}</b>\n\n"
+        "Бот заранее пришлёт сообщение, когда срок действия твоего конфига "
+        "подходит к концу — за 24 часа и за 1 час до автоотзыва."
+    )
+
+
+@router.callback_query(F.data == f"{CB_MENU}:notify")
+async def cb_menu_notify(call: CallbackQuery, session: AsyncSession) -> None:
+    user = await repo.get_or_create_user(
+        session,
+        tg_id=call.from_user.id,
+        username=call.from_user.username,
+        full_name=call.from_user.full_name,
+    )
+    await call.message.edit_text(
+        _notify_text(user.expiry_warn_enabled),
+        reply_markup=notify_settings_kb(user.expiry_warn_enabled),
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data == f"{CB_MENU}:notify_toggle")
+async def cb_menu_notify_toggle(call: CallbackQuery, session: AsyncSession) -> None:
+    user = await repo.get_or_create_user(
+        session,
+        tg_id=call.from_user.id,
+        username=call.from_user.username,
+        full_name=call.from_user.full_name,
+    )
+    user.expiry_warn_enabled = not user.expiry_warn_enabled
+    await session.commit()
+    await call.message.edit_text(
+        _notify_text(user.expiry_warn_enabled),
+        reply_markup=notify_settings_kb(user.expiry_warn_enabled),
+    )
+    await call.answer("Готово")
 
 
 @router.message(Command("help"))

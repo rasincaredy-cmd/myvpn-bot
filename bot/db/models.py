@@ -40,6 +40,10 @@ class User(Base):
     full_name: Mapped[str | None] = mapped_column(String(256))
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
     is_blocked: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Предупреждать пользователя о скором истечении его конфигов (можно выключить).
+    expiry_warn_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default="1", nullable=False
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -128,6 +132,13 @@ class Peer(Base):
     )
     traffic_last_raw_bytes: Mapped[int] = mapped_column(
         BigInteger, default=0, server_default="0", nullable=False
+    )
+
+    # Битовая маска уже отправленных предупреждений об истечении.
+    # Биты соответствуют порогам scheduler.WARN_OFFSETS_HOURS (бит 0 = 24ч, бит 1 = 1ч).
+    # Сбрасывается при смене срока действия пира.
+    expiry_warn_flags: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
     )
 
     server: Mapped[Server] = relationship(back_populates="peers")

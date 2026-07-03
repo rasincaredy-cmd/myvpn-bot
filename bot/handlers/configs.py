@@ -466,7 +466,10 @@ async def cb_invite_open(call: CallbackQuery, session: AsyncSession) -> None:
         text += f"\n• Ссылка: <code>{link}</code>"
 
     await call.message.edit_text(
-        text, reply_markup=invite_card_kb(invite.id, server.id, can_revoke)
+        text,
+        reply_markup=invite_card_kb(
+            invite.id, server.id, can_revoke, used=bool(invite.used_at)
+        ),
     )
     await call.answer()
 
@@ -482,10 +485,9 @@ async def cb_invite_delete(call: CallbackQuery, session: AsyncSession) -> None:
     if server is None or server.owner_tg_id != call.from_user.id:
         await call.answer("Нет доступа", show_alert=True)
         return
-    if invite.used_at:
-        await call.answer("Инвайт уже использован.", show_alert=True)
-        return
 
+    # Использованные инвайты тоже можно убрать — из истории (пир выдан отдельно).
+    was_used = invite.used_at is not None
     label = invite.label or invite.token[:8]
     server_id = server.id
     await repo.delete_invite(session, invite.id)
@@ -503,9 +505,10 @@ async def cb_invite_delete(call: CallbackQuery, session: AsyncSession) -> None:
             return "⌛"
         return "⏳"
 
+    action = "удалён из истории" if was_used else "отозван"
     rows = [(i.id, _icon(i), i.label or i.token[:8]) for i in invites]
     await call.message.edit_text(
-        f"🗑 Инвайт <code>{label}</code> отозван.\n\n"
+        f"🗑 Инвайт <code>{label}</code> {action}.\n\n"
         f"🎟 <b>Инвайты — {server.name}</b>\n"
         f"Всего: <b>{len(invites)}</b> | "
         f"⏳ Активных: <b>{pending}</b> | "

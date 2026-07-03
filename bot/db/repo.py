@@ -181,6 +181,7 @@ async def revive_peer(session: AsyncSession, peer_id: int) -> None:
             revoked_at=None,
             traffic_used_bytes=0,
             traffic_last_raw_bytes=0,
+            expiry_warn_flags=0,
         )
     )
 

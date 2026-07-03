@@ -29,7 +29,19 @@ def main_menu(is_admin: bool) -> InlineKeyboardMarkup:
         kb.button(text="➕ Выдать конфиг peer",    callback_data=f"{CB_PEERS}:new")
         kb.button(text="🎟 Создать инвайт",        callback_data=f"{CB_INVITES}:new")
         kb.button(text="👮 Админ-панель",          callback_data=f"{CB_PANEL}:main")
+    kb.button(text="🔔 Оповещения", callback_data=f"{CB_MENU}:notify")
     kb.button(text="🆘 Помощь", callback_data=f"{CB_MENU}:help")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def notify_settings_kb(enabled: bool) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    if enabled:
+        kb.button(text="🔕 Выключить предупреждения", callback_data=f"{CB_MENU}:notify_toggle")
+    else:
+        kb.button(text="🔔 Включить предупреждения", callback_data=f"{CB_MENU}:notify_toggle")
+    kb.button(text="« В меню", callback_data=f"{CB_MENU}:open")
     kb.adjust(1)
     return kb.as_markup()
 
@@ -135,10 +147,16 @@ def invites_list_kb(
     return kb.as_markup()
 
 
-def invite_card_kb(invite_id: int, server_id: int, can_revoke: bool) -> InlineKeyboardMarkup:
+def invite_card_kb(
+    invite_id: int, server_id: int, can_revoke: bool, used: bool = False
+) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     if can_revoke:
         kb.button(text="🗑 Отозвать", callback_data=f"{CB_INVITES}:del:{invite_id}")
+    elif used:
+        # Использованный инвайт: пир выдан отдельно, а запись висит в истории —
+        # даём убрать её.
+        kb.button(text="🗑 Удалить из истории", callback_data=f"{CB_INVITES}:del:{invite_id}")
     kb.button(text="« К инвайтам", callback_data=f"{CB_INVITES}:list:{server_id}")
     kb.adjust(1)
     return kb.as_markup()

@@ -52,20 +52,44 @@ from datetime import datetime, timedelta, timezone
 
 def parse_expiry(text: str) -> datetime | None | str:
     """
-    Возвращает datetime, None (сброс, если '-'), или 'invalid'.
-    Форматы: DD.MM.YYYY | Nд | Nd
+    Возвращает datetime (UTC), None (сброс, если '-'), или 'invalid'.
+
+    Форматы (время ЧЧ:ММ — необязательное, в конце):
+      Nд | Nd                 → сейчас + N дней, текущее время
+      Nд ЧЧ:ММ                → сейчас + N дней, в указанное время
+      ДД.ММ.ГГГГ              → на 23:59 UTC
+      ДД.ММ.ГГГГ ЧЧ:ММ        → на указанное время UTC
     """
     text = text.strip()
     if text == "-":
         return None
+
+    # Необязательное время ЧЧ:ММ в конце строки.
+    hh_mm: tuple[int, int] | None = None
+    m_time = re.search(r"\s+(\d{1,2}):(\d{2})$", text)
+    if m_time:
+        hh, mm = int(m_time.group(1)), int(m_time.group(2))
+        if hh > 23 or mm > 59:
+            return "invalid"
+        hh_mm = (hh, mm)
+        text = text[: m_time.start()].strip()
+
+    # Период: Nд / Nd
     m = re.match(r"^(\d+)[dдDД]$", text, re.IGNORECASE)
     if m:
-        return datetime.now(timezone.utc) + timedelta(days=int(m.group(1)))
+        dt = datetime.now(timezone.utc) + timedelta(days=int(m.group(1)))
+        if hh_mm:
+            dt = dt.replace(hour=hh_mm[0], minute=hh_mm[1], second=0, microsecond=0)
+        return dt
+
+    # Дата: ДД.ММ.ГГГГ
     try:
         dt = datetime.strptime(text, "%d.%m.%Y")
-        return dt.replace(hour=23, minute=59, second=59, tzinfo=timezone.utc)
     except ValueError:
         return "invalid"
+    if hh_mm:
+        return dt.replace(hour=hh_mm[0], minute=hh_mm[1], second=0, tzinfo=timezone.utc)
+    return dt.replace(hour=23, minute=59, second=59, tzinfo=timezone.utc)
 
 
 def parse_traffic_limit(text: str) -> int | None | str:

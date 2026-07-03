@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from loguru import logger
 from sqlalchemy import select
@@ -15,11 +15,26 @@ from bot.services import amnezia
 from bot.services.ssh import SSHClient, SSHError
 
 
+# Пороги предупреждений о скором истечении (часов до отзыва). Порядок = номер
+# бита в Peer.expiry_warn_flags. v1 — фиксированные; позже можно сделать настройку.
+WARN_OFFSETS_HOURS = (24, 1)
+
+
 async def _notify(tg_id: int, text: str) -> None:
     try:
         await bot.send_message(tg_id, text)
     except Exception:
         pass
+
+
+def _humanize_left(delta: timedelta) -> str:
+    """Грубое «сколько осталось» для текста предупреждения."""
+    minutes = int(delta.total_seconds() // 60)
+    if minutes >= 1440:
+        return f"{minutes // 1440} дн"
+    if minutes >= 60:
+        return f"{minutes // 60} ч"
+    return f"{max(minutes, 1)} мин"
 
 
 async def _run_checks() -> None:
@@ -50,6 +65,39 @@ async def _run_checks() -> None:
                 await _notify(
                     user.tg_id,
                     f"⏱ Конфиг <b>{peer.label}</b> истёк и был автоматически отозван.",
+                )
+
+        # ── 1b. Предупреждения о скором истечении ───────────────────────────
+        soon = list((await session.execute(
+            select(Peer)
+            .where(Peer.status == PeerStatus.ACTIVE)
+            .where(Peer.expires_at.isnot(None))
+            .where(Peer.expires_at > now)
+        )).scalars())
+
+        for peer in soon:
+            remaining = peer.expires_at - now
+            # Пороги, которые уже пора слать и которые ещё не отправляли.
+            fireable = [
+                i for i, hours in enumerate(WARN_OFFSETS_HOURS)
+                if not (peer.expiry_warn_flags & (1 << i))
+                and remaining <= timedelta(hours=hours)
+            ]
+            if not fireable:
+                continue
+
+            user = await repo.get_user_by_id(session, peer.user_id)
+            # Помечаем сработавшие пороги ВСЕГДА (даже если юзер выключил
+            # предупреждения) — чтобы не копить «долги» и не слать протухшее
+            # «истекает через 24ч», когда осталось 3. Само сообщение шлём только
+            # при включённых предупреждениях. Одно сообщение за тик — по факту.
+            for i in fireable:
+                peer.expiry_warn_flags |= (1 << i)
+            if user and user.expiry_warn_enabled:
+                await _notify(
+                    user.tg_id,
+                    f"⏳ Конфиг <b>{peer.label}</b> истекает примерно через "
+                    f"{_humanize_left(remaining)} и будет автоматически отозван.",
                 )
 
         # ── 2. Учёт трафика и лимиты ────────────────────────────────────────

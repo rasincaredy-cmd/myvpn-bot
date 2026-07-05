@@ -23,6 +23,7 @@ CB_CANCEL = "cancel"
 def main_menu(is_admin: bool) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="📁 Мои конфиги", callback_data=f"{CB_PEERS}:list")
+    kb.button(text="🌍 Локации", callback_data=f"{CB_MENU}:locations")
     if is_admin:
         kb.button(text="🛠 Установить VPN на VPS", callback_data=f"{CB_INSTALL}:start")
         kb.button(text="🖥 Мои серверы",           callback_data=f"{CB_SERVERS}:list")

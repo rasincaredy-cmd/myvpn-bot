@@ -18,6 +18,15 @@ from bot.texts import t
 
 router = Router(name="common")
 
+# Витрина локаций (косметическая заглушка Блока 8). ready=False рисует «🔜 Скоро»
+# и НИЧЕГО не выдаёт — реальный конфиг появится только когда сервер куплен и готов.
+# Когда поднимешь немецкую ноду — поменяй её ready на True. В Блоке 8 заменим этот
+# хардкод на список локаций из БД.
+_LOCATIONS: list[tuple[str, str, bool]] = [
+    ("🇳🇱", "Нидерланды", True),
+    ("🇩🇪", "Германия", False),
+]
+
 
 # --- /start ------------------------------------------------------------------
 
@@ -95,6 +104,17 @@ async def cb_menu_open(call: CallbackQuery, session: AsyncSession, state: FSMCon
         full_name=call.from_user.full_name,
     )
     await call.message.edit_text(t.menu_title, reply_markup=main_menu(user.is_admin))
+    await call.answer()
+
+
+@router.callback_query(F.data == f"{CB_MENU}:locations")
+async def cb_menu_locations(call: CallbackQuery) -> None:
+    lines = [t.locations_intro]
+    for flag, name, ready in _LOCATIONS:
+        badge = "✅ Доступно" if ready else "🔜 Скоро"
+        lines.append(f"{flag} <b>{name}</b> — {badge}")
+    lines.append(t.locations_footer)
+    await call.message.edit_text("\n".join(lines), reply_markup=back_to_menu())
     await call.answer()
 
 

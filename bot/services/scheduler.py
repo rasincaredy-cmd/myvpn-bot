@@ -19,6 +19,11 @@ from bot.services.ssh import SSHClient, SSHError
 # бита в Peer.expiry_warn_flags. v1 — фиксированные; позже можно сделать настройку.
 WARN_OFFSETS_HOURS = (24, 1)
 
+# Сколько дней отозванный пир хранится в БД, прежде чем планировщик удалит его.
+# Отзыв не удаляет строку сразу — пир «ждёт» возможного возобновления; по
+# истечении срока чистим, чтобы не копить мусор и освободить занятый им IP.
+REVOKED_RETENTION_DAYS = 30
+
 
 async def _notify(tg_id: int, text: str) -> None:
     try:
@@ -116,7 +121,48 @@ async def _run_checks() -> None:
             except Exception:
                 logger.exception("Expiry-warning failed for peer {}", peer.id)
 
-        # ── 2. Учёт трафика и лимиты ────────────────────────────────────────
+        # ── 2. Автоудаление давно отозванных пиров ──────────────────────────
+        # Чистим строки со status=REVOKED, отозванные более REVOKED_RETENTION_DAYS
+        # назад. Освобождает IP (revoked-пир держит его в БД до удаления) и не даёт
+        # копиться мусору. Сравнение делаем в SQL, чтобы не спотыкаться о naive
+        # datetime из SQLite (см. _as_utc): обе стороны биндятся одинаково.
+        cutoff = now - timedelta(days=REVOKED_RETENTION_DAYS)
+        stale = list((await session.execute(
+            select(Peer)
+            .where(Peer.status == PeerStatus.REVOKED)
+            .where(Peer.revoked_at.isnot(None))
+            .where(Peer.revoked_at < cutoff)
+        )).scalars())
+
+        if stale:
+            # На случай, если отзыв на сервере когда-то не прошёл по SSH, — best-effort
+            # убираем пир с сервера, затем удаляем строку из БД. Группируем по серверу:
+            # один SSH-коннект на сервер.
+            by_srv: dict[int, list[Peer]] = {}
+            for p in stale:
+                by_srv.setdefault(p.server_id, []).append(p)
+            for server_id, plist in by_srv.items():
+                server = await repo.get_server(session, server_id)
+                if not server:
+                    continue
+                try:
+                    async with SSHClient(repo.creds_from_server(server)) as ssh:
+                        for p in plist:
+                            try:
+                                await amnezia.remove_peer_on_server(ssh, public_key=p.public_key)
+                            except SSHError as exc:
+                                logger.warning("Stale-peer remove SSH error peer {}: {}", p.id, exc)
+                except SSHError as exc:
+                    logger.warning("Stale-peer SSH connect error server {}: {}", server_id, exc)
+
+            for p in stale:
+                await repo.delete_peer(session, p.id)
+                logger.info("Auto-deleted stale revoked peer {} ({})", p.id, p.label)
+            # Фиксируем удаления сразу — как и отзывы выше, чтобы поздний сбой
+            # в секции трафика их не откатил.
+            await session.commit()
+
+        # ── 3. Учёт трафика и лимиты ────────────────────────────────────────
         # Накапливаем трафик для ВСЕХ активных пиров (не только с лимитом), чтобы
         # счётчик пережил ребут сервера и был готов, когда лимит поставят позже.
         active = list((await session.execute(

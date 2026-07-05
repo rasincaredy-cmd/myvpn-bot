@@ -177,14 +177,14 @@ def peers_list(peers: list[tuple[int, str, str, str]]) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def peer_card(peer_id: int, can_revoke: bool, can_delete: bool = False) -> InlineKeyboardMarkup:
+def peer_card(peer_id: int, can_revoke: bool, can_send: bool) -> InlineKeyboardMarkup:
+    # Удаление пира из БД — только у админа (adm:delete). У пользователя его нет:
+    # отозванный пир «ждёт» возможного возобновления и чистится планировщиком.
     kb = InlineKeyboardBuilder()
-    if not can_delete:
+    if can_send:
         kb.button(text="📥 Получить конфиг", callback_data=f"{CB_PEERS}:send:{peer_id}")
     if can_revoke:
         kb.button(text="🗑 Отозвать", callback_data=f"{CB_PEERS}:revoke:{peer_id}")
-    if can_delete:
-        kb.button(text="❌ Удалить из БД", callback_data=f"{CB_PEERS}:delete:{peer_id}")
     kb.button(text="« К списку", callback_data=f"{CB_PEERS}:list")
     kb.adjust(1)
     return kb.as_markup()

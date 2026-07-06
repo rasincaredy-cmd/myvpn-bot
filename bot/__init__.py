@@ -1,14 +1,2 @@
-from __future__ import annotations
-
-from aiogram import Dispatcher
-
-from bot.handlers import admin, admin_panel, common, configs, install, menu
-
-
-def register_handlers(dp: Dispatcher) -> None:
-    dp.include_router(common.router)
-    dp.include_router(menu.router)
-    dp.include_router(configs.router)
-    dp.include_router(install.router)
-    dp.include_router(admin_panel.router)  # до admin — panel перехватывает /admin
-    dp.include_router(admin.router)
+# Пакет bot. Регистрация роутеров — в bot/handlers/__init__.py (register_handlers),
+# которую и импортирует bot/__main__.py. Здесь намеренно пусто.

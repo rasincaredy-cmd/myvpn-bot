@@ -7,8 +7,8 @@ from datetime import datetime, timezone          # ← новое
 from aiogram.fsm.context import FSMContext
 from bot.keyboards.inline import peer_limits_kb
 from bot.services.crypto import decrypt
-from bot.states.install import PeerLimitStates
-from bot.utils.validators import parse_expiry, parse_traffic_limit
+from bot.states.install import PeerLimitStates, PeerRenameStates
+from bot.utils.validators import is_valid_label, parse_expiry, parse_traffic_limit
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import BufferedInputFile
@@ -40,6 +40,8 @@ from bot.texts import t
 
 router = Router(name="menu")
 router.callback_query.filter(AdminFilter())
+
+_PEERS_PER_PAGE = 8
 
 
 # --- Список серверов ---------------------------------------------------------
@@ -149,7 +151,11 @@ async def cb_server_del_ok(call: CallbackQuery, session: AsyncSession) -> None:
 @router.callback_query(F.data.startswith(f"{CB_SERVERS}:peers:"))
 async def cb_server_peers(call: CallbackQuery, session: AsyncSession) -> None:
     """Список всех пиров сервера — включая выданные через инвайт чужим юзерам."""
-    server_id = int(call.data.rsplit(":", 1)[-1])
+    # callback: "srv:peers:<id>" (стр. 0) или "srv:peers:<id>:<page>" (навигация)
+    parts = call.data.split(":")
+    server_id = int(parts[2])
+    page = int(parts[3]) if len(parts) > 3 else 0
+
     server = await repo.get_server(session, server_id)
     if server is None or server.owner_tg_id != call.from_user.id:
         await call.answer("Не найдено", show_alert=True)
@@ -162,11 +168,24 @@ async def cb_server_peers(call: CallbackQuery, session: AsyncSession) -> None:
         )
         await call.answer()
         return
+
     active = sum(1 for p in peers if p.status == PeerStatus.ACTIVE)
+    total = len(peers)
+    # Активные сверху, затем по id; режем на страницы.
+    peers.sort(key=lambda p: (p.status != PeerStatus.ACTIVE, p.id))
+    start = page * _PEERS_PER_PAGE
+    page_peers = peers[start:start + _PEERS_PER_PAGE]
+
     await call.message.edit_text(
         f"👥 <b>Peers — {server.name}</b>\n"
-        f"Активных: <b>{active}</b> / всего: <b>{len(peers)}</b>",
-        reply_markup=server_peers_admin(peers, server_id),
+        f"Активных: <b>{active}</b> / всего: <b>{total}</b>",
+        reply_markup=server_peers_admin(
+            page_peers,
+            server_id,
+            page,
+            has_prev=page > 0,
+            has_next=start + _PEERS_PER_PAGE < total,
+        ),
     )
     await call.answer()
 
@@ -218,6 +237,67 @@ async def cb_admin_peer_open(
         ),
     )
     await call.answer()
+
+# --- Переименование пира -----------------------------------------------------
+
+@router.callback_query(F.data.startswith(f"{CB_ADMIN}:rename:"))
+async def cb_admin_peer_rename(
+    call: CallbackQuery, session: AsyncSession, state: FSMContext
+) -> None:
+    peer_id = int(call.data.rsplit(":", 1)[-1])
+    peer = await repo.get_peer(session, peer_id)
+    if peer is None:
+        await call.answer("Не найдено", show_alert=True)
+        return
+    server = await repo.get_server(session, peer.server_id)
+    if server is None or server.owner_tg_id != call.from_user.id:
+        await call.answer("Нет доступа", show_alert=True)
+        return
+
+    await state.set_state(PeerRenameStates.label)
+    await state.update_data(peer_id=peer_id)
+    from aiogram.utils.keyboard import InlineKeyboardBuilder as IKB
+    kb = IKB()
+    kb.button(text="✖️ Отмена", callback_data=f"{CB_ADMIN}:peer:{peer_id}")
+    await call.message.edit_text(
+        f"✏️ <b>Переименование</b>\n\n"
+        f"Текущая метка: <code>{peer.label}</code>\n\n"
+        "Введи новую метку (латиница/цифры/пробел/<code>_-</code>, до 32 символов):",
+        reply_markup=kb.as_markup(),
+    )
+    await call.answer()
+
+
+@router.message(PeerRenameStates.label, F.text, AdminFilter())
+async def step_peer_rename(
+    message: Message, state: FSMContext, session: AsyncSession
+) -> None:
+    label = message.text.strip()
+    if not is_valid_label(label):
+        await message.answer(
+            "Метка: латиница/цифры/пробел/<code>_-</code>, до 32 символов. Ещё раз:"
+        )
+        return
+
+    data = await state.get_data()
+    peer_id = data["peer_id"]
+    await state.clear()
+
+    peer = await repo.get_peer(session, peer_id)
+    if peer is None:
+        await message.answer("Пир не найден.")
+        return
+    peer.label = label
+    await session.commit()
+
+    from aiogram.utils.keyboard import InlineKeyboardBuilder as IKB
+    kb = IKB()
+    kb.button(text="« К пиру", callback_data=f"{CB_ADMIN}:peer:{peer_id}")
+    await message.answer(
+        f"✅ Метка изменена на <code>{label}</code>.",
+        reply_markup=kb.as_markup(),
+    )
+
 
 # --- Трафик пиров -----------------------------------------------------------
 

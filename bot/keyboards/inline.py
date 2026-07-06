@@ -164,8 +164,13 @@ def invite_card_kb(
 
 # --- Peers (пользовательский вид) --------------------------------------------
 
-def peers_list(peers: list[tuple[int, str, str, str]]) -> InlineKeyboardMarkup:
-    """peers: list of (peer_id, label, server_name, status)."""
+def peers_list(
+    peers: list[tuple[int, str, str, str]],
+    page: int = 0,
+    has_prev: bool = False,
+    has_next: bool = False,
+) -> InlineKeyboardMarkup:
+    """peers: list of (peer_id, label, server_name, status) — уже срез страницы."""
     kb = InlineKeyboardBuilder()
     for pid, label, server_name, status in peers:
         mark = "✅" if status == "active" else "🚫"
@@ -173,6 +178,10 @@ def peers_list(peers: list[tuple[int, str, str, str]]) -> InlineKeyboardMarkup:
             text=f"{mark} {label} @ {server_name}",
             callback_data=f"{CB_PEERS}:open:{pid}",
         )
+    if has_prev:
+        kb.button(text="← Назад",  callback_data=f"{CB_PEERS}:list:{page - 1}")
+    if has_next:
+        kb.button(text="Вперёд →", callback_data=f"{CB_PEERS}:list:{page + 1}")
     kb.button(text="« В меню", callback_data=f"{CB_MENU}:open")
     kb.adjust(1)
     return kb.as_markup()
@@ -193,8 +202,14 @@ def peer_card(peer_id: int, can_revoke: bool, can_send: bool) -> InlineKeyboardM
 
 # --- Admin: управление пирами любого юзера -----------------------------------
 
-def server_peers_admin(peers: list[Peer], server_id: int) -> InlineKeyboardMarkup:
-    """Список пиров сервера для админа — каждый пир кликабелен."""
+def server_peers_admin(
+    peers: list[Peer],
+    server_id: int,
+    page: int = 0,
+    has_prev: bool = False,
+    has_next: bool = False,
+) -> InlineKeyboardMarkup:
+    """Список пиров сервера для админа (уже срез страницы) — каждый пир кликабелен."""
     kb = InlineKeyboardBuilder()
     for p in peers:
         mark = "✅" if p.status == "active" else "🚫"
@@ -202,6 +217,10 @@ def server_peers_admin(peers: list[Peer], server_id: int) -> InlineKeyboardMarku
             text=f"{mark} {p.label} ({p.ip})",
             callback_data=f"{CB_ADMIN}:peer:{p.id}",
         )
+    if has_prev:
+        kb.button(text="← Назад",  callback_data=f"{CB_SERVERS}:peers:{server_id}:{page - 1}")
+    if has_next:
+        kb.button(text="Вперёд →", callback_data=f"{CB_SERVERS}:peers:{server_id}:{page + 1}")
     kb.button(text="« К серверу", callback_data=f"{CB_SERVERS}:open:{server_id}")
     kb.adjust(1)
     return kb.as_markup()
@@ -216,6 +235,8 @@ def admin_peer_card(peer_id: int, server_id: int, can_revoke: bool) -> InlineKey
     else:
         kb.button(text="♻️ Возобновить",   callback_data=f"{CB_ADMIN}:revive:{peer_id}")
         kb.button(text="❌ Удалить из БД", callback_data=f"{CB_ADMIN}:delete:{peer_id}")
+    # Переименование доступно всегда — это просто метка в БД, не трогает конфиг.
+    kb.button(text="✏️ Переименовать", callback_data=f"{CB_ADMIN}:rename:{peer_id}")
     kb.button(text="« К пирам", callback_data=f"{CB_SERVERS}:peers:{server_id}")
     kb.adjust(1)
     return kb.as_markup()

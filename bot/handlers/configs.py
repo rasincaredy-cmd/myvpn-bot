@@ -39,6 +39,8 @@ from bot.utils.validators import is_valid_label
 
 router = Router(name="configs")
 
+_PEERS_PER_PAGE = 8
+
 # Блокировки на каждый сервер: сериализуют аллокацию IP, чтобы два параллельных
 # создания пира (админский /newpeer и redeem инвайта) не выбрали один и тот же IP.
 _server_ip_locks: dict[int, asyncio.Lock] = {}
@@ -128,8 +130,12 @@ async def _send_peer_artifacts(
 
 # --- Список своих конфигов (любой юзер) -------------------------------------
 
-@router.callback_query(F.data == f"{CB_PEERS}:list")
+@router.callback_query(F.data.startswith(f"{CB_PEERS}:list"))
 async def cb_peer_list(call: CallbackQuery, session: AsyncSession) -> None:
+    # callback: "peer:list" (стр. 0) или "peer:list:<page>" (навигация)
+    parts = call.data.split(":")
+    page = int(parts[2]) if len(parts) > 2 else 0
+
     user = await repo.get_or_create_user(
         session,
         tg_id=call.from_user.id,
@@ -145,12 +151,24 @@ async def cb_peer_list(call: CallbackQuery, session: AsyncSession) -> None:
         await call.answer()
         return
 
+    # Активные сверху, затем по id; режем на страницы.
+    peers.sort(key=lambda p: (p.status != PeerStatus.ACTIVE, p.id))
+    total = len(peers)
+    start = page * _PEERS_PER_PAGE
+    page_peers = peers[start:start + _PEERS_PER_PAGE]
+
     rows: list[tuple[int, str, str, str]] = []
-    for p in peers:
+    for p in page_peers:
         srv = await repo.get_server(session, p.server_id)
         rows.append((p.id, p.label, srv.name if srv else "?", p.status))
     await call.message.edit_text(
-        "📁 <b>Твои конфиги</b>", reply_markup=peers_list(rows)
+        "📁 <b>Твои конфиги</b>",
+        reply_markup=peers_list(
+            rows,
+            page,
+            has_prev=page > 0,
+            has_next=start + _PEERS_PER_PAGE < total,
+        ),
     )
     await call.answer()
 

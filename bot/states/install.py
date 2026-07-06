@@ -34,3 +34,7 @@ class BroadcastStates(StatesGroup):
 class PeerLimitStates(StatesGroup):
     set_expires = State()
     set_traffic = State()
+
+
+class PeerRenameStates(StatesGroup):
+    label = State()

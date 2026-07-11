@@ -7,11 +7,14 @@ from datetime import datetime, timedelta, timezone
 from loguru import logger
 from sqlalchemy import select
 
+from bot.config import settings
 from bot.db import repo
 from bot.db.base import session_scope
-from bot.db.models import Peer, PeerStatus, Server
+from bot.db.models import Peer, PeerStatus, Server, WdttAccess
 from bot.loader import bot
 from bot.services import amnezia
+from bot.services import wdtt as wdtt_svc
+from bot.services.crypto import decrypt
 from bot.services.ssh import SSHClient, SSHError
 
 
@@ -83,6 +86,38 @@ async def _run_checks() -> None:
         # Фиксируем отзывы сразу: если что-то упадёт ниже (предупреждения/трафик),
         # откат не должен воскресить отозванные пиры и вызвать повторную рассылку.
         if expired:
+            await session.commit()
+
+        # ── 1c. Истечение wdtt-доступов (обход БС) ──────────────────────────
+        wdtt_expired = list((await session.execute(
+            select(WdttAccess)
+            .where(WdttAccess.status == PeerStatus.ACTIVE)
+            .where(WdttAccess.expires_at.isnot(None))
+            .where(WdttAccess.expires_at <= now)
+        )).scalars())
+
+        for access in wdtt_expired:
+            server = await repo.get_server(session, access.server_id)
+            user   = await repo.get_user_by_id(session, access.user_id)
+            if server:
+                try:
+                    async with SSHClient(repo.creds_from_server(server)) as ssh:
+                        await wdtt_svc.remove_access(
+                            ssh,
+                            password=decrypt(access.password_enc),
+                            binary=settings.wdtt_binary_path,
+                        )
+                except SSHError as exc:
+                    logger.warning("Wdtt expiry revoke SSH error {}: {}", access.id, exc)
+            await repo.revoke_wdtt_access(session, access.id)
+            logger.info("Auto-revoked expired wdtt access {} ({})", access.id, access.label)
+            if user and user.expiry_warn_enabled:
+                await _notify(
+                    user.tg_id,
+                    f"⏱ Доступ обхода <b>{access.label}</b> истёк и был отозван.",
+                )
+
+        if wdtt_expired:
             await session.commit()
 
         # ── 1b. Предупреждения о скором истечении ───────────────────────────

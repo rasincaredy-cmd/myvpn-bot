@@ -83,7 +83,7 @@ async def cb_server_open(call: CallbackQuery, session: AsyncSession) -> None:
         peers=len(peers),
         error_block=error_block,
     )
-    await call.message.edit_text(text, reply_markup=server_card(server.id))
+    await call.message.edit_text(text, reply_markup=server_card(server.id, server.wdtt_enabled))
     await call.answer()
 
 
@@ -164,7 +164,7 @@ async def cb_server_peers(call: CallbackQuery, session: AsyncSession) -> None:
     if not peers:
         await call.message.edit_text(
             f"На <code>{server.name}</code> peer'ов пока нет.",
-            reply_markup=server_card(server.id),
+            reply_markup=server_card(server.id, server.wdtt_enabled),
         )
         await call.answer()
         return
@@ -317,7 +317,7 @@ async def cb_server_traffic(call: CallbackQuery, session: AsyncSession) -> None:
     except SSHError as exc:
         await call.message.edit_text(
             f"❌ SSH-ошибка: <code>{exc}</code>",
-            reply_markup=server_card(server_id),
+            reply_markup=server_card(server.id, server.wdtt_enabled),
         )
         return
 
@@ -401,7 +401,7 @@ async def cb_server_stats(call: CallbackQuery, session: AsyncSession) -> None:
     except SSHError as exc:
         await call.message.edit_text(
             f"❌ SSH-ошибка: <code>{exc}</code>",
-            reply_markup=server_card(server_id),
+            reply_markup=server_card(server.id, server.wdtt_enabled),
         )
         return
 
@@ -573,7 +573,7 @@ async def cb_server_cleanup(call: CallbackQuery, session: AsyncSession) -> None:
     except SSHError as exc:
         await call.message.edit_text(
             f"❌ SSH-ошибка: <code>{exc}</code>",
-            reply_markup=server_card(server_id),
+            reply_markup=server_card(server.id, server.wdtt_enabled),
         )
         return
 

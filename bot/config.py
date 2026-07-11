@@ -31,6 +31,12 @@ class Settings(BaseSettings):
 
     default_amnezia_port: int = 585
 
+    # Обход белых списков (wdtt). Общий на весь сервис список ссылок на звонки VK
+    # через запятую (без пробелов и без https). Одна и более: больше хешей — выше
+    # лимит потоков и лучше распределение нагрузки. Пусто = фича выключена.
+    wdtt_vk_hashes: str = ""
+    wdtt_binary_path: str = "/usr/local/bin/wdtt-server"
+
     @field_validator("admin_ids", mode="before")
     @classmethod
     def _parse_admin_ids(cls, v: object) -> object:

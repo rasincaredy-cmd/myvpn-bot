@@ -6,7 +6,15 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
-from bot.db.models import Invite, Peer, PeerStatus, Server, ServerStatus, User
+from bot.db.models import (
+    Invite,
+    Peer,
+    PeerStatus,
+    Server,
+    ServerStatus,
+    User,
+    WdttAccess,
+)
 from bot.services.crypto import decrypt
 from bot.services.ssh import SSHCredentials
 
@@ -221,4 +229,67 @@ async def delete_invite(session: AsyncSession, invite_id: int) -> None:
     invite = await session.get(Invite, invite_id)
     if invite is not None:
         await session.delete(invite)
+        await session.flush()
+
+
+# --- WdttAccess (обход белых списков) -----------------------------------------
+
+async def create_wdtt_access(
+    session: AsyncSession,
+    *,
+    server_id: int,
+    user_id: int,
+    label: str,
+    uri_enc: bytes,
+    password_enc: bytes,
+    expires_at: datetime | None,
+) -> WdttAccess:
+    access = WdttAccess(
+        server_id=server_id,
+        user_id=user_id,
+        label=label,
+        uri_enc=uri_enc,
+        password_enc=password_enc,
+        status=PeerStatus.ACTIVE,
+        expires_at=expires_at,
+    )
+    session.add(access)
+    await session.flush()
+    return access
+
+
+async def get_wdtt_access(session: AsyncSession, access_id: int) -> WdttAccess | None:
+    return await session.get(WdttAccess, access_id)
+
+
+async def list_wdtt_for_user(session: AsyncSession, user_id: int) -> list[WdttAccess]:
+    result = await session.execute(
+        select(WdttAccess).where(WdttAccess.user_id == user_id).order_by(WdttAccess.id)
+    )
+    return list(result.scalars())
+
+
+async def list_wdtt_for_server(
+    session: AsyncSession, server_id: int
+) -> list[WdttAccess]:
+    result = await session.execute(
+        select(WdttAccess)
+        .where(WdttAccess.server_id == server_id)
+        .order_by(WdttAccess.id)
+    )
+    return list(result.scalars())
+
+
+async def revoke_wdtt_access(session: AsyncSession, access_id: int) -> None:
+    await session.execute(
+        update(WdttAccess)
+        .where(WdttAccess.id == access_id)
+        .values(status=PeerStatus.REVOKED, revoked_at=datetime.now(timezone.utc))
+    )
+
+
+async def delete_wdtt_access(session: AsyncSession, access_id: int) -> None:
+    access = await session.get(WdttAccess, access_id)
+    if access is not None:
+        await session.delete(access)
         await session.flush()

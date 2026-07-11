@@ -88,6 +88,15 @@ class Server(Base):
         DateTime(timezone=True), server_default=func.now()
     )
 
+    # Обход белых списков (wdtt / proxy-turn-vk): включён ли демон на этом сервере
+    # и его порты "dtls,wg,tun". Выдача wdtt-доступов доступна только при wdtt_enabled.
+    wdtt_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="0", nullable=False
+    )
+    wdtt_ports: Mapped[str | None] = mapped_column(
+        String(32), default="56000,56001,9000"
+    )
+
     peers: Mapped[list["Peer"]] = relationship(
         back_populates="server", cascade="all, delete-orphan"
     )
@@ -162,4 +171,40 @@ class Invite(Base):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class WdttAccess(Base):
+    """Доступ обхода белых списков (wdtt): пароль на wdtt-сервере + wdtt://-ссылка.
+
+    В отличие от Peer, WG-ключи/IP генерит сам wdtt-сервер при первом коннекте,
+    поэтому здесь храним только выданную ссылку (с паролем) и сам пароль — оба
+    зашифрованы Fernet, т.к. это секреты.
+    """
+
+    __tablename__ = "wdtt_accesses"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    server_id: Mapped[int] = mapped_column(
+        ForeignKey("servers.id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    label: Mapped[str] = mapped_column(String(64))
+
+    # Fernet-шифрование: ссылка содержит пароль-секрет. Не логировать, не показывать сырыми.
+    uri_enc: Mapped[bytes] = mapped_column()
+    password_enc: Mapped[bytes] = mapped_column()
+
+    status: Mapped[PeerStatus] = mapped_column(String(16), default=PeerStatus.ACTIVE)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # Битовая маска отправленных предупреждений об истечении (как у Peer).
+    expiry_warn_flags: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
     )

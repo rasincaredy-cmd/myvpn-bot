@@ -14,6 +14,7 @@ CB_PEERS = "peer"
 CB_INVITES = "inv"
 CB_ADMIN = "adm"          # admin-панель: управление пирами любого юзера
 CB_PANEL = "pnl"   # admin-панель
+CB_WDTT = "wdtt"   # обход белых списков (wdtt / proxy-turn-vk)
 CB_NOP = "nop"
 CB_CANCEL = "cancel"
 
@@ -23,6 +24,7 @@ CB_CANCEL = "cancel"
 def main_menu(is_admin: bool) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="📁 Мои конфиги", callback_data=f"{CB_PEERS}:list")
+    kb.button(text="🛡 Обход БС", callback_data=f"{CB_WDTT}:my")
     kb.button(text="🌍 Локации", callback_data=f"{CB_MENU}:locations")
     if is_admin:
         kb.button(text="🛠 Установить VPN на VPS", callback_data=f"{CB_INSTALL}:start")
@@ -83,7 +85,7 @@ def servers_list(servers: list[Server]) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def server_card(server_id: int) -> InlineKeyboardMarkup:
+def server_card(server_id: int, wdtt_enabled: bool = False) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="➕ Создать peer",  callback_data=f"{CB_PEERS}:new:{server_id}")
     kb.button(text="🎟 Инвайт",        callback_data=f"{CB_INVITES}:new:{server_id}")
@@ -91,9 +93,19 @@ def server_card(server_id: int) -> InlineKeyboardMarkup:
     kb.button(text="📋 Инвайты",       callback_data=f"{CB_INVITES}:list:{server_id}")
     kb.button(text="📊 Трафик",        callback_data=f"{CB_SERVERS}:traffic:{server_id}")
     kb.button(text="🖥 Состояние",     callback_data=f"{CB_SERVERS}:stats:{server_id}")
-    kb.button(text="🗑 Удалить",       callback_data=f"{CB_SERVERS}:del:{server_id}")
-    kb.button(text="« К списку",       callback_data=f"{CB_SERVERS}:list")
-    kb.adjust(2, 2, 2, 1, 1)
+    singles = 0
+    if wdtt_enabled:
+        kb.button(text="🛡 Создать доступ обхода", callback_data=f"{CB_WDTT}:new:{server_id}")
+        kb.button(text="🛡 Доступы обхода",        callback_data=f"{CB_WDTT}:list:{server_id}")
+        singles += 2
+    kb.button(
+        text="🛡 Обход БС: ВКЛ" if wdtt_enabled else "🛡 Обход БС: выкл",
+        callback_data=f"{CB_WDTT}:toggle:{server_id}",
+    )
+    kb.button(text="🗑 Удалить", callback_data=f"{CB_SERVERS}:del:{server_id}")
+    kb.button(text="« К списку", callback_data=f"{CB_SERVERS}:list")
+    singles += 3
+    kb.adjust(2, 2, 2, *([1] * singles))
     return kb.as_markup()
 
 
@@ -134,8 +146,11 @@ def pick_server(servers: list[Server], action_prefix: str) -> InlineKeyboardMark
 
 
 def invites_list_kb(
-    rows: list[tuple[int, str, str]],  # (invite_id, icon, label)
+    rows: list[tuple[int, str, str]],  # (invite_id, icon, label) — уже срез страницы
     server_id: int,
+    page: int = 0,
+    has_prev: bool = False,
+    has_next: bool = False,
 ) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     for invite_id, icon, label in rows:
@@ -143,6 +158,10 @@ def invites_list_kb(
             text=f"{icon} {label}",
             callback_data=f"{CB_INVITES}:open:{invite_id}",
         )
+    if has_prev:
+        kb.button(text="← Назад",  callback_data=f"{CB_INVITES}:list:{server_id}:{page - 1}")
+    if has_next:
+        kb.button(text="Вперёд →", callback_data=f"{CB_INVITES}:list:{server_id}:{page + 1}")
     kb.button(text="« К серверу", callback_data=f"{CB_SERVERS}:open:{server_id}")
     kb.adjust(1)
     return kb.as_markup()
@@ -303,4 +322,92 @@ def user_card_kb(user_id: int, is_blocked: bool, page: int) -> InlineKeyboardMar
 def back_to_menu() -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="« В меню", callback_data=f"{CB_MENU}:open")
+    return kb.as_markup()
+
+
+def to_server(server_id: int) -> InlineKeyboardMarkup:
+    """Кнопка возврата на карточку сервера (после создания peer/инвайта)."""
+    kb = InlineKeyboardBuilder()
+    kb.button(text="« К серверу", callback_data=f"{CB_SERVERS}:open:{server_id}")
+    return kb.as_markup()
+
+
+# --- Обход белых списков (wdtt) ----------------------------------------------
+
+def wdtt_days_kb() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    for text_, days in [("30 дней", 30), ("90 дней", 90), ("180 дней", 180),
+                        ("Год", 365), ("Бессрочно", 0)]:
+        kb.button(text=text_, callback_data=f"{CB_WDTT}:days:{days}")
+    kb.button(text="✖️ Отмена", callback_data=CB_CANCEL)
+    kb.adjust(2, 2, 1, 1)
+    return kb.as_markup()
+
+
+def wdtt_platform_kb() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🤖 Android", callback_data=f"{CB_WDTT}:plat:android")
+    kb.button(text="🍏 iOS",     callback_data=f"{CB_WDTT}:plat:ios")
+    kb.button(text="💻 ПК",      callback_data=f"{CB_WDTT}:plat:pc")
+    kb.button(text="✖️ Отмена",  callback_data=CB_CANCEL)
+    kb.adjust(3, 1)
+    return kb.as_markup()
+
+
+def wdtt_list_kb(
+    rows: list[tuple[int, str, str]],  # (access_id, mark, label) — срез страницы
+    server_id: int,
+    page: int = 0,
+    has_prev: bool = False,
+    has_next: bool = False,
+) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    for access_id, mark, label in rows:
+        kb.button(text=f"{mark} {label}", callback_data=f"{CB_WDTT}:open:{access_id}")
+    if has_prev:
+        kb.button(text="← Назад",  callback_data=f"{CB_WDTT}:list:{server_id}:{page - 1}")
+    if has_next:
+        kb.button(text="Вперёд →", callback_data=f"{CB_WDTT}:list:{server_id}:{page + 1}")
+    kb.button(text="« К серверу", callback_data=f"{CB_SERVERS}:open:{server_id}")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def wdtt_card_kb(access_id: int, server_id: int, can_revoke: bool) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🔗 Показать ссылку", callback_data=f"{CB_WDTT}:link:{access_id}")
+    if can_revoke:
+        kb.button(text="🗑 Отозвать", callback_data=f"{CB_WDTT}:revoke:{access_id}")
+    kb.button(text="« К доступам", callback_data=f"{CB_WDTT}:list:{server_id}")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def wdtt_user_list_kb(
+    rows: list[tuple[int, str, str, str]],  # (access_id, mark, label, server_name)
+    page: int = 0,
+    has_prev: bool = False,
+    has_next: bool = False,
+) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    for access_id, mark, label, server_name in rows:
+        kb.button(
+            text=f"{mark} {label} @ {server_name}",
+            callback_data=f"{CB_WDTT}:myopen:{access_id}",
+        )
+    if has_prev:
+        kb.button(text="← Назад",  callback_data=f"{CB_WDTT}:my:{page - 1}")
+    if has_next:
+        kb.button(text="Вперёд →", callback_data=f"{CB_WDTT}:my:{page + 1}")
+    kb.button(text="« В меню", callback_data=f"{CB_MENU}:open")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def wdtt_user_card_kb(access_id: int, can_get: bool) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    if can_get:
+        kb.button(text="🔗 Получить ссылку", callback_data=f"{CB_WDTT}:mylink:{access_id}")
+    kb.button(text="« К списку", callback_data=f"{CB_WDTT}:my")
+    kb.adjust(1)
     return kb.as_markup()

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from aiogram import Dispatcher
 
-from bot.handlers import admin_panel, common, configs, install, menu
+from bot.handlers import admin_panel, common, configs, install, menu, wdtt
 
 
 def register_handlers(dp: Dispatcher) -> None:
@@ -11,3 +11,4 @@ def register_handlers(dp: Dispatcher) -> None:
     dp.include_router(configs.router)
     dp.include_router(install.router)
     dp.include_router(admin_panel.router)
+    dp.include_router(wdtt.router)

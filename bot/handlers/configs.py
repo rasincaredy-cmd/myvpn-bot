@@ -27,6 +27,7 @@ from bot.keyboards.inline import (
     peer_card,
     peers_list,
     pick_server,
+    to_server,
 )
 from bot.loader import bot
 from bot.services import amnezia
@@ -40,6 +41,7 @@ from bot.utils.validators import is_valid_label
 router = Router(name="configs")
 
 _PEERS_PER_PAGE = 8
+_INVITES_PER_PAGE = 8
 
 # Блокировки на каждый сервер: сериализуют аллокацию IP, чтобы два параллельных
 # создания пира (админский /newpeer и redeem инвайта) не выбрали один и тот же IP.
@@ -188,6 +190,15 @@ async def cb_peer_open(call: CallbackQuery, session: AsyncSession) -> None:
         f"• IP: <code>{peer.ip}</code>\n"
         f"• Статус: <b>{peer.status}</b>"
     )
+    if peer.expires_at:
+        text += f"\n• ⏱ Истекает: {peer.expires_at.strftime('%d.%m.%Y %H:%M')} UTC"
+    if peer.traffic_limit_bytes:
+        text += (
+            f"\n• 📊 Трафик: {amnezia.fmt_bytes(peer.traffic_used_bytes)}"
+            f" из {amnezia.fmt_bytes(peer.traffic_limit_bytes)}"
+        )
+    elif peer.traffic_used_bytes:
+        text += f"\n• 📊 Трафик: {amnezia.fmt_bytes(peer.traffic_used_bytes)}"
     is_revoked = peer.status == PeerStatus.REVOKED
     await call.message.edit_text(
         text,
@@ -330,7 +341,7 @@ async def step_peer_label(
     await _send_peer_artifacts(message.chat.id, server.name, label, conf)
     await message.answer(
         t.peer_created.format(server=server.name, label=label, ip=ip),
-        reply_markup=back_to_menu(),
+        reply_markup=to_server(server.id),
     )
 
 
@@ -384,7 +395,10 @@ async def cb_invite_pick(call: CallbackQuery, state: FSMContext) -> None:
 
 @router_admin.callback_query(F.data.startswith(f"{CB_INVITES}:list:"))
 async def cb_invites_list(call: CallbackQuery, session: AsyncSession) -> None:
-    server_id = int(call.data.rsplit(":", 1)[-1])
+    # callback: "inv:list:<server_id>" (стр. 0) или "inv:list:<server_id>:<page>"
+    parts = call.data.split(":")
+    server_id = int(parts[2])
+    page = int(parts[3]) if len(parts) > 3 else 0
     server = await repo.get_server(session, server_id)
     if server is None or server.owner_tg_id != call.from_user.id:
         await call.answer("Не найдено", show_alert=True)
@@ -401,14 +415,25 @@ async def cb_invites_list(call: CallbackQuery, session: AsyncSession) -> None:
             return "⌛"
         return "⏳"
 
-    rows = [(i.id, _icon(i), i.label or i.token[:8]) for i in invites]
+    # Активные (непогашенные) сверху, затем по id; режем на страницы.
+    invites.sort(key=lambda i: (i.used_at is not None, i.id))
+    total = len(invites)
+    start = page * _INVITES_PER_PAGE
+    page_invites = invites[start:start + _INVITES_PER_PAGE]
+    rows = [(i.id, _icon(i), i.label or i.token[:8]) for i in page_invites]
 
     await call.message.edit_text(
         f"🎟 <b>Инвайты — {server.name}</b>\n"
-        f"Всего: <b>{len(invites)}</b> | "
+        f"Всего: <b>{total}</b> | "
         f"⏳ Активных: <b>{pending}</b> | "
-        f"✅ Использованных: <b>{len(invites) - pending}</b>",
-        reply_markup=invites_list_kb(rows, server_id),
+        f"✅ Использованных: <b>{total - pending}</b>",
+        reply_markup=invites_list_kb(
+            rows,
+            server_id,
+            page,
+            has_prev=page > 0,
+            has_next=start + _INVITES_PER_PAGE < total,
+        ),
     )
     await call.answer()
 
@@ -494,14 +519,18 @@ async def cb_invite_delete(call: CallbackQuery, session: AsyncSession) -> None:
         return "⏳"
 
     action = "удалён из истории" if was_used else "отозван"
-    rows = [(i.id, _icon(i), i.label or i.token[:8]) for i in invites]
+    invites.sort(key=lambda i: (i.used_at is not None, i.id))
+    total = len(invites)
+    rows = [(i.id, _icon(i), i.label or i.token[:8]) for i in invites[:_INVITES_PER_PAGE]]
     await call.message.edit_text(
         f"🗑 Инвайт <code>{label}</code> {action}.\n\n"
         f"🎟 <b>Инвайты — {server.name}</b>\n"
-        f"Всего: <b>{len(invites)}</b> | "
+        f"Всего: <b>{total}</b> | "
         f"⏳ Активных: <b>{pending}</b> | "
-        f"✅ Использованных: <b>{len(invites) - pending}</b>",
-        reply_markup=invites_list_kb(rows, server_id),
+        f"✅ Использованных: <b>{total - pending}</b>",
+        reply_markup=invites_list_kb(
+            rows, server_id, page=0, has_prev=False, has_next=_INVITES_PER_PAGE < total
+        ),
     )
     await call.answer()
     
@@ -529,7 +558,10 @@ async def step_invite_label(
 
     me = await bot.get_me()
     link = f"https://t.me/{me.username}?start={token}"
-    await message.answer(t.invite_created.format(link=link), reply_markup=back_to_menu())
+    await message.answer(
+        t.invite_created.format(link=link),
+        reply_markup=to_server(data["server_id"]),
+    )
 
 
 # --- Redeem invite (вызывается из common.cmd_start_deep) --------------------

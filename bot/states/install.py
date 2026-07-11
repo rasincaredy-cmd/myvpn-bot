@@ -38,3 +38,9 @@ class PeerLimitStates(StatesGroup):
 
 class PeerRenameStates(StatesGroup):
     label = State()
+
+
+class WdttStates(StatesGroup):
+    label = State()
+    days = State()
+    platform = State()

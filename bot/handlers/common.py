@@ -13,6 +13,7 @@ from bot.keyboards.inline import (
     back_to_menu,
     main_menu,
     notify_settings_kb,
+    server_card,
 )
 from bot.texts import t
 
@@ -190,7 +191,34 @@ async def cmd_exit(message: Message, state: FSMContext, session: AsyncSession) -
 
 @router.callback_query(F.data == CB_CANCEL)
 async def cb_cancel(call: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    # Если отменяли действие в контексте сервера (создание peer/инвайта/wdtt —
+    # в FSM лежит server_id), возвращаем на карточку сервера, а не в главное меню.
+    data = await state.get_data()
     await state.clear()
+    server_id = data.get("server_id")
+    if server_id is not None:
+        server = await repo.get_server(session, server_id)
+        if server is not None and server.owner_tg_id == call.from_user.id:
+            peers = await repo.list_peers_for_server(session, server.id)
+            error_block = (
+                f"\n<i>Last error:</i> <code>{server.last_error[:200]}</code>"
+                if server.last_error
+                else ""
+            )
+            text = t.server_card.format(
+                name=server.name,
+                host=server.host,
+                wg_port=server.wg_port,
+                status=server.status,
+                peers=len(peers),
+                error_block=error_block,
+            )
+            await call.message.edit_text(
+                text, reply_markup=server_card(server.id, server.wdtt_enabled)
+            )
+            await call.answer("Отменено")
+            return
+
     user = await repo.get_or_create_user(
         session,
         tg_id=call.from_user.id,

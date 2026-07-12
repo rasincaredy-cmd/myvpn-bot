@@ -44,3 +44,14 @@ class WdttStates(StatesGroup):
     label = State()
     days = State()
     platform = State()
+    pick_server = State()
+    pick_device = State()
+
+
+class DeviceStates(StatesGroup):
+    label = State()
+
+
+class SubAdminStates(StatesGroup):
+    set_limit = State()
+    extend_days = State()

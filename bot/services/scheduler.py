@@ -10,7 +10,7 @@ from sqlalchemy import select
 from bot.config import settings
 from bot.db import repo
 from bot.db.base import session_scope
-from bot.db.models import Peer, PeerStatus, Server, WdttAccess
+from bot.db.models import Device, Peer, PeerStatus, Server, User, WdttAccess
 from bot.loader import bot
 from bot.services import amnezia
 from bot.services import wdtt as wdtt_svc
@@ -118,6 +118,57 @@ async def _run_checks() -> None:
                 )
 
         if wdtt_expired:
+            await session.commit()
+
+        # ── 1d. Истечение подписки: отзыв устройств целиком ─────────────────
+        # Подписка — единый гейт: у кого sub_expires_at <= now, отзываем ВСЕ
+        # активные устройства (WG-пиры + доступы обхода) и уведомляем один раз.
+        expired_devs = list((await session.execute(
+            select(Device)
+            .join(User, Device.user_id == User.id)
+            .where(Device.status == PeerStatus.ACTIVE)
+            .where(User.sub_expires_at.isnot(None))
+            .where(User.sub_expires_at <= now)
+        )).scalars())
+
+        notified: set[int] = set()
+        for device in expired_devs:
+            for peer in await repo.list_peers_for_device(session, device.id):
+                if peer.status != PeerStatus.ACTIVE:
+                    continue
+                server = await repo.get_server(session, peer.server_id)
+                if server:
+                    try:
+                        async with SSHClient(repo.creds_from_server(server)) as ssh:
+                            await amnezia.remove_peer_on_server(ssh, public_key=peer.public_key)
+                    except SSHError as exc:
+                        logger.warning("Sub-expiry peer remove err {}: {}", peer.id, exc)
+            for acc in await repo.list_wdtt_for_device(session, device.id):
+                if acc.status != PeerStatus.ACTIVE:
+                    continue
+                server = await repo.get_server(session, acc.server_id)
+                if server:
+                    try:
+                        async with SSHClient(repo.creds_from_server(server)) as ssh:
+                            await wdtt_svc.remove_access(
+                                ssh, password=decrypt(acc.password_enc),
+                                binary=settings.wdtt_binary_path,
+                            )
+                    except SSHError as exc:
+                        logger.warning("Sub-expiry wdtt remove err {}: {}", acc.id, exc)
+            await repo.revoke_device(session, device.id)
+            logger.info("Auto-revoked device {} (sub expired, user {})", device.id, device.user_id)
+            if device.user_id not in notified:
+                notified.add(device.user_id)
+                u = await repo.get_user_by_id(session, device.user_id)
+                if u:
+                    await _notify(
+                        u.tg_id,
+                        "⏱ Подписка истекла — устройства и доступы отозваны. "
+                        "Для продления напиши админу.",
+                    )
+
+        if expired_devs:
             await session.commit()
 
         # ── 1b. Предупреждения о скором истечении ───────────────────────────

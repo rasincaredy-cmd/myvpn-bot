@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     wdtt_vk_hashes: str = ""
     wdtt_binary_path: str = "/usr/local/bin/wdtt-server"
 
+    # Подписка/триал (Блок 9). Новым юзерам авто-выдаём триал.
+    trial_devices: int = 2
+    trial_days: int = 7
+
     @field_validator("admin_ids", mode="before")
     @classmethod
     def _parse_admin_ids(cls, v: object) -> object:

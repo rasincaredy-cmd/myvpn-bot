@@ -40,6 +40,14 @@ async def init_db() -> None:
         # create_all создаёт недостающие таблицы, но не колонки — добираем их.
         await run_migrations(conn)
 
+    # Грандфазер (Блок 9): существующие активные пиры → устройства. Идемпотентно.
+    from loguru import logger
+    from bot.db.repo import backfill_devices
+    async with session_scope() as session:
+        n = await backfill_devices(session)
+    if n:
+        logger.info("Backfill: обёрнуто пиров в устройства: {}", n)
+
 
 @asynccontextmanager
 async def session_scope() -> AsyncIterator[AsyncSession]:

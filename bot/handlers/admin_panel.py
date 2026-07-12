@@ -16,12 +16,15 @@ from bot.filters.admin import AdminFilter
 from bot.keyboards.inline import (
     CB_PANEL,
     admin_panel_menu,
+    admin_sub_kb,
     back_to_panel,
     user_card_kb,
     users_list_kb,
 )
 from bot.loader import bot as tg_bot
-from bot.states.install import BroadcastStates
+from bot.states.install import BroadcastStates, SubAdminStates
+
+from datetime import datetime, timedelta, timezone
 
 router = Router(name="admin_panel")
 router.message.filter(AdminFilter())
@@ -171,6 +174,109 @@ async def cb_panel_toggle_block(call: CallbackQuery, session: AsyncSession) -> N
         reply_markup=user_card_kb(user.id, block, page),
     )
     await call.answer("✅ Готово")
+
+
+# --- Подписка юзера (Блок 9) ------------------------------------------------
+
+def _sub_as_utc(dt: datetime) -> datetime:
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
+async def _render_sub_card(call: CallbackQuery, session: AsyncSession, user, page: int) -> None:
+    used = await repo.count_active_devices(session, user.id)
+    if user.sub_expires_at is None:
+        srok = "бессрочно"
+    else:
+        exp = _sub_as_utc(user.sub_expires_at)
+        active = exp > datetime.now(timezone.utc)
+        srok = f"{'до' if active else 'истекла'} {user.sub_expires_at.strftime('%d.%m.%Y %H:%M')} UTC"
+    await call.message.edit_text(
+        f"🎫 <b>Подписка — {user.full_name or user.tg_id}</b>\n"
+        f"• Устройства: <b>{used}/{user.sub_max_devices}</b>\n"
+        f"• Срок: <b>{srok}</b>",
+        reply_markup=admin_sub_kb(user.id, page),
+    )
+
+
+@router.callback_query(F.data.startswith(f"{CB_PANEL}:sub:"))
+async def cb_panel_sub(call: CallbackQuery, session: AsyncSession) -> None:
+    parts = call.data.split(":")
+    user_id, page = int(parts[2]), int(parts[3])
+    user = await repo.get_user_by_id(session, user_id)
+    if user is None:
+        await call.answer("Не найдено", show_alert=True)
+        return
+    await _render_sub_card(call, session, user, page)
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith(f"{CB_PANEL}:sub_lim:"))
+async def cb_panel_sub_lim(call: CallbackQuery, state: FSMContext) -> None:
+    parts = call.data.split(":")
+    await state.set_state(SubAdminStates.set_limit)
+    await state.update_data(user_id=int(parts[2]), page=int(parts[3]))
+    await call.message.edit_text("📱 Введи новый лимит устройств (0–50):")
+    await call.answer()
+
+
+@router.message(SubAdminStates.set_limit, F.text)
+async def step_sub_limit(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    if not message.text.strip().isdigit() or not (0 <= int(message.text.strip()) <= 50):
+        await message.answer("Нужно число 0–50. Ещё раз:")
+        return
+    data = await state.get_data()
+    await state.clear()
+    await repo.set_subscription(session, data["user_id"], max_devices=int(message.text.strip()))
+    await session.commit()
+    user = await repo.get_user_by_id(session, data["user_id"])
+    await message.answer(
+        f"✅ Лимит устройств: <b>{user.sub_max_devices}</b>",
+        reply_markup=admin_sub_kb(user.id, data["page"]),
+    )
+
+
+@router.callback_query(F.data.startswith(f"{CB_PANEL}:sub_ext:"))
+async def cb_panel_sub_ext(call: CallbackQuery, state: FSMContext) -> None:
+    parts = call.data.split(":")
+    await state.set_state(SubAdminStates.extend_days)
+    await state.update_data(user_id=int(parts[2]), page=int(parts[3]))
+    await call.message.edit_text("📅 На сколько дней продлить подписку? (1–3650):")
+    await call.answer()
+
+
+@router.message(SubAdminStates.extend_days, F.text)
+async def step_sub_extend(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    if not message.text.strip().isdigit() or not (1 <= int(message.text.strip()) <= 3650):
+        await message.answer("Нужно число 1–3650. Ещё раз:")
+        return
+    days = int(message.text.strip())
+    data = await state.get_data()
+    await state.clear()
+    user = await repo.get_user_by_id(session, data["user_id"])
+    now = datetime.now(timezone.utc)
+    base = now
+    if user.sub_expires_at is not None:
+        cur = _sub_as_utc(user.sub_expires_at)
+        base = cur if cur > now else now
+    new_expiry = base + timedelta(days=days)
+    await repo.set_subscription(session, user.id, expires_at=new_expiry, touch_expires=True)
+    await session.commit()
+    await message.answer(
+        f"✅ Продлено до <b>{new_expiry.strftime('%d.%m.%Y %H:%M')} UTC</b>",
+        reply_markup=admin_sub_kb(user.id, data["page"]),
+    )
+
+
+@router.callback_query(F.data.startswith(f"{CB_PANEL}:sub_off:"))
+async def cb_panel_sub_off(call: CallbackQuery, session: AsyncSession) -> None:
+    parts = call.data.split(":")
+    user_id, page = int(parts[2]), int(parts[3])
+    now = datetime.now(timezone.utc)
+    await repo.set_subscription(session, user_id, expires_at=now, touch_expires=True)
+    await session.commit()
+    user = await repo.get_user_by_id(session, user_id)
+    await _render_sub_card(call, session, user, page)
+    await call.answer("Подписка отключена (устройства отзовёт планировщик)")
 
 
 # --- Рассылка ---------------------------------------------------------------

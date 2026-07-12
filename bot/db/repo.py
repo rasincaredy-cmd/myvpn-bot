@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
 from bot.db.models import (
+    Device,
     Invite,
     Peer,
     PeerStatus,
@@ -41,11 +42,15 @@ async def get_or_create_user(
 ) -> User:
     user = (await session.execute(select(User).where(User.tg_id == tg_id))).scalar_one_or_none()
     if user is None:
+        # Авто-триал новым юзерам (Блок 9): лимит устройств + срок из конфига.
         user = User(
             tg_id=tg_id,
             username=username,
             full_name=full_name,
             is_admin=tg_id in settings.admin_ids,
+            sub_max_devices=settings.trial_devices,
+            sub_expires_at=datetime.now(timezone.utc)
+            + timedelta(days=settings.trial_days),
         )
         session.add(user)
         await session.flush()
@@ -243,10 +248,12 @@ async def create_wdtt_access(
     uri_enc: bytes,
     password_enc: bytes,
     expires_at: datetime | None,
+    device_id: int | None = None,
 ) -> WdttAccess:
     access = WdttAccess(
         server_id=server_id,
         user_id=user_id,
+        device_id=device_id,
         label=label,
         uri_enc=uri_enc,
         password_enc=password_enc,
@@ -293,3 +300,115 @@ async def delete_wdtt_access(session: AsyncSession, access_id: int) -> None:
     if access is not None:
         await session.delete(access)
         await session.flush()
+
+
+# --- Devices / Subscription (Блок 9) ------------------------------------------
+
+async def create_device(
+    session: AsyncSession, *, user_id: int, label: str
+) -> Device:
+    device = Device(user_id=user_id, label=label, status=PeerStatus.ACTIVE)
+    session.add(device)
+    await session.flush()
+    return device
+
+
+async def get_device(session: AsyncSession, device_id: int) -> Device | None:
+    return await session.get(Device, device_id)
+
+
+async def list_devices_for_user(
+    session: AsyncSession, user_id: int, *, active_only: bool = False
+) -> list[Device]:
+    stmt = select(Device).where(Device.user_id == user_id)
+    if active_only:
+        stmt = stmt.where(Device.status == PeerStatus.ACTIVE)
+    stmt = stmt.order_by(Device.id)
+    return list((await session.execute(stmt)).scalars())
+
+
+async def count_active_devices(session: AsyncSession, user_id: int) -> int:
+    return (
+        await session.execute(
+            select(func.count(Device.id))
+            .where(Device.user_id == user_id)
+            .where(Device.status == PeerStatus.ACTIVE)
+        )
+    ).scalar() or 0
+
+
+async def revoke_device(session: AsyncSession, device_id: int) -> None:
+    """Отзывает устройство и помечает его пиры/доступы обхода как REVOKED."""
+    now = datetime.now(timezone.utc)
+    await session.execute(
+        update(Device).where(Device.id == device_id).values(status=PeerStatus.REVOKED)
+    )
+    await session.execute(
+        update(Peer)
+        .where(Peer.device_id == device_id)
+        .where(Peer.status == PeerStatus.ACTIVE)
+        .values(status=PeerStatus.REVOKED, revoked_at=now)
+    )
+    await session.execute(
+        update(WdttAccess)
+        .where(WdttAccess.device_id == device_id)
+        .where(WdttAccess.status == PeerStatus.ACTIVE)
+        .values(status=PeerStatus.REVOKED, revoked_at=now)
+    )
+
+
+async def backfill_devices(session: AsyncSession) -> int:
+    """Грандфазер (Блок 9): активные пиры без device_id заворачиваем в устройства.
+    Идемпотентно — берём только device_id IS NULL. Отозванные не трогаем."""
+    peers = list((await session.execute(
+        select(Peer)
+        .where(Peer.device_id.is_(None))
+        .where(Peer.status == PeerStatus.ACTIVE)
+    )).scalars())
+    for p in peers:
+        device = Device(user_id=p.user_id, label=p.label, status=PeerStatus.ACTIVE)
+        session.add(device)
+        await session.flush()
+        p.device_id = device.id
+    return len(peers)
+
+
+async def list_peers_for_device(session: AsyncSession, device_id: int) -> list[Peer]:
+    return list(
+        (await session.execute(
+            select(Peer).where(Peer.device_id == device_id).order_by(Peer.id)
+        )).scalars()
+    )
+
+
+async def list_wdtt_for_device(
+    session: AsyncSession, device_id: int
+) -> list[WdttAccess]:
+    return list(
+        (await session.execute(
+            select(WdttAccess)
+            .where(WdttAccess.device_id == device_id)
+            .order_by(WdttAccess.id)
+        )).scalars()
+    )
+
+
+async def set_subscription(
+    session: AsyncSession,
+    user_id: int,
+    *,
+    max_devices: int | None = None,
+    expires_at: datetime | None = None,
+    touch_expires: bool = False,
+) -> None:
+    """Обновляет подписку юзера. expires_at меняется только если touch_expires=True
+    (иначе None трактовался бы как «снять срок»)."""
+    values: dict = {}
+    if max_devices is not None:
+        values["sub_max_devices"] = max_devices
+    if touch_expires:
+        values["sub_expires_at"] = expires_at
+    if values:
+        await session.execute(
+            update(User).where(User.id == user_id).values(**values)
+        )

@@ -61,6 +61,9 @@ async def _create_peer_for_user(
     server: Server,
     user: User,
     label: str,
+    *,
+    device_id: int | None = None,
+    expires_at: "datetime | None" = None,
 ) -> tuple[str, str, str]:
     """Создаёт peer на сервере и в БД. Возвращает (conf, ip, label).
 
@@ -86,11 +89,13 @@ async def _create_peer_for_user(
             peer = Peer(
                 server_id=server.id,
                 user_id=user.id,
+                device_id=device_id,
                 label=label,
                 ip=ip,
                 public_key=keys.public_key,
                 private_key_enc=encrypt(keys.private_key),
                 status=PeerStatus.ACTIVE,
+                expires_at=expires_at,
             )
             session.add(peer)
             await session.flush()
@@ -321,8 +326,11 @@ async def step_peer_label(
     await state.clear()
 
     status_msg = await message.answer("⏳ Создаю peer на сервере...")
+    device = await repo.create_device(session, user_id=user.id, label=label)
     try:
-        conf, ip, _ = await _create_peer_for_user(session, server, user, label)
+        conf, ip, _ = await _create_peer_for_user(
+            session, server, user, label, device_id=device.id
+        )
         await session.commit()
     except SSHError as exc:
         await session.rollback()
@@ -585,8 +593,11 @@ async def redeem_invite(
     )
 
     label = invite.label or f"tg-{user.tg_id}"
+    device = await repo.create_device(session, user_id=user.id, label=label)
     try:
-        conf, ip, _ = await _create_peer_for_user(session, server, user, label)
+        conf, ip, _ = await _create_peer_for_user(
+            session, server, user, label, device_id=device.id
+        )
         await repo.mark_invite_used(session, invite, user.tg_id)
         await session.commit()
     except SSHError as exc:

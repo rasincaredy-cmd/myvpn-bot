@@ -48,6 +48,16 @@ class User(Base):
         DateTime(timezone=True), server_default=func.now()
     )
 
+    # --- Подписка (Блок 9) ---
+    # Лимит устройств у юзера. server_default="2" → существующие юзеры при миграции
+    # получают 2 (грандфазер). Новым ставим триал в get_or_create_user.
+    sub_max_devices: Mapped[int] = mapped_column(
+        Integer, default=2, server_default="2", nullable=False
+    )
+    # Срок подписки. NULL = без ограничения по времени (грандфазер/бессрочно).
+    # Прокидывается в expires_at пиров/доступов, чтобы переиспользовать авто-отзыв.
+    sub_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
     peers: Mapped[list["Peer"]] = relationship(back_populates="user")
 
 
@@ -117,6 +127,10 @@ class Peer(Base):
     user_id: Mapped[int] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), index=True
     )
+    # Устройство, к которому относится пир (Блок 9). NULL — легаси-пиры до миграции.
+    device_id: Mapped[int | None] = mapped_column(
+        ForeignKey("devices.id", ondelete="SET NULL"), index=True
+    )
 
     label: Mapped[str] = mapped_column(String(64))
     ip: Mapped[str] = mapped_column(String(64))
@@ -152,6 +166,27 @@ class Peer(Base):
 
     server: Mapped[Server] = relationship(back_populates="peers")
     user: Mapped[User] = relationship(back_populates="peers")
+
+
+class Device(Base):
+    """Устройство пользователя (Блок 9) — единица, которую лимитирует подписка.
+
+    Группирует конфиги: сейчас (1 сервер) это один WG-пир; при мультилокации —
+    по пиру на локацию. Доступы обхода БС (WdttAccess) привязываются к устройству
+    отдельно, по кнопке, с выбором сервера.
+    """
+
+    __tablename__ = "devices"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    label: Mapped[str] = mapped_column(String(64))
+    status: Mapped[PeerStatus] = mapped_column(String(16), default=PeerStatus.ACTIVE)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
 
 
 class Invite(Base):
@@ -190,6 +225,10 @@ class WdttAccess(Base):
     )
     user_id: Mapped[int] = mapped_column(
         ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    # Устройство, к которому привязан доступ обхода (Блок 9). NULL — легаси.
+    device_id: Mapped[int | None] = mapped_column(
+        ForeignKey("devices.id", ondelete="SET NULL"), index=True
     )
     label: Mapped[str] = mapped_column(String(64))
 

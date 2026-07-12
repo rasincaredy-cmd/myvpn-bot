@@ -15,6 +15,8 @@ CB_INVITES = "inv"
 CB_ADMIN = "adm"          # admin-панель: управление пирами любого юзера
 CB_PANEL = "pnl"   # admin-панель
 CB_WDTT = "wdtt"   # обход белых списков (wdtt / proxy-turn-vk)
+CB_DEVICE = "dev"  # устройства (Блок 9)
+CB_SUB = "sub"     # подписка (Блок 9)
 CB_NOP = "nop"
 CB_CANCEL = "cancel"
 
@@ -23,8 +25,9 @@ CB_CANCEL = "cancel"
 
 def main_menu(is_admin: bool) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-    kb.button(text="📁 Мои конфиги", callback_data=f"{CB_PEERS}:list")
+    kb.button(text="📱 Мои устройства", callback_data=f"{CB_DEVICE}:list")
     kb.button(text="🛡 Обход БС", callback_data=f"{CB_WDTT}:my")
+    kb.button(text="🎫 Моя подписка", callback_data=f"{CB_SUB}:my")
     kb.button(text="🌍 Локации", callback_data=f"{CB_MENU}:locations")
     if is_admin:
         kb.button(text="🛠 Установить VPN на VPS", callback_data=f"{CB_INSTALL}:start")
@@ -93,19 +96,14 @@ def server_card(server_id: int, wdtt_enabled: bool = False) -> InlineKeyboardMar
     kb.button(text="📋 Инвайты",       callback_data=f"{CB_INVITES}:list:{server_id}")
     kb.button(text="📊 Трафик",        callback_data=f"{CB_SERVERS}:traffic:{server_id}")
     kb.button(text="🖥 Состояние",     callback_data=f"{CB_SERVERS}:stats:{server_id}")
-    singles = 0
-    if wdtt_enabled:
-        kb.button(text="🛡 Создать доступ обхода", callback_data=f"{CB_WDTT}:new:{server_id}")
-        kb.button(text="🛡 Доступы обхода",        callback_data=f"{CB_WDTT}:list:{server_id}")
-        singles += 2
+    # Тумблер доступности обхода БС на сервере (выдачу юзеры делают сами).
     kb.button(
         text="🛡 Обход БС: ВКЛ" if wdtt_enabled else "🛡 Обход БС: выкл",
         callback_data=f"{CB_WDTT}:toggle:{server_id}",
     )
     kb.button(text="🗑 Удалить", callback_data=f"{CB_SERVERS}:del:{server_id}")
     kb.button(text="« К списку", callback_data=f"{CB_SERVERS}:list")
-    singles += 3
-    kb.adjust(2, 2, 2, *([1] * singles))
+    kb.adjust(2, 2, 2, 1, 1, 1)
     return kb.as_markup()
 
 
@@ -312,6 +310,7 @@ def user_card_kb(user_id: int, is_blocked: bool, page: int) -> InlineKeyboardMar
         kb.button(text="✅ Разблокировать", callback_data=f"{CB_PANEL}:unblock:{user_id}:{page}")
     else:
         kb.button(text="🚫 Заблокировать",  callback_data=f"{CB_PANEL}:block:{user_id}:{page}")
+    kb.button(text="🎫 Подписка", callback_data=f"{CB_PANEL}:sub:{user_id}:{page}")
     kb.button(text="« К списку", callback_data=f"{CB_PANEL}:users:{page}")
     kb.adjust(1)
     return kb.as_markup()
@@ -329,6 +328,61 @@ def to_server(server_id: int) -> InlineKeyboardMarkup:
     """Кнопка возврата на карточку сервера (после создания peer/инвайта)."""
     kb = InlineKeyboardBuilder()
     kb.button(text="« К серверу", callback_data=f"{CB_SERVERS}:open:{server_id}")
+    return kb.as_markup()
+
+
+# --- Устройства + подписка (Блок 9) ------------------------------------------
+
+def devices_list_kb(
+    rows: list[tuple[int, str, str]],  # (device_id, mark, label) — срез страницы
+    used: int,
+    limit: int,
+    can_add: bool,
+    page: int = 0,
+    has_prev: bool = False,
+    has_next: bool = False,
+) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    for device_id, mark, label in rows:
+        kb.button(text=f"{mark} {label}", callback_data=f"{CB_DEVICE}:open:{device_id}")
+    if can_add:
+        kb.button(text=f"➕ Добавить устройство ({used}/{limit})", callback_data=f"{CB_DEVICE}:add")
+    if has_prev:
+        kb.button(text="← Назад",  callback_data=f"{CB_DEVICE}:list:{page - 1}")
+    if has_next:
+        kb.button(text="Вперёд →", callback_data=f"{CB_DEVICE}:list:{page + 1}")
+    kb.button(text="🎫 Подписка", callback_data=f"{CB_SUB}:my")
+    kb.button(text="« В меню", callback_data=f"{CB_MENU}:open")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def device_card_kb(device_id: int, can_get: bool, can_revoke: bool) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    if can_get:
+        kb.button(text="📥 Получить конфиг", callback_data=f"{CB_DEVICE}:send:{device_id}")
+    if can_revoke:
+        kb.button(text="🗑 Удалить устройство", callback_data=f"{CB_DEVICE}:revoke:{device_id}")
+    kb.button(text="« К устройствам", callback_data=f"{CB_DEVICE}:list")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def subscription_kb(has_devices_slot: bool) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="📱 Мои устройства", callback_data=f"{CB_DEVICE}:list")
+    kb.button(text="« В меню", callback_data=f"{CB_MENU}:open")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def admin_sub_kb(user_id: int, page: int) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="📱 Лимит устройств", callback_data=f"{CB_PANEL}:sub_lim:{user_id}:{page}")
+    kb.button(text="📅 Продлить срок",   callback_data=f"{CB_PANEL}:sub_ext:{user_id}:{page}")
+    kb.button(text="🚫 Отключить (срок в 0)", callback_data=f"{CB_PANEL}:sub_off:{user_id}:{page}")
+    kb.button(text="« К пользователю",   callback_data=f"{CB_PANEL}:user:{user_id}:{page}")
+    kb.adjust(1)
     return kb.as_markup()
 
 
@@ -385,6 +439,7 @@ def wdtt_card_kb(access_id: int, server_id: int, can_revoke: bool) -> InlineKeyb
 
 def wdtt_user_list_kb(
     rows: list[tuple[int, str, str, str]],  # (access_id, mark, label, server_name)
+    can_create: bool = True,
     page: int = 0,
     has_prev: bool = False,
     has_next: bool = False,
@@ -395,6 +450,8 @@ def wdtt_user_list_kb(
             text=f"{mark} {label} @ {server_name}",
             callback_data=f"{CB_WDTT}:myopen:{access_id}",
         )
+    if can_create:
+        kb.button(text="➕ Создать доступ обхода", callback_data=f"{CB_WDTT}:new")
     if has_prev:
         kb.button(text="← Назад",  callback_data=f"{CB_WDTT}:my:{page - 1}")
     if has_next:
@@ -408,6 +465,17 @@ def wdtt_user_card_kb(access_id: int, can_get: bool) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     if can_get:
         kb.button(text="🔗 Получить ссылку", callback_data=f"{CB_WDTT}:mylink:{access_id}")
+        kb.button(text="🗑 Удалить", callback_data=f"{CB_WDTT}:myrevoke:{access_id}")
     kb.button(text="« К списку", callback_data=f"{CB_WDTT}:my")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def wdtt_pick_device_kb(devices: list[tuple[int, str]]) -> InlineKeyboardMarkup:
+    """devices: (device_id, label). Выбор устройства, под которое создаётся обход."""
+    kb = InlineKeyboardBuilder()
+    for device_id, label in devices:
+        kb.button(text=f"📱 {label}", callback_data=f"{CB_WDTT}:dev:{device_id}")
+    kb.button(text="✖️ Отмена", callback_data=CB_CANCEL)
     kb.adjust(1)
     return kb.as_markup()

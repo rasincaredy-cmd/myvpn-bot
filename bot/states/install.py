@@ -5,6 +5,7 @@ from aiogram.fsm.state import State, StatesGroup
 
 class InstallStates(StatesGroup):
     name = State()
+    location = State()
     host = State()
     ssh_port = State()
     ssh_user = State()
@@ -31,13 +32,12 @@ class BroadcastStates(StatesGroup):
     confirm = State()
 
 
-class PeerLimitStates(StatesGroup):
-    set_expires = State()
-    set_traffic = State()
-
-
 class PeerRenameStates(StatesGroup):
     label = State()
+
+
+class ServerEditStates(StatesGroup):
+    location = State()
 
 
 class WdttStates(StatesGroup):
@@ -55,3 +55,4 @@ class DeviceStates(StatesGroup):
 class SubAdminStates(StatesGroup):
     set_limit = State()
     extend_days = State()
+    set_traffic = State()

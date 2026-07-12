@@ -5,10 +5,9 @@ import contextlib
 from datetime import datetime, timezone          # ← новое
 
 from aiogram.fsm.context import FSMContext
-from bot.keyboards.inline import peer_limits_kb
 from bot.services.crypto import decrypt
-from bot.states.install import PeerLimitStates, PeerRenameStates
-from bot.utils.validators import is_valid_label, parse_expiry, parse_traffic_limit
+from bot.states.install import PeerRenameStates, ServerEditStates
+from bot.utils.validators import is_valid_label
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import BufferedInputFile
@@ -48,7 +47,7 @@ _PEERS_PER_PAGE = 8
 
 @router.callback_query(F.data == f"{CB_SERVERS}:list")
 async def cb_servers_list(call: CallbackQuery, session: AsyncSession) -> None:
-    servers = await repo.list_servers_for_owner(session, call.from_user.id)
+    servers = await repo.list_all_servers(session)
     if not servers:
         await call.message.edit_text(t.servers_empty, reply_markup=back_to_menu())
         await call.answer()
@@ -66,7 +65,7 @@ async def cb_servers_list(call: CallbackQuery, session: AsyncSession) -> None:
 async def cb_server_open(call: CallbackQuery, session: AsyncSession) -> None:
     server_id = int(call.data.rsplit(":", 1)[-1])
     server = await repo.get_server(session, server_id)
-    if server is None or server.owner_tg_id != call.from_user.id:
+    if server is None:
         await call.answer("Не найдено", show_alert=True)
         return
     peers = await repo.list_peers_for_server(session, server.id)
@@ -83,8 +82,56 @@ async def cb_server_open(call: CallbackQuery, session: AsyncSession) -> None:
         peers=len(peers),
         error_block=error_block,
     )
+    text += f"\n🌍 Локация: {server.location or '—'}"
     await call.message.edit_text(text, reply_markup=server_card(server.id, server.wdtt_enabled))
     await call.answer()
+
+
+# --- Локация сервера (Блок 8) ------------------------------------------------
+
+@router.callback_query(F.data.startswith(f"{CB_SERVERS}:loc:"))
+async def cb_server_location(
+    call: CallbackQuery, session: AsyncSession, state: FSMContext
+) -> None:
+    server_id = int(call.data.rsplit(":", 1)[-1])
+    server = await repo.get_server(session, server_id)
+    if server is None:
+        await call.answer("Не найдено", show_alert=True)
+        return
+    await state.set_state(ServerEditStates.location)
+    await state.update_data(server_id=server_id)
+    from aiogram.utils.keyboard import InlineKeyboardBuilder as IKB
+    kb = IKB()
+    kb.button(text="✖️ Отмена", callback_data=f"{CB_SERVERS}:open:{server_id}")
+    await call.message.edit_text(
+        "🌍 <b>Локация сервера</b>\n\n"
+        f"Текущая: {server.location or '—'}\n\n"
+        "Введи страну с флагом (напр. <code>🇩🇪 Германия</code>). "
+        "Отправь <code>-</code>, чтобы очистить.",
+        reply_markup=kb.as_markup(),
+    )
+    await call.answer()
+
+
+@router.message(ServerEditStates.location, F.text, AdminFilter())
+async def step_server_location(
+    message: Message, state: FSMContext, session: AsyncSession
+) -> None:
+    raw = message.text.strip()
+    data = await state.get_data()
+    await state.clear()
+    server = await repo.get_server(session, data["server_id"])
+    if server is None:
+        await message.answer("Сервер не найден.")
+        return
+    server.location = None if raw == "-" else raw[:64]
+    await session.commit()
+    from aiogram.utils.keyboard import InlineKeyboardBuilder as IKB
+    kb = IKB()
+    kb.button(text="« К серверу", callback_data=f"{CB_SERVERS}:open:{server.id}")
+    await message.answer(
+        f"✅ Локация: {server.location or '—'}", reply_markup=kb.as_markup()
+    )
 
 
 # --- Удаление сервера --------------------------------------------------------
@@ -93,7 +140,7 @@ async def cb_server_open(call: CallbackQuery, session: AsyncSession) -> None:
 async def cb_server_del_ask(call: CallbackQuery, session: AsyncSession) -> None:
     server_id = int(call.data.rsplit(":", 1)[-1])
     server = await repo.get_server(session, server_id)
-    if server is None or server.owner_tg_id != call.from_user.id:
+    if server is None:
         await call.answer("Не найдено", show_alert=True)
         return
     await call.message.edit_text(
@@ -107,7 +154,7 @@ async def cb_server_del_ask(call: CallbackQuery, session: AsyncSession) -> None:
 async def cb_server_del_ok(call: CallbackQuery, session: AsyncSession) -> None:
     server_id = int(call.data.rsplit(":", 1)[-1])
     server = await repo.get_server(session, server_id)
-    if server is None or server.owner_tg_id != call.from_user.id:
+    if server is None:
         await call.answer("Не найдено", show_alert=True)
         return
 
@@ -157,7 +204,7 @@ async def cb_server_peers(call: CallbackQuery, session: AsyncSession) -> None:
     page = int(parts[3]) if len(parts) > 3 else 0
 
     server = await repo.get_server(session, server_id)
-    if server is None or server.owner_tg_id != call.from_user.id:
+    if server is None:
         await call.answer("Не найдено", show_alert=True)
         return
     peers = await repo.list_peers_for_server(session, server.id)
@@ -201,7 +248,7 @@ async def cb_admin_peer_open(
         await call.answer("Не найдено", show_alert=True)
         return
     server = await repo.get_server(session, peer.server_id)
-    if server is None or server.owner_tg_id != call.from_user.id:
+    if server is None:
         await call.answer("Нет доступа", show_alert=True)
         return
 
@@ -250,7 +297,7 @@ async def cb_admin_peer_rename(
         await call.answer("Не найдено", show_alert=True)
         return
     server = await repo.get_server(session, peer.server_id)
-    if server is None or server.owner_tg_id != call.from_user.id:
+    if server is None:
         await call.answer("Нет доступа", show_alert=True)
         return
 
@@ -305,7 +352,7 @@ async def step_peer_rename(
 async def cb_server_traffic(call: CallbackQuery, session: AsyncSession) -> None:
     server_id = int(call.data.rsplit(":", 1)[-1])
     server = await repo.get_server(session, server_id)
-    if server is None or server.owner_tg_id != call.from_user.id:
+    if server is None:
         await call.answer("Не найдено", show_alert=True)
         return
 
@@ -389,7 +436,7 @@ async def cb_server_traffic(call: CallbackQuery, session: AsyncSession) -> None:
 async def cb_server_stats(call: CallbackQuery, session: AsyncSession) -> None:
     server_id = int(call.data.rsplit(":", 1)[-1])
     server = await repo.get_server(session, server_id)
-    if server is None or server.owner_tg_id != call.from_user.id:
+    if server is None:
         await call.answer("Не найдено", show_alert=True)
         return
 
@@ -428,7 +475,7 @@ async def cb_admin_peer_revoke(call: CallbackQuery, session: AsyncSession) -> No
         await call.answer("Не найдено", show_alert=True)
         return
     server = await repo.get_server(session, peer.server_id)
-    if server is None or server.owner_tg_id != call.from_user.id:
+    if server is None:
         await call.answer("Нет доступа", show_alert=True)
         return
 
@@ -460,7 +507,7 @@ async def cb_admin_peer_revive(call: CallbackQuery, session: AsyncSession) -> No
         await call.answer("Не найдено", show_alert=True)
         return
     server = await repo.get_server(session, peer.server_id)
-    if server is None or server.owner_tg_id != call.from_user.id:
+    if server is None:
         await call.answer("Нет доступа", show_alert=True)
         return
 
@@ -493,7 +540,7 @@ async def cb_admin_peer_delete(call: CallbackQuery, session: AsyncSession) -> No
         await call.answer("Не найдено", show_alert=True)
         return
     server = await repo.get_server(session, peer.server_id)
-    if server is None or server.owner_tg_id != call.from_user.id:
+    if server is None:
         await call.answer("Нет доступа", show_alert=True)
         return
     if peer.status == PeerStatus.ACTIVE:
@@ -525,7 +572,7 @@ async def cb_admin_peer_conf(call: CallbackQuery, session: AsyncSession) -> None
         await call.answer("Не найдено", show_alert=True)
         return
     server = await repo.get_server(session, peer.server_id)
-    if server is None or server.owner_tg_id != call.from_user.id:
+    if server is None:
         await call.answer("Нет доступа", show_alert=True)
         return
     if peer.status != PeerStatus.ACTIVE:
@@ -562,7 +609,7 @@ async def cb_admin_peer_conf(call: CallbackQuery, session: AsyncSession) -> None
 async def cb_server_cleanup(call: CallbackQuery, session: AsyncSession) -> None:
     server_id = int(call.data.rsplit(":", 1)[-1])
     server = await repo.get_server(session, server_id)
-    if server is None or server.owner_tg_id != call.from_user.id:
+    if server is None:
         await call.answer("Не найдено", show_alert=True)
         return
 
@@ -609,159 +656,5 @@ async def cb_server_cleanup(call: CallbackQuery, session: AsyncSession) -> None:
     await call.message.edit_text(result, reply_markup=traffic_nav(server_id))
 
 
-# --- Лимиты пира ------------------------------------------------------------
-
-@router.callback_query(F.data.startswith(f"{CB_ADMIN}:limits:"))
-async def cb_admin_peer_limits(
-    call: CallbackQuery, session: AsyncSession, state: FSMContext
-) -> None:
-    await state.clear()
-    peer_id = int(call.data.rsplit(":", 1)[-1])
-    peer = await repo.get_peer(session, peer_id)
-    if peer is None:
-        await call.answer("Не найдено", show_alert=True)
-        return
-    server = await repo.get_server(session, peer.server_id)
-    if server is None or server.owner_tg_id != call.from_user.id:
-        await call.answer("Нет доступа", show_alert=True)
-        return
-
-    has_limits = bool(peer.expires_at or peer.traffic_limit_bytes)
-    lines = [f"⚙️ <b>Лимиты — {peer.label}</b>\n"]
-    lines.append(
-        f"• Срок: {peer.expires_at.strftime('%d.%m.%Y %H:%M') + ' UTC' if peer.expires_at else '—'}"
-    )
-    lines.append(
-        f"• Трафик: {amnezia.fmt_bytes(peer.traffic_limit_bytes) if peer.traffic_limit_bytes else '—'}"
-    )
-    await call.message.edit_text(
-        "\n".join(lines), reply_markup=peer_limits_kb(peer_id, has_limits)
-    )
-    await call.answer()
-
-
-@router.callback_query(F.data.startswith(f"{CB_ADMIN}:set_exp:"))
-async def cb_admin_set_exp(call: CallbackQuery, state: FSMContext) -> None:
-    peer_id = int(call.data.rsplit(":", 1)[-1])
-    await state.set_state(PeerLimitStates.set_expires)
-    await state.update_data(peer_id=peer_id)
-    from aiogram.utils.keyboard import InlineKeyboardBuilder as IKB
-    kb = IKB()
-    kb.button(text="✖️ Отмена", callback_data=f"{CB_ADMIN}:limits:{peer_id}")
-    await call.message.edit_text(
-        "📅 <b>Срок действия</b>\n\n"
-        "Введи дату <code>ДД.ММ.ГГГГ</code> или период <code>Nд</code> "
-        "(например <code>30д</code>).\n"
-        "Можно добавить время <code>ЧЧ:ММ</code> в конце — например "
-        "<code>30д 18:00</code> или <code>31.12.2025 09:30</code>. "
-        "Без времени: период — от текущего момента, дата — на 23:59 UTC.\n"
-        "Отправь <code>-</code>, чтобы убрать срок.",
-        reply_markup=kb.as_markup(),
-    )
-    await call.answer()
-
-
-@router.message(PeerLimitStates.set_expires, F.text, AdminFilter())
-async def step_peer_expiry(
-    message: Message, state: FSMContext, session: AsyncSession
-) -> None:
-    result = parse_expiry(message.text.strip())
-    if result == "invalid":
-        await message.answer(
-            "Не понял формат. Примеры: <code>30д</code>, <code>30д 18:00</code>, "
-            "<code>31.12.2025</code>, <code>31.12.2025 09:30</code>, <code>-</code>"
-        )
-        return
-
-    data = await state.get_data()
-    peer_id = data["peer_id"]
-    await state.clear()
-
-    peer = await repo.get_peer(session, peer_id)
-    if peer is None:
-        await message.answer("Пир не найден.")
-        return
-    peer.expires_at = result
-    peer.expiry_warn_flags = 0  # новый срок → предупреждаем заново
-    await session.commit()
-
-    msg = (
-        f"✅ Срок установлен: <b>{result.strftime('%d.%m.%Y %H:%M')} UTC</b>"
-        if result else "✅ Срок сброшен."
-    )
-    from aiogram.utils.keyboard import InlineKeyboardBuilder as IKB
-    kb = IKB()
-    kb.button(text="« К лимитам", callback_data=f"{CB_ADMIN}:limits:{peer_id}")
-    await message.answer(msg, reply_markup=kb.as_markup())
-
-
-@router.callback_query(F.data.startswith(f"{CB_ADMIN}:set_trf:"))
-async def cb_admin_set_trf(call: CallbackQuery, state: FSMContext) -> None:
-    peer_id = int(call.data.rsplit(":", 1)[-1])
-    await state.set_state(PeerLimitStates.set_traffic)
-    await state.update_data(peer_id=peer_id)
-    from aiogram.utils.keyboard import InlineKeyboardBuilder as IKB
-    kb = IKB()
-    kb.button(text="✖️ Отмена", callback_data=f"{CB_ADMIN}:limits:{peer_id}")
-    await call.message.edit_text(
-        "📊 <b>Лимит трафика</b>\n\n"
-        "Введи лимит: <code>10GB</code>, <code>500MB</code>, <code>1TB</code>.\n"
-        "Отправь <code>-</code>, чтобы убрать лимит.",
-        reply_markup=kb.as_markup(),
-    )
-    await call.answer()
-
-
-@router.message(PeerLimitStates.set_traffic, F.text, AdminFilter())
-async def step_peer_traffic(
-    message: Message, state: FSMContext, session: AsyncSession
-) -> None:
-    result = parse_traffic_limit(message.text.strip())
-    if result == "invalid":
-        await message.answer(
-            "Не понял формат. Примеры: <code>10GB</code>, <code>500MB</code>, <code>1TB</code>, <code>-</code>"
-        )
-        return
-
-    data = await state.get_data()
-    peer_id = data["peer_id"]
-    await state.clear()
-
-    peer = await repo.get_peer(session, peer_id)
-    if peer is None:
-        await message.answer("Пир не найден.")
-        return
-    peer.traffic_limit_bytes = result
-    await session.commit()
-
-    msg = (
-        f"✅ Лимит трафика установлен: <b>{amnezia.fmt_bytes(result)}</b>"
-        if result else "✅ Лимит трафика сброшен."
-    )
-    from aiogram.utils.keyboard import InlineKeyboardBuilder as IKB
-    kb = IKB()
-    kb.button(text="« К лимитам", callback_data=f"{CB_ADMIN}:limits:{peer_id}")
-    await message.answer(msg, reply_markup=kb.as_markup())
-
-
-@router.callback_query(F.data.startswith(f"{CB_ADMIN}:clr_lim:"))
-async def cb_admin_clear_limits(call: CallbackQuery, session: AsyncSession) -> None:
-    peer_id = int(call.data.rsplit(":", 1)[-1])
-    peer = await repo.get_peer(session, peer_id)
-    if peer is None:
-        await call.answer("Не найдено", show_alert=True)
-        return
-    server = await repo.get_server(session, peer.server_id)
-    if server is None or server.owner_tg_id != call.from_user.id:
-        await call.answer("Нет доступа", show_alert=True)
-        return
-
-    peer.expires_at = None
-    peer.traffic_limit_bytes = None
-    await session.commit()
-
-    await call.message.edit_text(
-        f"✅ Лимиты для <b>{peer.label}</b> сброшены.",
-        reply_markup=peer_limits_kb(peer_id, has_limits=False),
-    )
-    await call.answer()
+# Индивидуальные лимиты пира (срок/трафик) убраны: единый гейт — подписка юзера
+# (срок + лимит трафика на подписку). См. handlers/admin_panel.py и scheduler.py.

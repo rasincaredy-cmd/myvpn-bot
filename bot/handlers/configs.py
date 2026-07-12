@@ -113,6 +113,38 @@ async def _create_peer_for_user(
     return conf, ip, label
 
 
+async def provision_device_peers(
+    session: AsyncSession, user: User, device: "object"
+) -> list[tuple[Server, str]]:
+    """Создаёт по одному WG-пиру на КАЖДОЙ READY-локации, где у устройства ещё нет
+    активного пира (Блок 8: устройство = группа конфигов по странам). Best-effort —
+    упавшую локацию пропускаем, дозакинем при следующем открытии устройства.
+    Возвращает [(server, conf), ...] для отправки пользователю."""
+    servers = await repo.list_ready_servers(session)
+    existing = {
+        p.server_id
+        for p in await repo.list_peers_for_device(session, device.id)
+        if p.status == PeerStatus.ACTIVE
+    }
+    made: list[tuple[Server, str]] = []
+    for server in servers:
+        if server.id in existing:
+            continue
+        try:
+            conf, _ip, _ = await _create_peer_for_user(
+                session, server, user, device.label,
+                device_id=device.id, expires_at=None,
+            )
+        except SSHError as exc:
+            logger.warning("Device {} provision on server {} failed: {}", device.id, server.id, exc)
+            continue
+        except Exception:
+            logger.exception("Device {} provision on server {} crashed", device.id, server.id)
+            continue
+        made.append((server, conf))
+    return made
+
+
 async def _send_peer_artifacts(
     chat_id: int,
     server_name: str,
@@ -258,7 +290,7 @@ async def cb_peer_new(
     event: Message | CallbackQuery, state: FSMContext, session: AsyncSession
 ) -> None:
     msg = event.message if isinstance(event, CallbackQuery) else event
-    servers = await repo.list_servers_for_owner(session, event.from_user.id)
+    servers = await repo.list_all_servers(session)
     ready = [s for s in servers if s.status == ServerStatus.READY]
     if not ready:
         await msg.answer("Нет готовых серверов. Сначала установи VPN.", reply_markup=back_to_menu())
@@ -281,7 +313,7 @@ async def cb_peer_new_for_server(
     """Прямой переход «создать peer» с карточки конкретного сервера."""
     server_id = int(call.data.rsplit(":", 1)[-1])
     server = await repo.get_server(session, server_id)
-    if server is None or server.owner_tg_id != call.from_user.id or server.status != ServerStatus.READY:
+    if server is None or server.status != ServerStatus.READY:
         await call.answer("Сервер недоступен", show_alert=True)
         return
     await state.set_state(PeerStates.label)
@@ -296,7 +328,7 @@ async def cb_peer_pick(
 ) -> None:
     server_id = int(call.data.rsplit(":", 1)[-1])
     server = await repo.get_server(session, server_id)
-    if server is None or server.owner_tg_id != call.from_user.id:
+    if server is None:
         await call.answer("Не найдено", show_alert=True)
         return
     await state.update_data(server_id=server_id)
@@ -361,7 +393,7 @@ async def cb_invite_new(
     event: Message | CallbackQuery, state: FSMContext, session: AsyncSession
 ) -> None:
     msg = event.message if isinstance(event, CallbackQuery) else event
-    servers = await repo.list_servers_for_owner(session, event.from_user.id)
+    servers = await repo.list_all_servers(session)
     ready = [s for s in servers if s.status == ServerStatus.READY]
     if not ready:
         await msg.answer("Нет готовых серверов.", reply_markup=back_to_menu())
@@ -383,7 +415,7 @@ async def cb_invite_new_for_server(
 ) -> None:
     server_id = int(call.data.rsplit(":", 1)[-1])
     server = await repo.get_server(session, server_id)
-    if server is None or server.owner_tg_id != call.from_user.id or server.status != ServerStatus.READY:
+    if server is None or server.status != ServerStatus.READY:
         await call.answer("Сервер недоступен", show_alert=True)
         return
     await state.set_state(InviteStates.label)
@@ -408,7 +440,7 @@ async def cb_invites_list(call: CallbackQuery, session: AsyncSession) -> None:
     server_id = int(parts[2])
     page = int(parts[3]) if len(parts) > 3 else 0
     server = await repo.get_server(session, server_id)
-    if server is None or server.owner_tg_id != call.from_user.id:
+    if server is None:
         await call.answer("Не найдено", show_alert=True)
         return
 
@@ -454,7 +486,7 @@ async def cb_invite_open(call: CallbackQuery, session: AsyncSession) -> None:
         await call.answer("Не найдено", show_alert=True)
         return
     server = await repo.get_server(session, invite.server_id)
-    if server is None or server.owner_tg_id != call.from_user.id:
+    if server is None:
         await call.answer("Нет доступа", show_alert=True)
         return
 
@@ -503,7 +535,7 @@ async def cb_invite_delete(call: CallbackQuery, session: AsyncSession) -> None:
         await call.answer("Не найдено", show_alert=True)
         return
     server = await repo.get_server(session, invite.server_id)
-    if server is None or server.owner_tg_id != call.from_user.id:
+    if server is None:
         await call.answer("Нет доступа", show_alert=True)
         return
 
@@ -632,7 +664,7 @@ async def cb_peer_revoke(call: CallbackQuery, session: AsyncSession) -> None:
         return
     server = await repo.get_server(session, peer.server_id)
     # Отзывать пир может только владелец сервера — как в остальных хендлерах.
-    if server is None or server.owner_tg_id != call.from_user.id:
+    if server is None:
         await call.answer("Нет доступа", show_alert=True)
         return
     try:

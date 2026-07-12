@@ -40,6 +40,8 @@ class Settings(BaseSettings):
     # Подписка/триал (Блок 9). Новым юзерам авто-выдаём триал.
     trial_devices: int = 2
     trial_days: int = 7
+    # Лимит трафика триала в ГБ на подписку (0 = безлимит).
+    trial_traffic_gb: int = 0
 
     @field_validator("admin_ids", mode="before")
     @classmethod

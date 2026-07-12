@@ -22,7 +22,9 @@ from bot.keyboards.inline import (
     users_list_kb,
 )
 from bot.loader import bot as tg_bot
+from bot.services import amnezia
 from bot.states.install import BroadcastStates, SubAdminStates
+from bot.utils.validators import parse_traffic_limit
 
 from datetime import datetime, timedelta, timezone
 
@@ -190,10 +192,19 @@ async def _render_sub_card(call: CallbackQuery, session: AsyncSession, user, pag
         exp = _sub_as_utc(user.sub_expires_at)
         active = exp > datetime.now(timezone.utc)
         srok = f"{'до' if active else 'истекла'} {user.sub_expires_at.strftime('%d.%m.%Y %H:%M')} UTC"
+    if user.sub_traffic_limit_bytes is None:
+        trf = "безлимит"
+    else:
+        period_used = await repo.sub_traffic_used(session, user)
+        trf = (
+            f"{amnezia.fmt_bytes(period_used)} из "
+            f"{amnezia.fmt_bytes(user.sub_traffic_limit_bytes)}"
+        )
     await call.message.edit_text(
         f"🎫 <b>Подписка — {user.full_name or user.tg_id}</b>\n"
         f"• Устройства: <b>{used}/{user.sub_max_devices}</b>\n"
-        f"• Срок: <b>{srok}</b>",
+        f"• Срок: <b>{srok}</b>\n"
+        f"• Трафик: <b>{trf}</b>",
         reply_markup=admin_sub_kb(user.id, page),
     )
 
@@ -259,10 +270,48 @@ async def step_sub_extend(message: Message, state: FSMContext, session: AsyncSes
         cur = _sub_as_utc(user.sub_expires_at)
         base = cur if cur > now else now
     new_expiry = base + timedelta(days=days)
-    await repo.set_subscription(session, user.id, expires_at=new_expiry, touch_expires=True)
+    # Продление = новый период: обнуляем расход трафика (base := текущая Σ).
+    await repo.set_subscription(
+        session, user.id,
+        expires_at=new_expiry, touch_expires=True, reset_traffic_base=True,
+    )
     await session.commit()
     await message.answer(
         f"✅ Продлено до <b>{new_expiry.strftime('%d.%m.%Y %H:%M')} UTC</b>",
+        reply_markup=admin_sub_kb(user.id, data["page"]),
+    )
+
+
+@router.callback_query(F.data.startswith(f"{CB_PANEL}:sub_trf:"))
+async def cb_panel_sub_trf(call: CallbackQuery, state: FSMContext) -> None:
+    parts = call.data.split(":")
+    await state.set_state(SubAdminStates.set_traffic)
+    await state.update_data(user_id=int(parts[2]), page=int(parts[3]))
+    await call.message.edit_text(
+        "📊 Введи лимит трафика на подписку: <code>50GB</code>, <code>500MB</code>, "
+        "<code>1TB</code>.\nОтправь <code>-</code>, чтобы снять лимит (безлимит)."
+    )
+    await call.answer()
+
+
+@router.message(SubAdminStates.set_traffic, F.text)
+async def step_sub_traffic(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    result = parse_traffic_limit(message.text.strip())
+    if result == "invalid":
+        await message.answer("Формат: <code>50GB</code> / <code>500MB</code> / <code>1TB</code> или <code>-</code>. Ещё раз:")
+        return
+    data = await state.get_data()
+    await state.clear()
+    # result: int (байты) или None (снять лимит). Новый лимит → период с нуля.
+    await repo.set_subscription(
+        session, data["user_id"],
+        traffic_limit_bytes=result, touch_traffic_limit=True, reset_traffic_base=True,
+    )
+    await session.commit()
+    user = await repo.get_user_by_id(session, data["user_id"])
+    trf = "безлимит" if result is None else amnezia.fmt_bytes(result)
+    await message.answer(
+        f"✅ Лимит трафика подписки: <b>{trf}</b>",
         reply_markup=admin_sub_kb(user.id, data["page"]),
     )
 

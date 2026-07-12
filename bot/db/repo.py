@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
@@ -51,6 +51,10 @@ async def get_or_create_user(
             sub_max_devices=settings.trial_devices,
             sub_expires_at=datetime.now(timezone.utc)
             + timedelta(days=settings.trial_days),
+            sub_traffic_limit_bytes=(
+                settings.trial_traffic_gb * 1024**3
+                if settings.trial_traffic_gb else None
+            ),
         )
         session.add(user)
         await session.flush()
@@ -132,6 +136,13 @@ async def list_servers_for_owner(session: AsyncSession, owner_tg_id: int) -> lis
     result = await session.execute(
         select(Server).where(Server.owner_tg_id == owner_tg_id).order_by(Server.id)
     )
+    return list(result.scalars())
+
+
+async def list_all_servers(session: AsyncSession) -> list[Server]:
+    """Все серверы сервиса (Блок 8: общий пул, не «личные»). Любой админ управляет
+    всеми — owner_tg_id остаётся лишь пометкой «кем установлен»."""
+    result = await session.execute(select(Server).order_by(Server.id))
     return list(result.scalars())
 
 
@@ -338,7 +349,9 @@ async def count_active_devices(session: AsyncSession, user_id: int) -> int:
 
 
 async def revoke_device(session: AsyncSession, device_id: int) -> None:
-    """Отзывает устройство и помечает его пиры/доступы обхода как REVOKED."""
+    """Отзывает устройство. Пиры → REVOKED (держат IP, ждут возможного ревайва,
+    планировщик чистит через retention). Доступы обхода — УДАЛЯЕМ из БД: отозванный
+    wdtt = мёртвая ссылка (пароль на сервере снят, ревайва нет), хранить нечего."""
     now = datetime.now(timezone.utc)
     await session.execute(
         update(Device).where(Device.id == device_id).values(status=PeerStatus.REVOKED)
@@ -350,11 +363,17 @@ async def revoke_device(session: AsyncSession, device_id: int) -> None:
         .values(status=PeerStatus.REVOKED, revoked_at=now)
     )
     await session.execute(
-        update(WdttAccess)
-        .where(WdttAccess.device_id == device_id)
-        .where(WdttAccess.status == PeerStatus.ACTIVE)
-        .values(status=PeerStatus.REVOKED, revoked_at=now)
+        delete(WdttAccess).where(WdttAccess.device_id == device_id)
     )
+
+
+async def purge_revoked_wdtt(session: AsyncSession) -> int:
+    """Разовая чистка: удаляет все ранее отозванные (REVOKED) wdtt-доступы.
+    Отозванный обход — мёртвая ссылка без возможности восстановления, в БД мусор."""
+    result = await session.execute(
+        delete(WdttAccess).where(WdttAccess.status == PeerStatus.REVOKED)
+    )
+    return result.rowcount or 0
 
 
 async def backfill_devices(session: AsyncSession) -> int:
@@ -393,6 +412,25 @@ async def list_wdtt_for_device(
     )
 
 
+async def sum_user_traffic(session: AsyncSession, user_id: int) -> int:
+    """Суммарный трафик по ВСЕМ пирам юзера (активным и отозванным).
+
+    Отозванные тоже считаем — трафик уже потрачен. Разница с sub_traffic_base_bytes
+    даёт расход за текущий период подписки."""
+    return (
+        await session.execute(
+            select(func.coalesce(func.sum(Peer.traffic_used_bytes), 0))
+            .where(Peer.user_id == user_id)
+        )
+    ).scalar() or 0
+
+
+async def sub_traffic_used(session: AsyncSession, user: User) -> int:
+    """Расход трафика за текущий период = Σ пиров − base (не меньше нуля)."""
+    total = await sum_user_traffic(session, user.id)
+    return max(0, total - (user.sub_traffic_base_bytes or 0))
+
+
 async def set_subscription(
     session: AsyncSession,
     user_id: int,
@@ -400,14 +438,23 @@ async def set_subscription(
     max_devices: int | None = None,
     expires_at: datetime | None = None,
     touch_expires: bool = False,
+    traffic_limit_bytes: int | None = None,
+    touch_traffic_limit: bool = False,
+    reset_traffic_base: bool = False,
 ) -> None:
-    """Обновляет подписку юзера. expires_at меняется только если touch_expires=True
-    (иначе None трактовался бы как «снять срок»)."""
+    """Обновляет подписку юзера. expires_at/traffic_limit меняются только при
+    соответствующем touch_* (иначе None трактовался бы как «снять»). При продлении
+    (reset_traffic_base=True) обнуляем расход периода: base := текущая Σ трафика."""
     values: dict = {}
     if max_devices is not None:
         values["sub_max_devices"] = max_devices
     if touch_expires:
         values["sub_expires_at"] = expires_at
+        values["sub_warn_flags"] = 0  # новый срок → предупреждаем заново
+    if touch_traffic_limit:
+        values["sub_traffic_limit_bytes"] = traffic_limit_bytes
+    if reset_traffic_base:
+        values["sub_traffic_base_bytes"] = await sum_user_traffic(session, user_id)
     if values:
         await session.execute(
             update(User).where(User.id == user_id).values(**values)

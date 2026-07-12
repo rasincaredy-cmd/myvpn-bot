@@ -78,6 +78,15 @@ async def step_name(message: Message, state: FSMContext) -> None:
         )
         return
     await state.update_data(name=name)
+    await state.set_state(InstallStates.location)
+    await message.answer(t.install_ask_location, reply_markup=cancel_only())
+
+
+@router.message(InstallStates.location, F.text)
+async def step_location(message: Message, state: FSMContext) -> None:
+    raw = message.text.strip()
+    location = None if raw == "-" else raw[:64]
+    await state.update_data(location=location)
     await state.set_state(InstallStates.host)
     await message.answer(t.install_ask_host, reply_markup=cancel_only())
 
@@ -220,6 +229,7 @@ async def step_wg_port(message: Message, state: FSMContext) -> None:
     await message.answer(
         t.install_summary.format(
             name=data["name"],
+            location=data.get("location") or "—",
             host=data["host"],
             ssh_user=data["ssh_user"],
             ssh_port=data["ssh_port"],
@@ -256,6 +266,7 @@ async def step_run(
         wg_subnet="10.8.0.0/24",
         status=ServerStatus.INSTALLING,
         owner_tg_id=call.from_user.id,
+        location=data.get("location"),
     )
     await session.commit()
 

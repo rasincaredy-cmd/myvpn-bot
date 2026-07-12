@@ -19,15 +19,6 @@ from bot.texts import t
 
 router = Router(name="common")
 
-# Витрина локаций (косметическая заглушка Блока 8). ready=False рисует «🔜 Скоро»
-# и НИЧЕГО не выдаёт — реальный конфиг появится только когда сервер куплен и готов.
-# Когда поднимешь немецкую ноду — поменяй её ready на True. В Блоке 8 заменим этот
-# хардкод на список локаций из БД.
-_LOCATIONS: list[tuple[str, str, bool]] = [
-    ("🇳🇱", "Нидерланды", True),
-    ("🇩🇪", "Германия", False),
-]
-
 
 # --- /start ------------------------------------------------------------------
 
@@ -109,11 +100,20 @@ async def cb_menu_open(call: CallbackQuery, session: AsyncSession, state: FSMCon
 
 
 @router.callback_query(F.data == f"{CB_MENU}:locations")
-async def cb_menu_locations(call: CallbackQuery) -> None:
+async def cb_menu_locations(call: CallbackQuery, session: AsyncSession) -> None:
+    # Реальные локации сервиса из БД (Блок 8): готовые серверы = доступные страны.
+    servers = await repo.list_ready_servers(session)
     lines = [t.locations_intro]
-    for flag, name, ready in _LOCATIONS:
-        badge = "✅ Доступно" if ready else "🔜 Скоро"
-        lines.append(f"{flag} <b>{name}</b> — {badge}")
+    if not servers:
+        lines.append("\nПока идёт подготовка — заглядывай позже.")
+    else:
+        seen: list[str] = []
+        for s in servers:
+            loc = s.location or s.name  # fallback, если локация не задана
+            if loc not in seen:
+                seen.append(loc)
+        for loc in seen:
+            lines.append(f"{loc} — ✅ Доступно")
     lines.append(t.locations_footer)
     await call.message.edit_text("\n".join(lines), reply_markup=back_to_menu())
     await call.answer()
@@ -198,7 +198,7 @@ async def cb_cancel(call: CallbackQuery, state: FSMContext, session: AsyncSessio
     server_id = data.get("server_id")
     if server_id is not None:
         server = await repo.get_server(session, server_id)
-        if server is not None and server.owner_tg_id == call.from_user.id:
+        if server is not None:
             peers = await repo.list_peers_for_server(session, server.id)
             error_block = (
                 f"\n<i>Last error:</i> <code>{server.last_error[:200]}</code>"

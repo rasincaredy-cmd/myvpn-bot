@@ -34,7 +34,7 @@ from bot.texts import t
 from bot.utils.validators import is_valid_label
 
 # Переиспользуем машинерию создания/отправки пиров.
-from bot.handlers.configs import _create_peer_for_user, _send_peer_artifacts
+from bot.handlers.configs import provision_device_peers, _send_peer_artifacts
 
 router = Router(name="devices")
 
@@ -143,20 +143,18 @@ async def step_device_label(message: Message, state: FSMContext, session: AsyncS
     if not _sub_active(user) or await repo.count_active_devices(session, user.id) >= user.sub_max_devices:
         await message.answer("Лимит устройств или срок подписки не позволяют.", reply_markup=back_to_menu())
         return
-    servers = await repo.list_ready_servers(session)
-    if not servers:
+    if not await repo.list_ready_servers(session):
         await message.answer("Нет доступных серверов.", reply_markup=back_to_menu())
         return
-    server = servers[0]
 
     status_msg = await message.answer("⏳ Создаю устройство...")
     device = await repo.create_device(session, user_id=user.id, label=label)
     try:
-        # expires_at=None: срок гейтит подписка на уровне устройства (планировщик),
-        # а не индивидуальный expires_at пира.
-        conf, ip, _ = await _create_peer_for_user(
-            session, server, user, label, device_id=device.id, expires_at=None,
-        )
+        # Устройство = группа конфигов по всем READY-локациям (Блок 8). expires_at=None:
+        # срок гейтит подписка на уровне устройства (планировщик), а не пир.
+        made = await provision_device_peers(session, user, device)
+        if not made:
+            raise SSHError("не удалось создать конфиг ни на одной локации")
         await session.commit()
     except SSHError as exc:
         await session.rollback()
@@ -172,7 +170,8 @@ async def step_device_label(message: Message, state: FSMContext, session: AsyncS
     import contextlib
     with contextlib.suppress(Exception):
         await status_msg.delete()
-    await _send_peer_artifacts(message.chat.id, server.name, label, conf)
+    for server, conf in made:
+        await _send_peer_artifacts(message.chat.id, server.name, label, conf)
     await message.answer(
         t.device_created.format(label=label), reply_markup=subscription_kb(True)
     )
@@ -186,17 +185,35 @@ async def cb_dev_open(call: CallbackQuery, session: AsyncSession) -> None:
     if device is None or user is None or device.user_id != user.id:
         await call.answer("Не найдено", show_alert=True)
         return
+    active = device.status == PeerStatus.ACTIVE
+
+    # Дозакинуть недостающие локации (Блок 8): если появилась новая страна —
+    # устройство получает там конфиг при открытии, и мы сразу его присылаем.
+    if active and _sub_active(user):
+        made = await provision_device_peers(session, user, device)
+        if made:
+            await session.commit()
+            for server, conf in made:
+                await _send_peer_artifacts(call.message.chat.id, server.name, device.label, conf)
+
     peers = await repo.list_peers_for_device(session, device.id)
     accesses = await repo.list_wdtt_for_device(session, device.id)
-    active = device.status == PeerStatus.ACTIVE
-    text = (
-        f"📱 <b>{device.label}</b>\n"
-        f"• Статус: <b>{device.status}</b>\n"
-        f"• Конфигов: <b>{sum(1 for p in peers if p.status == PeerStatus.ACTIVE)}</b>\n"
+    active_peers = [p for p in peers if p.status == PeerStatus.ACTIVE]
+    lines = [
+        f"📱 <b>{device.label}</b>",
+        f"• Статус: <b>{device.status}</b>",
+    ]
+    if active_peers:
+        lines.append("• Конфиги по локациям:")
+        for p in active_peers:
+            srv = await repo.get_server(session, p.server_id)
+            loc = (srv.location or srv.name) if srv else "?"
+            lines.append(f"   • {loc}")
+    lines.append(
         f"• Доступов обхода: <b>{sum(1 for a in accesses if a.status == PeerStatus.ACTIVE)}</b>"
     )
     await call.message.edit_text(
-        text,
+        "\n".join(lines),
         reply_markup=device_card_kb(device.id, can_get=active, can_revoke=active),
     )
     await call.answer()
@@ -284,10 +301,19 @@ async def cb_sub_my(call: CallbackQuery, session: AsyncSession) -> None:
         full_name=call.from_user.full_name,
     )
     used = await repo.count_active_devices(session, user.id)
+    if user.sub_traffic_limit_bytes is None:
+        trf_line = "безлимит"
+    else:
+        period_used = await repo.sub_traffic_used(session, user)
+        trf_line = (
+            f"{amnezia.fmt_bytes(period_used)} из "
+            f"{amnezia.fmt_bytes(user.sub_traffic_limit_bytes)}"
+        )
     text = (
         "🎫 <b>Моя подписка</b>\n"
         f"• Устройства: <b>{used}/{user.sub_max_devices}</b>\n"
-        f"• Срок: <b>{_sub_line(user)}</b>"
+        f"• Срок: <b>{_sub_line(user)}</b>\n"
+        f"• Трафик: <b>{trf_line}</b>"
     )
     if not _sub_active(user):
         text += "\n\n<i>Подписка истекла — доступы отозваны. Напиши админу для продления.</i>"

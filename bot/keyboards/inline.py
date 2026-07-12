@@ -29,12 +29,11 @@ def main_menu(is_admin: bool) -> InlineKeyboardMarkup:
     kb.button(text="🛡 Обход БС", callback_data=f"{CB_WDTT}:my")
     kb.button(text="🎫 Моя подписка", callback_data=f"{CB_SUB}:my")
     kb.button(text="🌍 Локации", callback_data=f"{CB_MENU}:locations")
+    # У админа то же меню, что у юзера, плюс ОДНА кнопка — вход в админ-панель.
+    # Всё управление сервисом (установка VPN, серверы, выдача конфигов/инвайтов)
+    # живёт внутри панели, а не на главном экране.
     if is_admin:
-        kb.button(text="🛠 Установить VPN на VPS", callback_data=f"{CB_INSTALL}:start")
-        kb.button(text="🖥 Мои серверы",           callback_data=f"{CB_SERVERS}:list")
-        kb.button(text="➕ Выдать конфиг peer",    callback_data=f"{CB_PEERS}:new")
-        kb.button(text="🎟 Создать инвайт",        callback_data=f"{CB_INVITES}:new")
-        kb.button(text="👮 Админ-панель",          callback_data=f"{CB_PANEL}:main")
+        kb.button(text="👮 Админ-панель", callback_data=f"{CB_PANEL}:main")
     kb.button(text="🔔 Оповещения", callback_data=f"{CB_MENU}:notify")
     kb.button(text="🆘 Помощь", callback_data=f"{CB_MENU}:help")
     kb.adjust(1)
@@ -96,6 +95,7 @@ def server_card(server_id: int, wdtt_enabled: bool = False) -> InlineKeyboardMar
     kb.button(text="📋 Инвайты",       callback_data=f"{CB_INVITES}:list:{server_id}")
     kb.button(text="📊 Трафик",        callback_data=f"{CB_SERVERS}:traffic:{server_id}")
     kb.button(text="🖥 Состояние",     callback_data=f"{CB_SERVERS}:stats:{server_id}")
+    kb.button(text="🌍 Локация",       callback_data=f"{CB_SERVERS}:loc:{server_id}")
     # Тумблер доступности обхода БС на сервере (выдачу юзеры делают сами).
     kb.button(
         text="🛡 Обход БС: ВКЛ" if wdtt_enabled else "🛡 Обход БС: выкл",
@@ -103,7 +103,7 @@ def server_card(server_id: int, wdtt_enabled: bool = False) -> InlineKeyboardMar
     )
     kb.button(text="🗑 Удалить", callback_data=f"{CB_SERVERS}:del:{server_id}")
     kb.button(text="« К списку", callback_data=f"{CB_SERVERS}:list")
-    kb.adjust(2, 2, 2, 1, 1, 1)
+    kb.adjust(2, 2, 2, 1, 1, 1, 1)
     return kb.as_markup()
 
 
@@ -247,7 +247,6 @@ def admin_peer_card(peer_id: int, server_id: int, can_revoke: bool) -> InlineKey
     kb = InlineKeyboardBuilder()
     if can_revoke:
         kb.button(text="📥 Получить конфиг", callback_data=f"{CB_ADMIN}:conf:{peer_id}")
-        kb.button(text="⚙️ Лимиты",          callback_data=f"{CB_ADMIN}:limits:{peer_id}")
         kb.button(text="🗑 Отозвать",         callback_data=f"{CB_ADMIN}:revoke:{peer_id}")
     else:
         kb.button(text="♻️ Возобновить",   callback_data=f"{CB_ADMIN}:revive:{peer_id}")
@@ -258,21 +257,13 @@ def admin_peer_card(peer_id: int, server_id: int, can_revoke: bool) -> InlineKey
     kb.adjust(1)
     return kb.as_markup()
 
-def peer_limits_kb(peer_id: int, has_limits: bool) -> InlineKeyboardMarkup:
-    kb = InlineKeyboardBuilder()
-    kb.button(text="📅 Срок действия",  callback_data=f"{CB_ADMIN}:set_exp:{peer_id}")
-    kb.button(text="📊 Лимит трафика",  callback_data=f"{CB_ADMIN}:set_trf:{peer_id}")
-    if has_limits:
-        kb.button(text="🗑 Сбросить лимиты", callback_data=f"{CB_ADMIN}:clr_lim:{peer_id}")
-    kb.button(text="« К пиру", callback_data=f"{CB_ADMIN}:peer:{peer_id}")
-    kb.adjust(1)
-    return kb.as_markup()
-
 
 # --- Admin panel -------------------------------------------------------------
 
 def admin_panel_menu() -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
+    kb.button(text="🛠 Установить VPN на VPS", callback_data=f"{CB_INSTALL}:start")
+    kb.button(text="🖥 Серверы",               callback_data=f"{CB_SERVERS}:list")
     kb.button(text="📊 Статистика",   callback_data=f"{CB_PANEL}:stats")
     kb.button(text="👤 Пользователи", callback_data=f"{CB_PANEL}:users:0")
     kb.button(text="📢 Рассылка",     callback_data=f"{CB_PANEL}:broadcast")
@@ -380,6 +371,7 @@ def admin_sub_kb(user_id: int, page: int) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="📱 Лимит устройств", callback_data=f"{CB_PANEL}:sub_lim:{user_id}:{page}")
     kb.button(text="📅 Продлить срок",   callback_data=f"{CB_PANEL}:sub_ext:{user_id}:{page}")
+    kb.button(text="📊 Лимит трафика",   callback_data=f"{CB_PANEL}:sub_trf:{user_id}:{page}")
     kb.button(text="🚫 Отключить (срок в 0)", callback_data=f"{CB_PANEL}:sub_off:{user_id}:{page}")
     kb.button(text="« К пользователю",   callback_data=f"{CB_PANEL}:user:{user_id}:{page}")
     kb.adjust(1)

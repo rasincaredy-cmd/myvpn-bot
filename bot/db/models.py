@@ -55,8 +55,22 @@ class User(Base):
         Integer, default=2, server_default="2", nullable=False
     )
     # Срок подписки. NULL = без ограничения по времени (грандфазер/бессрочно).
-    # Прокидывается в expires_at пиров/доступов, чтобы переиспользовать авто-отзыв.
+    # Единый таймер сервиса: истёк → планировщик отзывает ВСЕ устройства юзера.
     sub_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # Лимит трафика на подписку (не на пир). NULL = безлимит. Расход считается
+    # суммарно по всем пирам юзера за текущий период:
+    #   расход_периода = Σ(peer.traffic_used_bytes) − sub_traffic_base_bytes.
+    # base — снимок суммарного трафика на начало периода; сбрасывается при продлении.
+    sub_traffic_limit_bytes: Mapped[int | None] = mapped_column(BigInteger)
+    sub_traffic_base_bytes: Mapped[int] = mapped_column(
+        BigInteger, default=0, server_default="0", nullable=False
+    )
+    # Битовая маска отправленных предупреждений о скором истечении ПОДПИСКИ
+    # (биты = scheduler.WARN_OFFSETS_HOURS). Сбрасывается при продлении срока.
+    sub_warn_flags: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0", nullable=False
+    )
 
     peers: Mapped[list["Peer"]] = relationship(back_populates="user")
 
@@ -93,10 +107,16 @@ class Server(Base):
     )
     last_error: Mapped[str | None] = mapped_column(Text)
 
+    # owner_tg_id — кем сервер установлен. С Блока 8 это лишь пометка: серверы —
+    # общий пул сервиса, любой админ управляет всеми (владения больше нет).
     owner_tg_id: Mapped[int] = mapped_column(BigInteger, index=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+    # Локация (Блок 8): страна с флагом для витрины «🌍 Локации», напр. «🇩🇪 Германия».
+    # NULL — не задана (показываем имя сервера как fallback).
+    location: Mapped[str | None] = mapped_column(String(64))
 
     # Обход белых списков (wdtt / proxy-turn-vk): включён ли демон на этом сервере
     # и его порты "dtls,wg,tun". Выдача wdtt-доступов доступна только при wdtt_enabled.

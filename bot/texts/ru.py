@@ -77,6 +77,11 @@ class t:
         "Поехали — введи <b>имя сервера</b> (как ты будешь его называть, "
         "например <code>de-fra-1</code>):"
     )
+    install_ask_location = (
+        "🌍 Введи <b>локацию</b> сервера для витрины (страна с флагом), "
+        "например <code>🇩🇪 Германия</code> или <code>🇳🇱 Нидерланды</code>.\n"
+        "Отправь <code>-</code>, чтобы пропустить."
+    )
     install_ask_host = "🌐 Введи <b>IP или домен</b> VPS:"
     install_ask_ssh_port = (
         "🔌 Введи <b>SSH-порт</b> (по умолчанию <code>22</code> — отправь <code>22</code>):"
@@ -105,6 +110,7 @@ class t:
     install_summary = (
         "📋 <b>Проверь параметры:</b>\n\n"
         "• Имя: <code>{name}</code>\n"
+        "• Локация: {location}\n"
         "• Host: <code>{host}</code>\n"
         "• SSH: <code>{ssh_user}@{host}:{ssh_port}</code>\n"
         "• Auth: <code>{auth}</code>\n"
@@ -119,8 +125,8 @@ class t:
     install_step = "⏳ {step}"
     install_done = (
         "✅ <b>Готово!</b>\n\n"
-        "Сервер <code>{name}</code> установлен и поднят. "
-        "Теперь можно создавать peer'ы через меню «Мои серверы → Выдать конфиг»."
+        "Сервер <code>{name}</code> установлен и поднят и добавлен в пул сервиса. "
+        "Локация сразу появится в разделе «🌍 Локации» у пользователей."
     )
     install_failed = (
         "❌ <b>Установка не удалась.</b>\n\n"

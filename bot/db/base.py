@@ -42,11 +42,14 @@ async def init_db() -> None:
 
     # Грандфазер (Блок 9): существующие активные пиры → устройства. Идемпотентно.
     from loguru import logger
-    from bot.db.repo import backfill_devices
+    from bot.db.repo import backfill_devices, purge_revoked_wdtt
     async with session_scope() as session:
         n = await backfill_devices(session)
+        purged = await purge_revoked_wdtt(session)
     if n:
         logger.info("Backfill: обёрнуто пиров в устройства: {}", n)
+    if purged:
+        logger.info("Чистка: удалено отозванных wdtt-доступов: {}", purged)
 
 
 @asynccontextmanager

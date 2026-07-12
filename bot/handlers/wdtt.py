@@ -81,8 +81,12 @@ async def cb_wdtt_my(call: CallbackQuery, state: FSMContext, session: AsyncSessi
         username=call.from_user.username,
         full_name=call.from_user.full_name,
     )
-    accesses = await repo.list_wdtt_for_user(session, user.id)
-    accesses.sort(key=lambda a: (a.status != PeerStatus.ACTIVE, a.id))
+    # Отозванных wdtt в БД больше не держим (hard-delete при отзыве), но на всякий
+    # случай фильтруем — в списке только живые доступы.
+    accesses = [
+        a for a in await repo.list_wdtt_for_user(session, user.id)
+        if a.status == PeerStatus.ACTIVE
+    ]
     total = len(accesses)
     start = page * _WDTT_PER_PAGE
     page_items = accesses[start:start + _WDTT_PER_PAGE]
@@ -163,7 +167,9 @@ async def cb_wdtt_my_revoke(call: CallbackQuery, session: AsyncSession) -> None:
                     )
             except SSHError as exc:
                 logger.warning("wdtt user revoke ssh error {}: {}", access.id, exc)
-    await repo.revoke_wdtt_access(session, access.id)
+    # Отозванный обход — мёртвая ссылка (пароль снят, ревайва нет). Не держим
+    # REVOKED-мусор в БД, удаляем строку целиком.
+    await repo.delete_wdtt_access(session, access.id)
     await session.commit()
     await call.message.edit_text(
         t.wdtt_revoked.format(label=access.label), reply_markup=back_to_menu()
@@ -327,7 +333,7 @@ router_admin.callback_query.filter(AdminFilter())
 async def cb_wdtt_toggle(call: CallbackQuery, session: AsyncSession) -> None:
     server_id = int(call.data.rsplit(":", 1)[-1])
     server = await repo.get_server(session, server_id)
-    if server is None or server.owner_tg_id != call.from_user.id:
+    if server is None:
         await call.answer("Не найдено", show_alert=True)
         return
     server.wdtt_enabled = not server.wdtt_enabled

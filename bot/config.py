@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     # Лимит трафика триала в ГБ на подписку (0 = безлимит).
     trial_traffic_gb: int = 0
 
+    # Контакт поддержки/связи с админом (напр. "@vlad" или "https://t.me/...").
+    # Пусто → в тексте помощи предложим написать через /start у админа.
+    support_contact: str = ""
+
     @field_validator("admin_ids", mode="before")
     @classmethod
     def _parse_admin_ids(cls, v: object) -> object:

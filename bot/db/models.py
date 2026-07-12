@@ -66,6 +66,10 @@ class User(Base):
     sub_traffic_base_bytes: Mapped[int] = mapped_column(
         BigInteger, default=0, server_default="0", nullable=False
     )
+    # Лимит активных доступов обхода БС у юзера (по умолчанию 2).
+    sub_max_bypass: Mapped[int] = mapped_column(
+        Integer, default=2, server_default="2", nullable=False
+    )
     # Битовая маска отправленных предупреждений о скором истечении ПОДПИСКИ
     # (биты = scheduler.WARN_OFFSETS_HOURS). Сбрасывается при продлении срока.
     sub_warn_flags: Mapped[int] = mapped_column(
@@ -251,6 +255,8 @@ class WdttAccess(Base):
         ForeignKey("devices.id", ondelete="SET NULL"), index=True
     )
     label: Mapped[str] = mapped_column(String(64))
+    # Платформа доступа (android/ios/pc) — показываем в карточке. NULL — легаси.
+    platform: Mapped[str | None] = mapped_column(String(16))
 
     # Fernet-шифрование: ссылка содержит пароль-секрет. Не логировать, не показывать сырыми.
     uri_enc: Mapped[bytes] = mapped_column()

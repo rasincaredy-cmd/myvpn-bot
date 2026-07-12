@@ -93,11 +93,16 @@ async def cb_wdtt_my(call: CallbackQuery, state: FSMContext, session: AsyncSessi
     rows = []
     for a in page_items:
         srv = await repo.get_server(session, a.server_id)
-        rows.append((a.id, _mark(a.status), a.label, srv.name if srv else "?"))
+        plat = _PLATFORMS.get(a.platform, ("", ""))[0] if a.platform else ""
+        label = f"{a.label} · {plat}" if plat else a.label
+        rows.append((a.id, _mark(a.status), label, srv.name if srv else "?"))
 
+    # Лимит доступов юзер видит в шапке — как у устройств.
+    can_create = _sub_active(user) and total < user.sub_max_bypass
     text = (
         "🛡 <b>Обход белых списков</b>\n"
         "Работает там, где обычный VPN режется белыми списками.\n"
+        f"\nДоступов: <b>{total}/{user.sub_max_bypass}</b>"
     )
     if not _sub_active(user):
         text += "\n<i>Подписка истекла — создание недоступно.</i>"
@@ -107,7 +112,7 @@ async def cb_wdtt_my(call: CallbackQuery, state: FSMContext, session: AsyncSessi
     await call.message.edit_text(
         text,
         reply_markup=wdtt_user_list_kb(
-            rows, can_create=_sub_active(user), page=page,
+            rows, can_create=can_create, page=page,
             has_prev=page > 0, has_next=start + _WDTT_PER_PAGE < total,
         ),
     )
@@ -122,8 +127,10 @@ async def cb_wdtt_my_open(call: CallbackQuery, session: AsyncSession) -> None:
         await call.answer("Не найдено", show_alert=True)
         return
     srv = await repo.get_server(session, access.server_id)
+    plat = _PLATFORMS.get(access.platform, ("—", ""))[0] if access.platform else "—"
     text = (
         f"🛡 <b>{access.label}</b>\n"
+        f"• Устройство/платформа: <b>{plat}</b>\n"
         f"• Сервер: <code>{srv.name if srv else '?'}</code>\n"
         f"• Статус: <b>{access.status}</b>"
     )
@@ -205,11 +212,20 @@ async def cb_wdtt_new(call: CallbackQuery, state: FSMContext, session: AsyncSess
         username=call.from_user.username,
         full_name=call.from_user.full_name,
     )
+    # Отмена в этом потоке → назад к списку обхода (не в меню/карточку сервера).
+    await state.update_data(cancel_to="wdtt")
     if not _sub_active(user):
         await call.answer("Подписка истекла.", show_alert=True)
         return
     if not settings.wdtt_vk_hashes:
         await call.answer(t.wdtt_disabled, show_alert=True)
+        return
+    used = await repo.count_active_wdtt_for_user(session, user.id)
+    if used >= user.sub_max_bypass:
+        await call.answer(
+            f"Достигнут лимит доступов обхода ({used}/{user.sub_max_bypass}).",
+            show_alert=True,
+        )
         return
     servers = [
         s for s in await repo.list_ready_servers(session) if s.wdtt_enabled
@@ -311,6 +327,7 @@ async def cb_wdtt_platform(call: CallbackQuery, state: FSMContext, session: Asyn
         uri_enc=encrypt(link),
         password_enc=encrypt(res["password"]),
         expires_at=None,  # срок гейтит подписка на уровне устройства
+        platform=platform,
     )
     await session.commit()
 

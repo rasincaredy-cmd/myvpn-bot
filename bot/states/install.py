@@ -28,7 +28,8 @@ class InviteStates(StatesGroup):
 
 
 class BroadcastStates(StatesGroup):
-    text    = State()
+    target  = State()
+    message = State()
     confirm = State()
 
 
@@ -56,3 +57,4 @@ class SubAdminStates(StatesGroup):
     set_limit = State()
     extend_days = State()
     set_traffic = State()
+    set_bypass = State()

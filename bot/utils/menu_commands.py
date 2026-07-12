@@ -8,13 +8,13 @@ from bot.config import settings
 _BASE_COMMANDS = [
     BotCommand(command="start", description="🚀 Запуск / главное меню"),
     BotCommand(command="menu", description="📋 Показать меню"),
-    BotCommand(command="help", description="🆘 Помощь"),
-    BotCommand(command="exit", description="✖️ Отменить текущее действие"),
+    BotCommand(command="help", description="🆘 Поддержка"),
 ]
 
 _ADMIN_EXTRA = [
+    BotCommand(command="exit", description="✖️ Отменить текущее действие"),
     BotCommand(command="install", description="🛠 Установить VPN на VPS"),
-    BotCommand(command="servers", description="🖥 Мои серверы"),
+    BotCommand(command="servers", description="🖥 Серверы"),
     BotCommand(command="newpeer", description="➕ Создать peer"),
     BotCommand(command="invite", description="🎟 Создать инвайт"),
 ]

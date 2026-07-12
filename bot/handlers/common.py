@@ -124,8 +124,8 @@ def _notify_text(enabled: bool) -> str:
     return (
         "🔔 <b>Предупреждения об истечении</b>\n\n"
         f"Сейчас: <b>{state}</b>\n\n"
-        "Бот заранее пришлёт сообщение, когда срок действия твоего конфига "
-        "подходит к концу — за 24 часа и за 1 час до автоотзыва."
+        "Бот заранее пришлёт сообщение, когда срок действия твоей подписки "
+        "подходит к концу — за 24 часа и за 1 час до отключения устройств."
     )
 
 
@@ -164,11 +164,14 @@ async def cb_menu_notify_toggle(call: CallbackQuery, session: AsyncSession) -> N
 @router.message(Command("help"))
 @router.callback_query(F.data == f"{CB_MENU}:help")
 async def cmd_help(event: Message | CallbackQuery) -> None:
+    from bot.config import settings
+    contact = settings.support_contact or "напиши администратору сервиса"
+    text = t.help_text.format(contact=contact)
     if isinstance(event, CallbackQuery):
-        await event.message.edit_text(t.help_text, reply_markup=back_to_menu())
+        await event.message.edit_text(text, reply_markup=back_to_menu())
         await event.answer()
     else:
-        await event.answer(t.help_text, reply_markup=back_to_menu())
+        await event.answer(text, reply_markup=back_to_menu())
 
 
 # --- /exit, /cancel — отмена любого состояния --------------------------------
@@ -191,11 +194,29 @@ async def cmd_exit(message: Message, state: FSMContext, session: AsyncSession) -
 
 @router.callback_query(F.data == CB_CANCEL)
 async def cb_cancel(call: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
-    # Если отменяли действие в контексте сервера (создание peer/инвайта/wdtt —
-    # в FSM лежит server_id), возвращаем на карточку сервера, а не в главное меню.
+    """Единая отмена: возвращаем ровно туда, откуда пришли (в тот же экран, in-place).
+
+    Приоритет назначения (`cancel_to` кладут сами потоки в FSM-данные):
+      • wdtt   → список обхода БС;
+      • dev    → список устройств;
+      • server_id → карточка сервера (создание peer/инвайта с карточки);
+      • panel  → админ-панель (установка VPN, выбор сервера из панели);
+      • иначе  → главное меню.
+    Рендер делегируем реальным хендлерам, чтобы не дублировать экраны.
+    """
     data = await state.get_data()
     await state.clear()
+    dest = data.get("cancel_to")
     server_id = data.get("server_id")
+
+    if dest == "wdtt":
+        from bot.handlers.wdtt import cb_wdtt_my
+        await cb_wdtt_my(call, state, session)
+        return
+    if dest == "dev":
+        from bot.handlers.devices import cb_dev_list
+        await cb_dev_list(call, session)
+        return
     if server_id is not None:
         server = await repo.get_server(session, server_id)
         if server is not None:
@@ -213,11 +234,16 @@ async def cb_cancel(call: CallbackQuery, state: FSMContext, session: AsyncSessio
                 peers=len(peers),
                 error_block=error_block,
             )
+            text += f"\n🌍 Локация: {server.location or '—'}"
             await call.message.edit_text(
                 text, reply_markup=server_card(server.id, server.wdtt_enabled)
             )
             await call.answer("Отменено")
             return
+    if dest == "panel":
+        from bot.handlers.admin_panel import cmd_admin
+        await cmd_admin(call, state)
+        return
 
     user = await repo.get_or_create_user(
         session,

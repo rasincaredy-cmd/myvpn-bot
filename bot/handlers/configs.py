@@ -298,6 +298,7 @@ async def cb_peer_new(
             await event.answer()
         return
     await state.set_state(PeerStates.pick_server)
+    await state.update_data(cancel_to="panel")  # отмена на выборе сервера → админка
     text = t.peer_pick_server
     if isinstance(event, CallbackQuery):
         await msg.edit_text(text, reply_markup=pick_server(ready, f"{CB_PEERS}:pick"))
@@ -401,6 +402,7 @@ async def cb_invite_new(
             await event.answer()
         return
     await state.set_state(InviteStates.pick_server)
+    await state.update_data(cancel_to="panel")  # отмена на выборе сервера → админка
     text = t.invite_ask_server
     if isinstance(event, CallbackQuery):
         await msg.edit_text(text, reply_markup=pick_server(ready, f"{CB_INVITES}:pick"))

@@ -49,20 +49,21 @@ async def _safe_delete(message: Message) -> None:
         await message.delete()
 
 
-async def _start_install(target: Message, state: FSMContext) -> None:
-    await state.clear()
-    await state.set_state(InstallStates.name)
-    await target.answer(t.install_intro, reply_markup=cancel_only())
-
-
 @router.message(Command("install"))
 async def cmd_install(message: Message, state: FSMContext) -> None:
-    await _start_install(message, state)
+    await state.clear()
+    await state.set_state(InstallStates.name)
+    await state.update_data(cancel_to="panel")  # отмена → админ-панель
+    await message.answer(t.install_intro, reply_markup=cancel_only())
 
 
 @router.callback_query(F.data == f"{CB_INSTALL}:start")
 async def cb_install_start(call: CallbackQuery, state: FSMContext) -> None:
-    await _start_install(call.message, state)
+    await state.clear()
+    await state.set_state(InstallStates.name)
+    await state.update_data(cancel_to="panel")
+    # Правка на месте (не новое сообщение) — единый UX с остальной панелью.
+    await call.message.edit_text(t.install_intro, reply_markup=cancel_only())
     await call.answer()
 
 

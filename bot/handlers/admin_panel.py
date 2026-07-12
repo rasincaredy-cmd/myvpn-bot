@@ -18,6 +18,8 @@ from bot.keyboards.inline import (
     admin_panel_menu,
     admin_sub_kb,
     back_to_panel,
+    broadcast_confirm_kb,
+    broadcast_target_kb,
     user_card_kb,
     users_list_kb,
 )
@@ -186,23 +188,21 @@ def _sub_as_utc(dt: datetime) -> datetime:
 
 async def _render_sub_card(call: CallbackQuery, session: AsyncSession, user, page: int) -> None:
     used = await repo.count_active_devices(session, user.id)
+    bypass = await repo.count_active_wdtt_for_user(session, user.id)
+    sub_expired = (
+        user.sub_expires_at is not None
+        and _sub_as_utc(user.sub_expires_at) <= datetime.now(timezone.utc)
+    )
     if user.sub_expires_at is None:
         srok = "бессрочно"
     else:
-        exp = _sub_as_utc(user.sub_expires_at)
-        active = exp > datetime.now(timezone.utc)
-        srok = f"{'до' if active else 'истекла'} {user.sub_expires_at.strftime('%d.%m.%Y %H:%M')} UTC"
-    if user.sub_traffic_limit_bytes is None:
-        trf = "безлимит"
-    else:
-        period_used = await repo.sub_traffic_used(session, user)
-        trf = (
-            f"{amnezia.fmt_bytes(period_used)} из "
-            f"{amnezia.fmt_bytes(user.sub_traffic_limit_bytes)}"
-        )
+        srok = f"{'истекла' if sub_expired else 'до'} {user.sub_expires_at.strftime('%d.%m.%Y %H:%M')} UTC"
+    trf = amnezia.fmt_traffic_line(await repo.sub_traffic_used(session, user),
+                                   user.sub_traffic_limit_bytes, sub_expired)
     await call.message.edit_text(
         f"🎫 <b>Подписка — {user.full_name or user.tg_id}</b>\n"
         f"• Устройства: <b>{used}/{user.sub_max_devices}</b>\n"
+        f"• Обход БС: <b>{bypass}/{user.sub_max_bypass}</b>\n"
         f"• Срок: <b>{srok}</b>\n"
         f"• Трафик: <b>{trf}</b>",
         reply_markup=admin_sub_kb(user.id, page),
@@ -242,6 +242,31 @@ async def step_sub_limit(message: Message, state: FSMContext, session: AsyncSess
     user = await repo.get_user_by_id(session, data["user_id"])
     await message.answer(
         f"✅ Лимит устройств: <b>{user.sub_max_devices}</b>",
+        reply_markup=admin_sub_kb(user.id, data["page"]),
+    )
+
+
+@router.callback_query(F.data.startswith(f"{CB_PANEL}:sub_bp:"))
+async def cb_panel_sub_bp(call: CallbackQuery, state: FSMContext) -> None:
+    parts = call.data.split(":")
+    await state.set_state(SubAdminStates.set_bypass)
+    await state.update_data(user_id=int(parts[2]), page=int(parts[3]))
+    await call.message.edit_text("🛡 Введи лимит доступов обхода БС (0–50):")
+    await call.answer()
+
+
+@router.message(SubAdminStates.set_bypass, F.text)
+async def step_sub_bypass(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    if not message.text.strip().isdigit() or not (0 <= int(message.text.strip()) <= 50):
+        await message.answer("Нужно число 0–50. Ещё раз:")
+        return
+    data = await state.get_data()
+    await state.clear()
+    await repo.set_subscription(session, data["user_id"], max_bypass=int(message.text.strip()))
+    await session.commit()
+    user = await repo.get_user_by_id(session, data["user_id"])
+    await message.answer(
+        f"✅ Лимит обхода БС: <b>{user.sub_max_bypass}</b>",
         reply_markup=admin_sub_kb(user.id, data["page"]),
     )
 
@@ -330,60 +355,84 @@ async def cb_panel_sub_off(call: CallbackQuery, session: AsyncSession) -> None:
 
 # --- Рассылка ---------------------------------------------------------------
 
+_BC_TARGET_LABEL = {
+    "all": "всем",
+    "active": "с активной подпиской",
+    "inactive": "без активной подписки",
+}
+
+
 @router.callback_query(F.data == f"{CB_PANEL}:broadcast")
 async def cb_panel_broadcast(call: CallbackQuery, state: FSMContext) -> None:
-    await state.set_state(BroadcastStates.text)
+    await state.set_state(BroadcastStates.target)
+    await call.message.edit_text(
+        "📢 <b>Рассылка</b>\n\nКому отправляем?",
+        reply_markup=broadcast_target_kb(),
+    )
+    await call.answer()
+
+
+@router.callback_query(BroadcastStates.target, F.data.startswith(f"{CB_PANEL}:bc_to:"))
+async def cb_broadcast_target(call: CallbackQuery, state: FSMContext) -> None:
+    target = call.data.rsplit(":", 1)[-1]
+    await state.update_data(bc_target=target)
+    await state.set_state(BroadcastStates.message)
     from aiogram.utils.keyboard import InlineKeyboardBuilder
     kb = InlineKeyboardBuilder()
     kb.button(text="✖️ Отмена", callback_data=f"{CB_PANEL}:main")
     await call.message.edit_text(
-        "📢 <b>Рассылка</b>\n\nОтправь текст сообщения (поддерживается HTML):",
+        f"📢 <b>Рассылка → {_BC_TARGET_LABEL.get(target, target)}</b>\n\n"
+        "Пришли сообщение для рассылки — <b>любого типа</b>: текст, фото, видео, "
+        "стикер, GIF (можно с подписью). Отправлю его получателям как есть.",
         reply_markup=kb.as_markup(),
     )
     await call.answer()
 
 
-@router.message(BroadcastStates.text, F.text)
-async def step_broadcast_text(message: Message, state: FSMContext) -> None:
-    await state.update_data(text=message.text)
+@router.message(BroadcastStates.message)
+async def step_broadcast_message(message: Message, state: FSMContext) -> None:
+    # Запоминаем ссылку на сообщение — разошлём копией (copy_message тянет любой тип).
+    await state.update_data(bc_from_chat=message.chat.id, bc_msg_id=message.message_id)
     await state.set_state(BroadcastStates.confirm)
-
-    from aiogram.utils.keyboard import InlineKeyboardBuilder
-    kb = InlineKeyboardBuilder()
-    kb.button(text="📢 Разослать",  callback_data=f"{CB_PANEL}:broadcast_send")
-    kb.button(text="✖️ Отмена",     callback_data=f"{CB_PANEL}:main")
-    kb.adjust(2)
-
+    data = await state.get_data()
+    target = data.get("bc_target", "all")
     await message.answer(
-        f"📢 <b>Предпросмотр:</b>\n\n{message.text}\n\n"
-        "Разослать всем активным пользователям?",
-        reply_markup=kb.as_markup(),
+        f"📢 <b>Предпросмотр ↑</b>\n\n"
+        f"Разослать <b>{_BC_TARGET_LABEL.get(target, target)}</b>?",
+        reply_markup=broadcast_confirm_kb(),
     )
 
 
-@router.callback_query(BroadcastStates.confirm, F.data == f"{CB_PANEL}:broadcast_send")
+@router.callback_query(BroadcastStates.confirm, F.data == f"{CB_PANEL}:bc_send")
 async def cb_broadcast_send(
     call: CallbackQuery, state: FSMContext, session: AsyncSession
 ) -> None:
     data = await state.get_data()
     await state.clear()
-    text = data.get("text", "")
+    target = data.get("bc_target", "all")
+    from_chat = data.get("bc_from_chat")
+    msg_id = data.get("bc_msg_id")
+    if from_chat is None or msg_id is None:
+        await call.answer("Нет сообщения для рассылки", show_alert=True)
+        return
 
     await call.message.edit_text("⏳ Рассылаю...")
     await call.answer()
 
-    users = await repo.list_all_users_for_broadcast(session)
+    users = await repo.list_broadcast_targets(session, target)
     sent = failed = 0
     for user in users:
         try:
-            await tg_bot.send_message(user.tg_id, text)
+            await tg_bot.copy_message(
+                chat_id=user.tg_id, from_chat_id=from_chat, message_id=msg_id
+            )
             sent += 1
         except Exception:
             failed += 1
         await asyncio.sleep(0.05)  # ~20 msg/s, не словить flood
 
     await call.message.edit_text(
-        f"📢 <b>Рассылка завершена</b>\n\n"
+        f"📢 <b>Рассылка завершена</b> ({_BC_TARGET_LABEL.get(target, target)})\n\n"
         f"✅ Отправлено: <b>{sent}</b>\n"
         f"❌ Ошибок: <b>{failed}</b>",
         reply_markup=back_to_panel(),

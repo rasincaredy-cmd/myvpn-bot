@@ -111,6 +111,22 @@ async def list_all_users_for_broadcast(session: AsyncSession) -> list[User]:
     return list(result.scalars())
 
 
+async def list_broadcast_targets(session: AsyncSession, target: str) -> list[User]:
+    """Аудитория рассылки: all | active (активная подписка) | inactive (истёкшая/нет).
+    Заблокированных не берём никогда."""
+    now = datetime.now(timezone.utc)
+    stmt = select(User).where(User.is_blocked.is_(False))
+    if target == "active":
+        stmt = stmt.where(
+            (User.sub_expires_at.is_(None)) | (User.sub_expires_at > now)
+        )
+    elif target == "inactive":
+        stmt = stmt.where(User.sub_expires_at.isnot(None)).where(
+            User.sub_expires_at <= now
+        )
+    return list((await session.execute(stmt.order_by(User.id))).scalars())
+
+
 async def set_user_blocked(
     session: AsyncSession, user_id: int, blocked: bool
 ) -> None:
@@ -260,6 +276,7 @@ async def create_wdtt_access(
     password_enc: bytes,
     expires_at: datetime | None,
     device_id: int | None = None,
+    platform: str | None = None,
 ) -> WdttAccess:
     access = WdttAccess(
         server_id=server_id,
@@ -270,10 +287,21 @@ async def create_wdtt_access(
         password_enc=password_enc,
         status=PeerStatus.ACTIVE,
         expires_at=expires_at,
+        platform=platform,
     )
     session.add(access)
     await session.flush()
     return access
+
+
+async def count_active_wdtt_for_user(session: AsyncSession, user_id: int) -> int:
+    return (
+        await session.execute(
+            select(func.count(WdttAccess.id))
+            .where(WdttAccess.user_id == user_id)
+            .where(WdttAccess.status == PeerStatus.ACTIVE)
+        )
+    ).scalar() or 0
 
 
 async def get_wdtt_access(session: AsyncSession, access_id: int) -> WdttAccess | None:
@@ -376,6 +404,18 @@ async def purge_revoked_wdtt(session: AsyncSession) -> int:
     return result.rowcount or 0
 
 
+async def delete_device(session: AsyncSession, device_id: int) -> None:
+    """Полностью удаляет устройство из БД: его wdtt-доступы и пиры (освобождает
+    их IP) + саму запись устройства. Снятие пиров с сервера по SSH — на вызывающем.
+    Отозванный/удалённый девайс не оставляем мусором (в отличие от 30-дн retention
+    у одиночных пиров — тут юзер явно удаляет своё устройство)."""
+    await session.execute(
+        delete(WdttAccess).where(WdttAccess.device_id == device_id)
+    )
+    await session.execute(delete(Peer).where(Peer.device_id == device_id))
+    await session.execute(delete(Device).where(Device.id == device_id))
+
+
 async def backfill_devices(session: AsyncSession) -> int:
     """Грандфазер (Блок 9): активные пиры без device_id заворачиваем в устройства.
     Идемпотентно — берём только device_id IS NULL. Отозванные не трогаем."""
@@ -436,6 +476,7 @@ async def set_subscription(
     user_id: int,
     *,
     max_devices: int | None = None,
+    max_bypass: int | None = None,
     expires_at: datetime | None = None,
     touch_expires: bool = False,
     traffic_limit_bytes: int | None = None,
@@ -448,6 +489,8 @@ async def set_subscription(
     values: dict = {}
     if max_devices is not None:
         values["sub_max_devices"] = max_devices
+    if max_bypass is not None:
+        values["sub_max_bypass"] = max_bypass
     if touch_expires:
         values["sub_expires_at"] = expires_at
         values["sub_warn_flags"] = 0  # новый срок → предупреждаем заново

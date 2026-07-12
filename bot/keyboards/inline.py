@@ -35,7 +35,7 @@ def main_menu(is_admin: bool) -> InlineKeyboardMarkup:
     if is_admin:
         kb.button(text="👮 Админ-панель", callback_data=f"{CB_PANEL}:main")
     kb.button(text="🔔 Оповещения", callback_data=f"{CB_MENU}:notify")
-    kb.button(text="🆘 Помощь", callback_data=f"{CB_MENU}:help")
+    kb.button(text="🆘 Поддержка", callback_data=f"{CB_MENU}:help")
     kb.adjust(1)
     return kb.as_markup()
 
@@ -272,6 +272,24 @@ def admin_panel_menu() -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
+def broadcast_target_kb() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="👥 Все", callback_data=f"{CB_PANEL}:bc_to:all")
+    kb.button(text="✅ С активной подпиской", callback_data=f"{CB_PANEL}:bc_to:active")
+    kb.button(text="⌛ Без активной подписки", callback_data=f"{CB_PANEL}:bc_to:inactive")
+    kb.button(text="« Админ-панель", callback_data=f"{CB_PANEL}:main")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def broadcast_confirm_kb() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="📢 Разослать", callback_data=f"{CB_PANEL}:bc_send")
+    kb.button(text="✖️ Отмена", callback_data=f"{CB_PANEL}:main")
+    kb.adjust(2)
+    return kb.as_markup()
+
+
 def back_to_panel() -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="« Админ-панель", callback_data=f"{CB_PANEL}:main")
@@ -352,8 +370,9 @@ def device_card_kb(device_id: int, can_get: bool, can_revoke: bool) -> InlineKey
     kb = InlineKeyboardBuilder()
     if can_get:
         kb.button(text="📥 Получить конфиг", callback_data=f"{CB_DEVICE}:send:{device_id}")
-    if can_revoke:
-        kb.button(text="🗑 Удалить устройство", callback_data=f"{CB_DEVICE}:revoke:{device_id}")
+    # Удаление доступно всегда: активное устройство удаляется (с отзывом), а
+    # неактивное (истекшее) — убирается из списка, чтобы не висело мусором.
+    kb.button(text="🗑 Удалить устройство", callback_data=f"{CB_DEVICE}:revoke:{device_id}")
     kb.button(text="« К устройствам", callback_data=f"{CB_DEVICE}:list")
     kb.adjust(1)
     return kb.as_markup()
@@ -370,6 +389,7 @@ def subscription_kb(has_devices_slot: bool) -> InlineKeyboardMarkup:
 def admin_sub_kb(user_id: int, page: int) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="📱 Лимит устройств", callback_data=f"{CB_PANEL}:sub_lim:{user_id}:{page}")
+    kb.button(text="🛡 Лимит обхода БС",  callback_data=f"{CB_PANEL}:sub_bp:{user_id}:{page}")
     kb.button(text="📅 Продлить срок",   callback_data=f"{CB_PANEL}:sub_ext:{user_id}:{page}")
     kb.button(text="📊 Лимит трафика",   callback_data=f"{CB_PANEL}:sub_trf:{user_id}:{page}")
     kb.button(text="🚫 Отключить (срок в 0)", callback_data=f"{CB_PANEL}:sub_off:{user_id}:{page}")

@@ -122,6 +122,7 @@ async def cb_dev_add(call: CallbackQuery, state: FSMContext, session: AsyncSessi
         await call.answer("Нет доступных серверов. Попробуй позже.", show_alert=True)
         return
     await state.set_state(DeviceStates.label)
+    await state.update_data(cancel_to="dev")  # отмена → список устройств
     await call.message.edit_text(t.device_ask_label, reply_markup=cancel_only())
     await call.answer()
 
@@ -256,7 +257,8 @@ async def cb_dev_revoke(call: CallbackQuery, session: AsyncSession) -> None:
     if device is None or user is None or device.user_id != user.id:
         await call.answer("Не найдено", show_alert=True)
         return
-    # Снимаем WG-пиры устройства с серверов (best-effort), обход БС — по паролю.
+    # Снимаем WG-пиры устройства с серверов (best-effort), обход БС — по паролю,
+    # затем УДАЛЯЕМ устройство из БД целиком (пиры+доступы), освобождая IP.
     peers = [p for p in await repo.list_peers_for_device(session, device.id)
              if p.status == PeerStatus.ACTIVE]
     for peer in peers:
@@ -267,7 +269,7 @@ async def cb_dev_revoke(call: CallbackQuery, session: AsyncSession) -> None:
             async with SSHClient(repo.creds_from_server(server)) as ssh:
                 await amnezia.remove_peer_on_server(ssh, public_key=peer.public_key)
         except SSHError as exc:
-            logger.warning("Device revoke peer ssh error {}: {}", peer.id, exc)
+            logger.warning("Device delete peer ssh error {}: {}", peer.id, exc)
     from bot.services import wdtt as wdtt_svc
     from bot.config import settings
     for acc in [a for a in await repo.list_wdtt_for_device(session, device.id)
@@ -281,11 +283,12 @@ async def cb_dev_revoke(call: CallbackQuery, session: AsyncSession) -> None:
                     ssh, password=decrypt(acc.password_enc), binary=settings.wdtt_binary_path
                 )
         except SSHError as exc:
-            logger.warning("Device revoke wdtt ssh error {}: {}", acc.id, exc)
-    await repo.revoke_device(session, device.id)
+            logger.warning("Device delete wdtt ssh error {}: {}", acc.id, exc)
+    label = device.label
+    await repo.delete_device(session, device.id)
     await session.commit()
     await call.message.edit_text(
-        t.device_revoked.format(label=device.label), reply_markup=back_to_menu()
+        t.device_revoked.format(label=label), reply_markup=back_to_menu()
     )
     await call.answer()
 
@@ -301,17 +304,16 @@ async def cb_sub_my(call: CallbackQuery, session: AsyncSession) -> None:
         full_name=call.from_user.full_name,
     )
     used = await repo.count_active_devices(session, user.id)
-    if user.sub_traffic_limit_bytes is None:
-        trf_line = "безлимит"
-    else:
-        period_used = await repo.sub_traffic_used(session, user)
-        trf_line = (
-            f"{amnezia.fmt_bytes(period_used)} из "
-            f"{amnezia.fmt_bytes(user.sub_traffic_limit_bytes)}"
-        )
+    bypass = await repo.count_active_wdtt_for_user(session, user.id)
+    trf_line = amnezia.fmt_traffic_line(
+        await repo.sub_traffic_used(session, user),
+        user.sub_traffic_limit_bytes,
+        expired=not _sub_active(user),
+    )
     text = (
         "🎫 <b>Моя подписка</b>\n"
         f"• Устройства: <b>{used}/{user.sub_max_devices}</b>\n"
+        f"• Обход БС: <b>{bypass}/{user.sub_max_bypass}</b>\n"
         f"• Срок: <b>{_sub_line(user)}</b>\n"
         f"• Трафик: <b>{trf_line}</b>"
     )

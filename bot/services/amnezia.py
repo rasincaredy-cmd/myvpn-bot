@@ -413,6 +413,18 @@ def fmt_bytes(n: int) -> str:
     return f"{n:.1f} TB"
 
 
+def fmt_traffic_line(used_bytes: int, limit_bytes: int | None, expired: bool) -> str:
+    """Строка трафика для карточек подписки. При истёкшей подписке показываем как
+    полностью израсходовано (лимит/лимит), а безлимит — как «исчерпан»,
+    чтобы не было странного «безлимит» рядом с «истекла»."""
+    if limit_bytes is None:
+        return "исчерпан" if expired else "безлимит"
+    total = fmt_bytes(limit_bytes)
+    if expired:
+        return f"{total} из {total} (исчерпан)"
+    return f"{fmt_bytes(used_bytes)} из {total}"
+
+
 @dataclass(slots=True)
 class PeerTrafficInfo:
     public_key: str

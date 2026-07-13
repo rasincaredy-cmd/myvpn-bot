@@ -131,7 +131,7 @@ async def cb_dev_add(call: CallbackQuery, state: FSMContext, session: AsyncSessi
 async def step_device_label(message: Message, state: FSMContext, session: AsyncSession) -> None:
     label = message.text.strip()
     if not is_valid_label(label):
-        await message.answer("Метка: латиница/цифры/пробел/_-, до 32. Ещё раз:")
+        await message.answer("Метка: буквы/цифры/пробел/-_, до 32 символов. Ещё раз:")
         return
     await state.clear()
     user = await repo.get_or_create_user(
@@ -205,11 +205,10 @@ async def cb_dev_open(call: CallbackQuery, session: AsyncSession) -> None:
         f"• Статус: <b>{device.status}</b>",
     ]
     if active_peers:
+        labels = await repo.server_labels_map(session)
         lines.append("• Конфиги по локациям:")
         for p in active_peers:
-            srv = await repo.get_server(session, p.server_id)
-            loc = (srv.location or srv.name) if srv else "?"
-            lines.append(f"   • {loc}")
+            lines.append(f"   • {labels.get(p.server_id, '?')}")
     lines.append(
         f"• Доступов обхода: <b>{sum(1 for a in accesses if a.status == PeerStatus.ACTIVE)}</b>"
     )
@@ -257,35 +256,10 @@ async def cb_dev_revoke(call: CallbackQuery, session: AsyncSession) -> None:
     if device is None or user is None or device.user_id != user.id:
         await call.answer("Не найдено", show_alert=True)
         return
-    # Снимаем WG-пиры устройства с серверов (best-effort), обход БС — по паролю,
-    # затем УДАЛЯЕМ устройство из БД целиком (пиры+доступы), освобождая IP.
-    peers = [p for p in await repo.list_peers_for_device(session, device.id)
-             if p.status == PeerStatus.ACTIVE]
-    for peer in peers:
-        server = await repo.get_server(session, peer.server_id)
-        if server is None:
-            continue
-        try:
-            async with SSHClient(repo.creds_from_server(server)) as ssh:
-                await amnezia.remove_peer_on_server(ssh, public_key=peer.public_key)
-        except SSHError as exc:
-            logger.warning("Device delete peer ssh error {}: {}", peer.id, exc)
-    from bot.services import wdtt as wdtt_svc
-    from bot.config import settings
-    for acc in [a for a in await repo.list_wdtt_for_device(session, device.id)
-                if a.status == PeerStatus.ACTIVE]:
-        server = await repo.get_server(session, acc.server_id)
-        if server is None:
-            continue
-        try:
-            async with SSHClient(repo.creds_from_server(server)) as ssh:
-                await wdtt_svc.remove_access(
-                    ssh, password=decrypt(acc.password_enc), binary=settings.wdtt_binary_path
-                )
-        except SSHError as exc:
-            logger.warning("Device delete wdtt ssh error {}: {}", acc.id, exc)
+    # Снимаем всё с серверов и удаляем устройство из БД целиком (освобождает IP).
+    from bot.services import teardown
     label = device.label
-    await repo.delete_device(session, device.id)
+    await teardown.delete_device(session, device)
     await session.commit()
     await call.message.edit_text(
         t.device_revoked.format(label=label), reply_markup=back_to_menu()

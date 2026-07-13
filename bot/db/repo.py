@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import case, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
@@ -18,6 +18,37 @@ from bot.db.models import (
 )
 from bot.services.crypto import decrypt
 from bot.services.ssh import SSHCredentials
+
+
+def _as_utc(dt: datetime) -> datetime:
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
+def user_sub_tier(user: "User") -> str:
+    """Уровень юзера для сегментации: 'paid' | 'trial' | 'none'.
+    Бессрочная (NULL) подписка считается платной/активной, триал — только с конечным сроком."""
+    exp = user.sub_expires_at
+    active = exp is None or _as_utc(exp) > datetime.now(timezone.utc)
+    if not active:
+        return "none"
+    if user.is_trial and exp is not None:
+        return "trial"
+    return "paid"
+
+
+async def server_labels_map(session: AsyncSession) -> dict[int, str]:
+    """id сервера → человекочитаемое имя «Локация N» (номер = порядок сервера
+    в своей локации по id). Если локация не задана — имя сервера."""
+    servers = list((await session.execute(select(Server).order_by(Server.id))).scalars())
+    idx: dict[str, int] = {}
+    result: dict[int, str] = {}
+    for s in servers:
+        if s.location:
+            idx[s.location] = idx.get(s.location, 0) + 1
+            result[s.id] = f"{s.location} {idx[s.location]}"
+        else:
+            result[s.id] = s.name
+    return result
 
 
 def creds_from_server(server: Server) -> SSHCredentials:
@@ -98,8 +129,21 @@ async def count_users(session: AsyncSession) -> int:
 async def list_all_users(
     session: AsyncSession, offset: int = 0, limit: int = 10
 ) -> list[User]:
+    # Сортировка сегментами: активная платная → активный триал → без подписки,
+    # заблокированные — в самый низ. Внутри сегмента — по id.
+    now = datetime.now(timezone.utc)
+    active = (User.sub_expires_at.is_(None)) | (User.sub_expires_at > now)
+    paid = (User.is_trial.is_(False)) | (User.sub_expires_at.is_(None))
+    tier = case(
+        (active & paid, 0),
+        (active, 1),
+        else_=2,
+    )
     result = await session.execute(
-        select(User).order_by(User.id).offset(offset).limit(limit)
+        select(User)
+        .order_by(User.is_blocked.asc(), tier, User.id)
+        .offset(offset)
+        .limit(limit)
     )
     return list(result.scalars())
 
@@ -109,6 +153,15 @@ async def list_all_users_for_broadcast(session: AsyncSession) -> list[User]:
         select(User).where(User.is_blocked.is_(False)).order_by(User.id)
     )
     return list(result.scalars())
+
+
+async def list_users_by_ids(session: AsyncSession, ids: list[int]) -> list[User]:
+    """Юзеры по списку внутренних id (для ручной рассылки), кроме заблокированных."""
+    if not ids:
+        return []
+    return list((await session.execute(
+        select(User).where(User.id.in_(ids)).where(User.is_blocked.is_(False)).order_by(User.id)
+    )).scalars())
 
 
 async def list_broadcast_targets(session: AsyncSession, target: str) -> list[User]:
@@ -482,6 +535,7 @@ async def set_subscription(
     traffic_limit_bytes: int | None = None,
     touch_traffic_limit: bool = False,
     reset_traffic_base: bool = False,
+    mark_paid: bool = False,
 ) -> None:
     """Обновляет подписку юзера. expires_at/traffic_limit меняются только при
     соответствующем touch_* (иначе None трактовался бы как «снять»). При продлении
@@ -498,6 +552,8 @@ async def set_subscription(
         values["sub_traffic_limit_bytes"] = traffic_limit_bytes
     if reset_traffic_base:
         values["sub_traffic_base_bytes"] = await sum_user_traffic(session, user_id)
+    if mark_paid:
+        values["is_trial"] = False
     if values:
         await session.execute(
             update(User).where(User.id == user_id).values(**values)

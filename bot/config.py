@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     trial_devices: int = 2
     trial_days: int = 7
     # Лимит трафика триала в ГБ на подписку (0 = безлимит).
-    trial_traffic_gb: int = 0
+    trial_traffic_gb: int = 10
 
     # Контакт поддержки/связи с админом (напр. "@vlad" или "https://t.me/...").
     # Пусто → в тексте помощи предложим написать через /start у админа.

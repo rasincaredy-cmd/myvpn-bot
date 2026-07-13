@@ -29,6 +29,8 @@ from bot.keyboards.inline import (
     confirm_delete_server,
     server_card,
     server_peers_admin,
+    server_wdtt_card_kb,
+    server_wdtt_list_kb,
     servers_list,
     stats_nav,       # ← новое
     traffic_nav,     # ← новое
@@ -309,7 +311,7 @@ async def cb_admin_peer_rename(
     await call.message.edit_text(
         f"✏️ <b>Переименование</b>\n\n"
         f"Текущая метка: <code>{peer.label}</code>\n\n"
-        "Введи новую метку (латиница/цифры/пробел/<code>_-</code>, до 32 символов):",
+        "Введи новую метку (буквы/цифры/пробел/<code>_-</code>, до 32 символов):",
         reply_markup=kb.as_markup(),
     )
     await call.answer()
@@ -322,7 +324,7 @@ async def step_peer_rename(
     label = message.text.strip()
     if not is_valid_label(label):
         await message.answer(
-            "Метка: латиница/цифры/пробел/<code>_-</code>, до 32 символов. Ещё раз:"
+            "Метка: буквы/цифры/пробел/<code>_-</code>, до 32 символов. Ещё раз:"
         )
         return
 
@@ -658,3 +660,72 @@ async def cb_server_cleanup(call: CallbackQuery, session: AsyncSession) -> None:
 
 # Индивидуальные лимиты пира (срок/трафик) убраны: единый гейт — подписка юзера
 # (срок + лимит трафика на подписку). См. handlers/admin_panel.py и scheduler.py.
+
+
+# --- Обходы БС сервера (admin: «обходы как пиры») ----------------------------
+
+_PLAT = {"android": "Android", "ios": "iOS", "pc": "ПК"}
+
+
+async def _render_server_wdtt(call, session, server_id: int) -> None:
+    server = await repo.get_server(session, server_id)
+    if server is None:
+        await call.answer("Не найдено", show_alert=True)
+        return
+    accesses = [a for a in await repo.list_wdtt_for_server(session, server_id)
+                if a.status == PeerStatus.ACTIVE]
+    rows = []
+    for a in accesses:
+        owner = await repo.get_user_by_id(session, a.user_id)
+        who = (f"@{owner.username}" if owner and owner.username
+               else f"id{owner.tg_id}") if owner else "?"
+        plat = _PLAT.get(a.platform or "", "")
+        lbl = a.label + (f" · {plat}" if plat else "") + f" · {who}"
+        rows.append((a.id, lbl))
+    await call.message.edit_text(
+        f"🛡 <b>Обходы — {server.name}</b>\nАктивных: <b>{len(accesses)}</b>",
+        reply_markup=server_wdtt_list_kb(rows, server_id),
+    )
+
+
+@router.callback_query(F.data.startswith(f"{CB_SERVERS}:wdtt:"))
+async def cb_server_wdtt(call: CallbackQuery, session: AsyncSession) -> None:
+    server_id = int(call.data.rsplit(":", 1)[-1])
+    await _render_server_wdtt(call, session, server_id)
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith(f"{CB_SERVERS}:wopen:"))
+async def cb_server_wdtt_open(call: CallbackQuery, session: AsyncSession) -> None:
+    access_id = int(call.data.rsplit(":", 1)[-1])
+    access = await repo.get_wdtt_access(session, access_id)
+    if access is None:
+        await call.answer("Не найдено", show_alert=True)
+        return
+    owner = await repo.get_user_by_id(session, access.user_id)
+    who = (f"@{owner.username}" if owner and owner.username
+           else f"id <code>{owner.tg_id}</code>") if owner else "?"
+    plat = _PLAT.get(access.platform or "", "—")
+    await call.message.edit_text(
+        f"🛡 <b>{access.label}</b>\n"
+        f"• Платформа: <b>{plat}</b>\n"
+        f"• Владелец: {who}\n"
+        f"• Статус: <b>{access.status}</b>",
+        reply_markup=server_wdtt_card_kb(access.id, access.server_id),
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith(f"{CB_SERVERS}:wdel:"))
+async def cb_server_wdtt_del(call: CallbackQuery, session: AsyncSession) -> None:
+    parts = call.data.split(":")
+    access_id, server_id = int(parts[2]), int(parts[3])
+    access = await repo.get_wdtt_access(session, access_id)
+    if access is None:
+        await call.answer("Не найдено", show_alert=True)
+        return
+    from bot.services import teardown
+    await teardown.revoke_bypass(session, access)
+    await session.commit()
+    await _render_server_wdtt(call, session, server_id)
+    await call.answer("Отозвано")

@@ -345,7 +345,7 @@ async def step_peer_label(
     label = message.text.strip()
     if not is_valid_label(label):
         await message.answer(
-            "Метка: латиница/цифры/пробел/<code>_-</code>, до 32 символов. Ещё раз:"
+            "Метка: буквы/цифры/пробел/<code>_-</code>, до 32 символов. Ещё раз:"
         )
         return
     data = await state.get_data()

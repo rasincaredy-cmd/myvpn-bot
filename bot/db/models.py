@@ -70,6 +70,11 @@ class User(Base):
     sub_max_bypass: Mapped[int] = mapped_column(
         Integer, default=2, server_default="2", nullable=False
     )
+    # Триал vs платная подписка. Новый юзер = триал (лимит трафика/срок из конфига);
+    # как только админ задаёт срок подписки — снимаем флаг (становится платным).
+    is_trial: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default="1", nullable=False
+    )
     # Битовая маска отправленных предупреждений о скором истечении ПОДПИСКИ
     # (биты = scheduler.WARN_OFFSETS_HOURS). Сбрасывается при продлении срока.
     sub_warn_flags: Mapped[int] = mapped_column(

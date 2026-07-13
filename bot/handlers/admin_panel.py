@@ -17,8 +17,12 @@ from bot.keyboards.inline import (
     CB_PANEL,
     admin_panel_menu,
     admin_sub_kb,
+    admin_user_bypass_card_kb,
+    admin_user_device_card_kb,
+    admin_user_items_kb,
     back_to_panel,
     broadcast_confirm_kb,
+    broadcast_select_kb,
     broadcast_target_kb,
     user_card_kb,
     users_list_kb,
@@ -26,7 +30,7 @@ from bot.keyboards.inline import (
 from bot.loader import bot as tg_bot
 from bot.services import amnezia
 from bot.states.install import BroadcastStates, SubAdminStates
-from bot.utils.validators import parse_traffic_limit
+from bot.utils.validators import parse_expiry, parse_traffic_limit
 
 from datetime import datetime, timedelta, timezone
 
@@ -109,6 +113,7 @@ async def cb_panel_users(call: CallbackQuery, session: AsyncSession) -> None:
 
     await call.message.edit_text(
         f"👤 <b>Пользователи</b>  (всего: {total})\n"
+        f"💎 платная · 🎁 триал · 💤 без подписки · 🔴 бан\n"
         f"Страница {page + 1} из {max(1, -(-total // _PER_PAGE))}",
         reply_markup=users_list_kb(
             users,
@@ -118,6 +123,43 @@ async def cb_panel_users(call: CallbackQuery, session: AsyncSession) -> None:
         ),
     )
     await call.answer()
+
+
+_TIER_LABEL = {
+    "paid": "💎 Платная подписка",
+    "trial": "🎁 Триал",
+    "none": "💤 Без подписки",
+}
+
+
+async def _user_card_text(session: AsyncSession, user) -> str:
+    devices = await repo.count_active_devices(session, user.id)
+    bypass = await repo.count_active_wdtt_for_user(session, user.id)
+    tier = repo.user_sub_tier(user)
+    if user.sub_expires_at is None:
+        srok = "бессрочно"
+    else:
+        exp = _sub_as_utc(user.sub_expires_at)
+        srok = f"{'до' if exp > datetime.now(timezone.utc) else 'истекла'} {user.sub_expires_at.strftime('%d.%m.%Y %H:%M')} UTC"
+    trf = amnezia.fmt_traffic_line(
+        await repo.sub_traffic_used(session, user), user.sub_traffic_limit_bytes,
+        tier == "none",
+    )
+    status = (
+        "🔴 Заблокирован" if user.is_blocked
+        else ("👑 Админ" if user.is_admin else _TIER_LABEL[tier])
+    )
+    return (
+        f"👤 <b>{user.full_name or '—'}</b>\n"
+        f"• Username: {('@' + user.username) if user.username else '—'}\n"
+        f"• Telegram ID: <code>{user.tg_id}</code>\n"
+        f"• Статус: {status}\n"
+        f"• Устройства: <b>{devices}/{user.sub_max_devices}</b>\n"
+        f"• Обход БС: <b>{bypass}/{user.sub_max_bypass}</b>\n"
+        f"• Срок: <b>{srok}</b>\n"
+        f"• Трафик: <b>{trf}</b>\n"
+        f"• С нами с: {user.created_at.strftime('%d.%m.%Y')}"
+    )
 
 
 @router.callback_query(F.data.startswith(f"{CB_PANEL}:user:"))
@@ -130,20 +172,125 @@ async def cb_panel_user_open(call: CallbackQuery, session: AsyncSession) -> None
         await call.answer("Не найдено", show_alert=True)
         return
 
-    peers = await repo.list_peers_for_user(session, user.id)
-    active = sum(1 for p in peers if p.status == PeerStatus.ACTIVE)
-    status = "🔴 Заблокирован" if user.is_blocked else ("👑 Админ" if user.is_admin else "👤 Юзер")
-
     await call.message.edit_text(
-        f"👤 <b>{user.full_name or '—'}</b>\n"
-        f"• Username: {('@' + user.username) if user.username else '—'}\n"
-        f"• Telegram ID: <code>{user.tg_id}</code>\n"
-        f"• Статус: {status}\n"
-        f"• Peers: <b>{active}</b> активных / {len(peers)} всего\n"
-        f"• С нами с: {user.created_at.strftime('%d.%m.%Y')}",
+        await _user_card_text(session, user),
         reply_markup=user_card_kb(user.id, user.is_blocked, page),
     )
     await call.answer()
+
+
+# --- Админ: устройства и обходы конкретного юзера ----------------------------
+
+async def _render_user_devices(call, session, user_id: int, page: int) -> None:
+    devices = await repo.list_devices_for_user(session, user_id, active_only=False)
+    devices.sort(key=lambda d: (d.status != PeerStatus.ACTIVE, d.id))
+    rows = [
+        (d.id, "✅" if d.status == PeerStatus.ACTIVE else "🚫", d.label)
+        for d in devices
+    ]
+    txt = "📱 <b>Устройства юзера</b>" + ("" if devices else "\n\nПусто.")
+    await call.message.edit_text(
+        txt, reply_markup=admin_user_items_kb(rows, "udev", user_id, page)
+    )
+
+
+async def _render_user_bypasses(call, session, user_id: int, page: int) -> None:
+    labels = await repo.server_labels_map(session)
+    accesses = [a for a in await repo.list_wdtt_for_user(session, user_id)
+                if a.status == PeerStatus.ACTIVE]
+    rows = [(a.id, "🛡", f"{a.label} @ {labels.get(a.server_id, '?')}") for a in accesses]
+    txt = "🛡 <b>Обходы юзера</b>" + ("" if accesses else "\n\nПусто.")
+    await call.message.edit_text(
+        txt, reply_markup=admin_user_items_kb(rows, "ubp", user_id, page)
+    )
+
+
+@router.callback_query(F.data.startswith(f"{CB_PANEL}:udev:"))
+async def cb_panel_user_devices(call: CallbackQuery, session: AsyncSession) -> None:
+    parts = call.data.split(":")
+    await _render_user_devices(call, session, int(parts[2]), int(parts[3]))
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith(f"{CB_PANEL}:udevo:"))
+async def cb_panel_user_device_open(call: CallbackQuery, session: AsyncSession) -> None:
+    parts = call.data.split(":")
+    device_id, user_id, page = int(parts[2]), int(parts[3]), int(parts[4])
+    device = await repo.get_device(session, device_id)
+    if device is None:
+        await call.answer("Не найдено", show_alert=True)
+        return
+    labels = await repo.server_labels_map(session)
+    peers = [p for p in await repo.list_peers_for_device(session, device.id)
+             if p.status == PeerStatus.ACTIVE]
+    accesses = await repo.list_wdtt_for_device(session, device.id)
+    lines = [f"📱 <b>{device.label}</b>", f"• Статус: <b>{device.status}</b>"]
+    if peers:
+        lines.append("• Конфиги: " + ", ".join(labels.get(p.server_id, "?") for p in peers))
+    lines.append(f"• Доступов обхода: <b>{sum(1 for a in accesses if a.status == PeerStatus.ACTIVE)}</b>")
+    await call.message.edit_text(
+        "\n".join(lines),
+        reply_markup=admin_user_device_card_kb(device.id, user_id, page),
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith(f"{CB_PANEL}:udevx:"))
+async def cb_panel_user_device_del(call: CallbackQuery, session: AsyncSession) -> None:
+    parts = call.data.split(":")
+    device_id, user_id, page = int(parts[2]), int(parts[3]), int(parts[4])
+    device = await repo.get_device(session, device_id)
+    if device is None:
+        await call.answer("Не найдено", show_alert=True)
+        return
+    from bot.services import teardown
+    label = device.label
+    await teardown.delete_device(session, device)
+    await session.commit()
+    await _render_user_devices(call, session, user_id, page)
+    await call.answer(f"Устройство «{label}» удалено")
+
+
+@router.callback_query(F.data.startswith(f"{CB_PANEL}:ubp:"))
+async def cb_panel_user_bypasses(call: CallbackQuery, session: AsyncSession) -> None:
+    parts = call.data.split(":")
+    await _render_user_bypasses(call, session, int(parts[2]), int(parts[3]))
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith(f"{CB_PANEL}:ubpo:"))
+async def cb_panel_user_bypass_open(call: CallbackQuery, session: AsyncSession) -> None:
+    parts = call.data.split(":")
+    access_id, user_id, page = int(parts[2]), int(parts[3]), int(parts[4])
+    access = await repo.get_wdtt_access(session, access_id)
+    if access is None:
+        await call.answer("Не найдено", show_alert=True)
+        return
+    labels = await repo.server_labels_map(session)
+    plat = {"android": "Android", "ios": "iOS", "pc": "ПК"}.get(access.platform or "", "—")
+    await call.message.edit_text(
+        f"🛡 <b>{access.label}</b>\n"
+        f"• Платформа: <b>{plat}</b>\n"
+        f"• Сервер: <code>{labels.get(access.server_id, '?')}</code>\n"
+        f"• Статус: <b>{access.status}</b>",
+        reply_markup=admin_user_bypass_card_kb(access.id, user_id, page),
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith(f"{CB_PANEL}:ubpx:"))
+async def cb_panel_user_bypass_del(call: CallbackQuery, session: AsyncSession) -> None:
+    parts = call.data.split(":")
+    access_id, user_id, page = int(parts[2]), int(parts[3]), int(parts[4])
+    access = await repo.get_wdtt_access(session, access_id)
+    if access is None:
+        await call.answer("Не найдено", show_alert=True)
+        return
+    from bot.services import teardown
+    await teardown.revoke_bypass(session, access)
+    await session.commit()
+    await _render_user_bypasses(call, session, user_id, page)
+    await call.answer("Доступ отозван")
 
 
 @router.callback_query(
@@ -164,17 +311,10 @@ async def cb_panel_toggle_block(call: CallbackQuery, session: AsyncSession) -> N
 
     await repo.set_user_blocked(session, user.id, block)
     await session.commit()
-
-    peers = await repo.list_peers_for_user(session, user.id)
-    active = sum(1 for p in peers if p.status == PeerStatus.ACTIVE)
-    status = "🔴 Заблокирован" if block else "👤 Юзер"
+    await session.refresh(user)
 
     await call.message.edit_text(
-        f"👤 <b>{user.full_name or '—'}</b>\n"
-        f"• Username: {('@' + user.username) if user.username else '—'}\n"
-        f"• Telegram ID: <code>{user.tg_id}</code>\n"
-        f"• Статус: {status}\n"
-        f"• Peers: <b>{active}</b> активных / {len(peers)} всего",
+        await _user_card_text(session, user),
         reply_markup=user_card_kb(user.id, block, page),
     )
     await call.answer("✅ Готово")
@@ -276,35 +416,40 @@ async def cb_panel_sub_ext(call: CallbackQuery, state: FSMContext) -> None:
     parts = call.data.split(":")
     await state.set_state(SubAdminStates.extend_days)
     await state.update_data(user_id=int(parts[2]), page=int(parts[3]))
-    await call.message.edit_text("📅 На сколько дней продлить подписку? (1–3650):")
+    await call.message.edit_text(
+        "📅 <b>Срок подписки</b>\n\n"
+        "Введи дату <code>ДД.ММ.ГГГГ</code> или период <code>Nд</code> (напр. <code>30д</code>).\n"
+        "Можно со временем: <code>30д 18:00</code>, <code>31.12.2025 09:30</code>.\n"
+        "Без времени: период — от текущего момента, дата — на 23:59 UTC.\n"
+        "Отправь <code>-</code>, чтобы сделать бессрочной."
+    )
     await call.answer()
 
 
 @router.message(SubAdminStates.extend_days, F.text)
 async def step_sub_extend(message: Message, state: FSMContext, session: AsyncSession) -> None:
-    if not message.text.strip().isdigit() or not (1 <= int(message.text.strip()) <= 3650):
-        await message.answer("Нужно число 1–3650. Ещё раз:")
+    result = parse_expiry(message.text.strip())
+    if result == "invalid":
+        await message.answer(
+            "Не понял формат. Примеры: <code>30д</code>, <code>30д 18:00</code>, "
+            "<code>31.12.2025</code>, <code>31.12.2025 09:30</code>, <code>-</code>"
+        )
         return
-    days = int(message.text.strip())
     data = await state.get_data()
     await state.clear()
-    user = await repo.get_user_by_id(session, data["user_id"])
-    now = datetime.now(timezone.utc)
-    base = now
-    if user.sub_expires_at is not None:
-        cur = _sub_as_utc(user.sub_expires_at)
-        base = cur if cur > now else now
-    new_expiry = base + timedelta(days=days)
-    # Продление = новый период: обнуляем расход трафика (base := текущая Σ).
+    # Задание срока = выдача платной подписки: снимаем флаг триала, новый период
+    # трафика (base := текущая Σ).
     await repo.set_subscription(
-        session, user.id,
-        expires_at=new_expiry, touch_expires=True, reset_traffic_base=True,
+        session, data["user_id"],
+        expires_at=result, touch_expires=True, reset_traffic_base=True, mark_paid=True,
     )
     await session.commit()
-    await message.answer(
-        f"✅ Продлено до <b>{new_expiry.strftime('%d.%m.%Y %H:%M')} UTC</b>",
-        reply_markup=admin_sub_kb(user.id, data["page"]),
+    user = await repo.get_user_by_id(session, data["user_id"])
+    msg = (
+        f"✅ Срок установлен: <b>{result.strftime('%d.%m.%Y %H:%M')} UTC</b>"
+        if result else "✅ Подписка сделана бессрочной."
     )
+    await message.answer(msg, reply_markup=admin_sub_kb(user.id, data["page"]))
 
 
 @router.callback_query(F.data.startswith(f"{CB_PANEL}:sub_trf:"))
@@ -359,7 +504,41 @@ _BC_TARGET_LABEL = {
     "all": "всем",
     "active": "с активной подпиской",
     "inactive": "без активной подписки",
+    "manual": "выбранным вручную",
 }
+_BC_SEL_PER_PAGE = 8
+
+
+async def _ask_broadcast_message(call: CallbackQuery, state: FSMContext, target: str) -> None:
+    await state.set_state(BroadcastStates.message)
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✖️ Отмена", callback_data=f"{CB_PANEL}:main")
+    await call.message.edit_text(
+        f"📢 <b>Рассылка → {_BC_TARGET_LABEL.get(target, target)}</b>\n\n"
+        "Пришли сообщение для рассылки — <b>любого типа</b>: текст, фото, видео, "
+        "стикер, GIF (можно с подписью). Отправлю его получателям как есть.",
+        reply_markup=kb.as_markup(),
+    )
+
+
+async def _render_bc_select(call: CallbackQuery, state: FSMContext, session: AsyncSession, page: int) -> None:
+    data = await state.get_data()
+    selected = set(data.get("bc_selected", []))
+    total = await repo.count_users(session)
+    users = await repo.list_all_users(session, offset=page * _BC_SEL_PER_PAGE, limit=_BC_SEL_PER_PAGE)
+    rows = []
+    for u in users:
+        name = (f"@{u.username}" if u.username else None) or u.full_name or f"id{u.tg_id}"
+        rows.append((u.id, u.id in selected, name))
+    await call.message.edit_text(
+        f"✍️ <b>Выбор получателей</b>\nОтмечено: <b>{len(selected)}</b>\n"
+        f"Страница {page + 1} из {max(1, -(-total // _BC_SEL_PER_PAGE))}",
+        reply_markup=broadcast_select_kb(
+            rows, len(selected), page,
+            has_prev=page > 0, has_next=(page + 1) * _BC_SEL_PER_PAGE < total,
+        ),
+    )
 
 
 @router.callback_query(F.data == f"{CB_PANEL}:broadcast")
@@ -373,19 +552,45 @@ async def cb_panel_broadcast(call: CallbackQuery, state: FSMContext) -> None:
 
 
 @router.callback_query(BroadcastStates.target, F.data.startswith(f"{CB_PANEL}:bc_to:"))
-async def cb_broadcast_target(call: CallbackQuery, state: FSMContext) -> None:
+async def cb_broadcast_target(call: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
     target = call.data.rsplit(":", 1)[-1]
     await state.update_data(bc_target=target)
-    await state.set_state(BroadcastStates.message)
-    from aiogram.utils.keyboard import InlineKeyboardBuilder
-    kb = InlineKeyboardBuilder()
-    kb.button(text="✖️ Отмена", callback_data=f"{CB_PANEL}:main")
-    await call.message.edit_text(
-        f"📢 <b>Рассылка → {_BC_TARGET_LABEL.get(target, target)}</b>\n\n"
-        "Пришли сообщение для рассылки — <b>любого типа</b>: текст, фото, видео, "
-        "стикер, GIF (можно с подписью). Отправлю его получателям как есть.",
-        reply_markup=kb.as_markup(),
-    )
+    if target == "manual":
+        await state.update_data(bc_selected=[])
+        await state.set_state(BroadcastStates.select)
+        await _render_bc_select(call, state, session, 0)
+        await call.answer()
+        return
+    await _ask_broadcast_message(call, state, target)
+    await call.answer()
+
+
+@router.callback_query(BroadcastStates.select, F.data.startswith(f"{CB_PANEL}:bc_sel:"))
+async def cb_broadcast_select_toggle(call: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    parts = call.data.split(":")
+    uid, page = int(parts[2]), int(parts[3])
+    data = await state.get_data()
+    selected = set(data.get("bc_selected", []))
+    selected.symmetric_difference_update({uid})  # toggle
+    await state.update_data(bc_selected=list(selected))
+    await _render_bc_select(call, state, session, page)
+    await call.answer()
+
+
+@router.callback_query(BroadcastStates.select, F.data.startswith(f"{CB_PANEL}:bc_selpg:"))
+async def cb_broadcast_select_page(call: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    page = int(call.data.rsplit(":", 1)[-1])
+    await _render_bc_select(call, state, session, page)
+    await call.answer()
+
+
+@router.callback_query(BroadcastStates.select, F.data == f"{CB_PANEL}:bc_seldone")
+async def cb_broadcast_select_done(call: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+    if not data.get("bc_selected"):
+        await call.answer("Никто не выбран", show_alert=True)
+        return
+    await _ask_broadcast_message(call, state, "manual")
     await call.answer()
 
 
@@ -419,7 +624,10 @@ async def cb_broadcast_send(
     await call.message.edit_text("⏳ Рассылаю...")
     await call.answer()
 
-    users = await repo.list_broadcast_targets(session, target)
+    if target == "manual":
+        users = await repo.list_users_by_ids(session, data.get("bc_selected", []))
+    else:
+        users = await repo.list_broadcast_targets(session, target)
     sent = failed = 0
     for user in users:
         try:

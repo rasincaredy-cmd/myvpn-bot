@@ -23,12 +23,14 @@ from bot.filters.admin import AdminFilter
 from bot.keyboards.inline import (
     CB_WDTT,
     back_to_menu,
+    cancel_only,
     pick_server,
     server_card,
     wdtt_platform_kb,
     wdtt_pick_device_kb,
     wdtt_user_card_kb,
     wdtt_user_list_kb,
+    wdtt_vk_choice_kb,
 )
 from bot.services import wdtt as wdtt_svc
 from bot.services.crypto import decrypt, encrypt
@@ -90,12 +92,12 @@ async def cb_wdtt_my(call: CallbackQuery, state: FSMContext, session: AsyncSessi
     total = len(accesses)
     start = page * _WDTT_PER_PAGE
     page_items = accesses[start:start + _WDTT_PER_PAGE]
+    labels = await repo.server_labels_map(session)
     rows = []
     for a in page_items:
-        srv = await repo.get_server(session, a.server_id)
         plat = _PLATFORMS.get(a.platform, ("", ""))[0] if a.platform else ""
         label = f"{a.label} · {plat}" if plat else a.label
-        rows.append((a.id, _mark(a.status), label, srv.name if srv else "?"))
+        rows.append((a.id, _mark(a.status), label, labels.get(a.server_id, "?")))
 
     # Лимит доступов юзер видит в шапке — как у устройств.
     can_create = _sub_active(user) and total < user.sub_max_bypass
@@ -126,12 +128,12 @@ async def cb_wdtt_my_open(call: CallbackQuery, session: AsyncSession) -> None:
     if access is None or user is None or access.user_id != user.id:
         await call.answer("Не найдено", show_alert=True)
         return
-    srv = await repo.get_server(session, access.server_id)
+    labels = await repo.server_labels_map(session)
     plat = _PLATFORMS.get(access.platform, ("—", ""))[0] if access.platform else "—"
     text = (
         f"🛡 <b>{access.label}</b>\n"
         f"• Устройство/платформа: <b>{plat}</b>\n"
-        f"• Сервер: <code>{srv.name if srv else '?'}</code>\n"
+        f"• Локация: <code>{labels.get(access.server_id, '?')}</code>\n"
         f"• Статус: <b>{access.status}</b>"
     )
     if access.expires_at:
@@ -163,21 +165,13 @@ async def cb_wdtt_my_revoke(call: CallbackQuery, session: AsyncSession) -> None:
     if access is None or user is None or access.user_id != user.id:
         await call.answer("Не найдено", show_alert=True)
         return
-    if access.status == PeerStatus.ACTIVE:
-        server = await repo.get_server(session, access.server_id)
-        if server is not None:
-            try:
-                async with SSHClient(repo.creds_from_server(server)) as ssh:
-                    await wdtt_svc.remove_access(
-                        ssh, password=decrypt(access.password_enc),
-                        binary=settings.wdtt_binary_path,
-                    )
-            except SSHError as exc:
-                logger.warning("wdtt user revoke ssh error {}: {}", access.id, exc)
-    # Отозванный обход — мёртвая ссылка (пароль снят, ревайва нет). Не держим
-    # REVOKED-мусор в БД, удаляем строку целиком.
-    await repo.delete_wdtt_access(session, access.id)
+    from bot.services import teardown
+    await teardown.revoke_bypass(session, access)
     await session.commit()
+    await call.message.edit_text(
+        t.wdtt_revoked.format(label=access.label), reply_markup=back_to_menu()
+    )
+    await call.answer()
     await call.message.edit_text(
         t.wdtt_revoked.format(label=access.label), reply_markup=back_to_menu()
     )
@@ -265,9 +259,45 @@ async def cb_wdtt_pick_device(call: CallbackQuery, state: FSMContext, session: A
         await call.answer("Устройство недоступно", show_alert=True)
         return
     await state.update_data(device_id=device_id)
+    await state.set_state(WdttStates.vk)
+    await call.message.edit_text(t.wdtt_ask_vk, reply_markup=wdtt_vk_choice_kb())
+    await call.answer()
+
+
+def _normalize_vk(raw: str) -> str:
+    v = raw.strip()
+    for p in ("https://", "http://"):
+        if v.startswith(p):
+            v = v[len(p):]
+    return v.strip().strip("/")
+
+
+@router.callback_query(WdttStates.vk, F.data == f"{CB_WDTT}:vk:svc")
+async def cb_wdtt_vk_svc(call: CallbackQuery, state: FSMContext) -> None:
+    await state.update_data(vk_hash=None)  # None → возьмём ссылку сервиса из конфига
     await state.set_state(WdttStates.platform)
     await call.message.edit_text(t.wdtt_ask_platform, reply_markup=wdtt_platform_kb())
     await call.answer()
+
+
+@router.callback_query(WdttStates.vk, F.data == f"{CB_WDTT}:vk:own")
+async def cb_wdtt_vk_own(call: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(WdttStates.vk_link)
+    await call.message.edit_text(t.wdtt_ask_vk_link, reply_markup=cancel_only())
+    await call.answer()
+
+
+@router.message(WdttStates.vk_link, F.text)
+async def step_wdtt_vk_link(message: Message, state: FSMContext) -> None:
+    v = _normalize_vk(message.text)
+    if not v or "vk" not in v.lower():
+        await message.answer(
+            "Похоже, это не ссылка на звонок VK. Пришли ещё раз (можно без https):"
+        )
+        return
+    await state.update_data(vk_hash=v)
+    await state.set_state(WdttStates.platform)
+    await message.answer(t.wdtt_ask_platform, reply_markup=wdtt_platform_kb())
 
 
 @router.callback_query(WdttStates.platform, F.data.startswith(f"{CB_WDTT}:plat:"))
@@ -291,6 +321,8 @@ async def cb_wdtt_platform(call: CallbackQuery, state: FSMContext, session: Asyn
         await call.answer()
         return
 
+    # Своя VK-ссылка юзера (если выбрал) переопределяет ссылку сервиса из конфига.
+    vk_hashes = data.get("vk_hash") or settings.wdtt_vk_hashes
     await call.message.edit_text(t.wdtt_creating)
     try:
         async with SSHClient(repo.creds_from_server(server)) as ssh:
@@ -298,7 +330,7 @@ async def cb_wdtt_platform(call: CallbackQuery, state: FSMContext, session: Asyn
                 ssh,
                 days=_sub_days_left(user),
                 label=device.label,
-                vk_hashes=settings.wdtt_vk_hashes,
+                vk_hashes=vk_hashes,
                 ports=server.wdtt_ports,
                 binary=settings.wdtt_binary_path,
             )
@@ -331,9 +363,13 @@ async def cb_wdtt_platform(call: CallbackQuery, state: FSMContext, session: Asyn
     )
     await session.commit()
 
+    labels = await repo.server_labels_map(session)
     _, app_name = _PLATFORMS[platform]
     await call.message.edit_text(
-        t.wdtt_created.format(label=device.label, server=server.name, app=app_name, link=link),
+        t.wdtt_created.format(
+            label=device.label, server=labels.get(server.id, server.name),
+            app=app_name, link=link,
+        ),
         reply_markup=back_to_menu(),
     )
     await call.answer("Готово")

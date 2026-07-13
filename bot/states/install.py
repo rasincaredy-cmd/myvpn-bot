@@ -29,6 +29,7 @@ class InviteStates(StatesGroup):
 
 class BroadcastStates(StatesGroup):
     target  = State()
+    select  = State()   # ручной выбор получателей (чекбоксы)
     message = State()
     confirm = State()
 
@@ -47,6 +48,8 @@ class WdttStates(StatesGroup):
     platform = State()
     pick_server = State()
     pick_device = State()
+    vk = State()        # выбор: ссылка сервиса или своя
+    vk_link = State()   # ввод своей VK-ссылки
 
 
 class DeviceStates(StatesGroup):

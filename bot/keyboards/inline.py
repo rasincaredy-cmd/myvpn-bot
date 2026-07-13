@@ -82,7 +82,7 @@ def servers_list(servers: list[Server]) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     for s in servers:
         kb.button(text=f"🖥 {s.name} ({s.status})", callback_data=f"{CB_SERVERS}:open:{s.id}")
-    kb.button(text="« В меню", callback_data=f"{CB_MENU}:open")
+    kb.button(text="« Админ-панель", callback_data=f"{CB_PANEL}:main")
     kb.adjust(1)
     return kb.as_markup()
 
@@ -92,6 +92,7 @@ def server_card(server_id: int, wdtt_enabled: bool = False) -> InlineKeyboardMar
     kb.button(text="➕ Создать peer",  callback_data=f"{CB_PEERS}:new:{server_id}")
     kb.button(text="🎟 Инвайт",        callback_data=f"{CB_INVITES}:new:{server_id}")
     kb.button(text="👥 Peers сервера", callback_data=f"{CB_SERVERS}:peers:{server_id}")
+    kb.button(text="🛡 Обходы сервера", callback_data=f"{CB_SERVERS}:wdtt:{server_id}")
     kb.button(text="📋 Инвайты",       callback_data=f"{CB_INVITES}:list:{server_id}")
     kb.button(text="📊 Трафик",        callback_data=f"{CB_SERVERS}:traffic:{server_id}")
     kb.button(text="🖥 Состояние",     callback_data=f"{CB_SERVERS}:stats:{server_id}")
@@ -103,7 +104,26 @@ def server_card(server_id: int, wdtt_enabled: bool = False) -> InlineKeyboardMar
     )
     kb.button(text="🗑 Удалить", callback_data=f"{CB_SERVERS}:del:{server_id}")
     kb.button(text="« К списку", callback_data=f"{CB_SERVERS}:list")
-    kb.adjust(2, 2, 2, 1, 1, 1, 1)
+    kb.adjust(2, 2, 2, 2, 1, 1, 1)
+    return kb.as_markup()
+
+
+def server_wdtt_list_kb(
+    rows: list[tuple[int, str]], server_id: int  # (access_id, label)
+) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    for access_id, label in rows:
+        kb.button(text=f"🛡 {label}", callback_data=f"{CB_SERVERS}:wopen:{access_id}")
+    kb.button(text="« К серверу", callback_data=f"{CB_SERVERS}:open:{server_id}")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def server_wdtt_card_kb(access_id: int, server_id: int) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🗑 Отозвать", callback_data=f"{CB_SERVERS}:wdel:{access_id}:{server_id}")
+    kb.button(text="« К обходам", callback_data=f"{CB_SERVERS}:wdtt:{server_id}")
+    kb.adjust(1)
     return kb.as_markup()
 
 
@@ -277,6 +297,28 @@ def broadcast_target_kb() -> InlineKeyboardMarkup:
     kb.button(text="👥 Все", callback_data=f"{CB_PANEL}:bc_to:all")
     kb.button(text="✅ С активной подпиской", callback_data=f"{CB_PANEL}:bc_to:active")
     kb.button(text="⌛ Без активной подписки", callback_data=f"{CB_PANEL}:bc_to:inactive")
+    kb.button(text="✍️ Выбрать вручную", callback_data=f"{CB_PANEL}:bc_to:manual")
+    kb.button(text="« Админ-панель", callback_data=f"{CB_PANEL}:main")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def broadcast_select_kb(
+    rows: list[tuple[int, bool, str]],  # (user_id, checked, name)
+    selected_count: int,
+    page: int,
+    has_prev: bool,
+    has_next: bool,
+) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    for uid, checked, name in rows:
+        mark = "☑️" if checked else "⬜"
+        kb.button(text=f"{mark} {name}", callback_data=f"{CB_PANEL}:bc_sel:{uid}:{page}")
+    if has_prev:
+        kb.button(text="← Назад",  callback_data=f"{CB_PANEL}:bc_selpg:{page - 1}")
+    if has_next:
+        kb.button(text="Вперёд →", callback_data=f"{CB_PANEL}:bc_selpg:{page + 1}")
+    kb.button(text=f"✅ Готово ({selected_count})", callback_data=f"{CB_PANEL}:bc_seldone")
     kb.button(text="« Админ-панель", callback_data=f"{CB_PANEL}:main")
     kb.adjust(1)
     return kb.as_markup()
@@ -296,14 +338,60 @@ def back_to_panel() -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
+def admin_user_items_kb(
+    rows: list[tuple[int, str, str]],  # (item_id, mark, label)
+    kind: str,                          # "udev" | "ubp"
+    user_id: int,
+    page: int,
+) -> InlineKeyboardMarkup:
+    """Список устройств/обходов юзера в админке. kind → open-callback."""
+    kb = InlineKeyboardBuilder()
+    for item_id, mark, label in rows:
+        kb.button(text=f"{mark} {label}", callback_data=f"{CB_PANEL}:{kind}o:{item_id}:{user_id}:{page}")
+    kb.button(text="« К пользователю", callback_data=f"{CB_PANEL}:user:{user_id}:{page}")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def admin_user_device_card_kb(device_id: int, user_id: int, page: int) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🗑 Удалить устройство", callback_data=f"{CB_PANEL}:udevx:{device_id}:{user_id}:{page}")
+    kb.button(text="« К устройствам", callback_data=f"{CB_PANEL}:udev:{user_id}:{page}")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def admin_user_bypass_card_kb(access_id: int, user_id: int, page: int) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🗑 Отозвать доступ", callback_data=f"{CB_PANEL}:ubpx:{access_id}:{user_id}:{page}")
+    kb.button(text="« К обходам", callback_data=f"{CB_PANEL}:ubp:{user_id}:{page}")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
 def users_list_kb(
     users: list, page: int, has_prev: bool, has_next: bool
 ) -> InlineKeyboardMarkup:
+    from datetime import datetime, timezone
+
+    def _icon(u) -> str:
+        if u.is_blocked:
+            return "🔴"
+        if u.is_admin:
+            return "👑"
+        exp = u.sub_expires_at
+        exp_aware = exp if (exp is None or exp.tzinfo) else exp.replace(tzinfo=timezone.utc)
+        active = exp is None or exp_aware > datetime.now(timezone.utc)
+        if not active:
+            return "💤"  # без активной подписки
+        if u.is_trial and exp is not None:
+            return "🎁"  # триал
+        return "💎"  # платная
+
     kb = InlineKeyboardBuilder()
     for u in users:
-        icon = "🔴" if u.is_blocked else ("👑" if u.is_admin else "👤")
         name = (f"@{u.username}" if u.username else None) or u.full_name or f"id{u.tg_id}"
-        kb.button(text=f"{icon} {name}", callback_data=f"{CB_PANEL}:user:{u.id}:{page}")
+        kb.button(text=f"{_icon(u)} {name}", callback_data=f"{CB_PANEL}:user:{u.id}:{page}")
     if has_prev:
         kb.button(text="← Назад",   callback_data=f"{CB_PANEL}:users:{page - 1}")
     if has_next:
@@ -315,13 +403,15 @@ def users_list_kb(
 
 def user_card_kb(user_id: int, is_blocked: bool, page: int) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
+    kb.button(text="📱 Устройства", callback_data=f"{CB_PANEL}:udev:{user_id}:{page}")
+    kb.button(text="🛡 Обходы БС",  callback_data=f"{CB_PANEL}:ubp:{user_id}:{page}")
+    kb.button(text="🎫 Подписка",   callback_data=f"{CB_PANEL}:sub:{user_id}:{page}")
     if is_blocked:
         kb.button(text="✅ Разблокировать", callback_data=f"{CB_PANEL}:unblock:{user_id}:{page}")
     else:
         kb.button(text="🚫 Заблокировать",  callback_data=f"{CB_PANEL}:block:{user_id}:{page}")
-    kb.button(text="🎫 Подписка", callback_data=f"{CB_PANEL}:sub:{user_id}:{page}")
     kb.button(text="« К списку", callback_data=f"{CB_PANEL}:users:{page}")
-    kb.adjust(1)
+    kb.adjust(2, 1, 1, 1)
     return kb.as_markup()
 
 
@@ -390,7 +480,7 @@ def admin_sub_kb(user_id: int, page: int) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="📱 Лимит устройств", callback_data=f"{CB_PANEL}:sub_lim:{user_id}:{page}")
     kb.button(text="🛡 Лимит обхода БС",  callback_data=f"{CB_PANEL}:sub_bp:{user_id}:{page}")
-    kb.button(text="📅 Продлить срок",   callback_data=f"{CB_PANEL}:sub_ext:{user_id}:{page}")
+    kb.button(text="📅 Задать срок",     callback_data=f"{CB_PANEL}:sub_ext:{user_id}:{page}")
     kb.button(text="📊 Лимит трафика",   callback_data=f"{CB_PANEL}:sub_trf:{user_id}:{page}")
     kb.button(text="🚫 Отключить (срок в 0)", callback_data=f"{CB_PANEL}:sub_off:{user_id}:{page}")
     kb.button(text="« К пользователю",   callback_data=f"{CB_PANEL}:user:{user_id}:{page}")
@@ -407,6 +497,15 @@ def wdtt_days_kb() -> InlineKeyboardMarkup:
         kb.button(text=text_, callback_data=f"{CB_WDTT}:days:{days}")
     kb.button(text="✖️ Отмена", callback_data=CB_CANCEL)
     kb.adjust(2, 2, 1, 1)
+    return kb.as_markup()
+
+
+def wdtt_vk_choice_kb() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="⚡ Ссылка сервиса", callback_data=f"{CB_WDTT}:vk:svc")
+    kb.button(text="🔗 Своя VK-ссылка", callback_data=f"{CB_WDTT}:vk:own")
+    kb.button(text="✖️ Отмена", callback_data=CB_CANCEL)
+    kb.adjust(1)
     return kb.as_markup()
 
 

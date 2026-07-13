@@ -8,7 +8,9 @@ _HOSTNAME_RE = re.compile(
     r"(\.(?!-)[A-Za-z0-9-]{1,63}(?<!-))*$"
 )
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{1,31}$")
-_LABEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _-]{0,31}$")
+# Метка (устройство/пир/инвайт): разрешаем кириллицу и латиницу — юзер пишет
+# «Ноутбук» или «my-phone». Буквы/цифры/пробел/дефис/подчёркивание, до 32.
+_LABEL_RE = re.compile(r"^[A-Za-zА-Яа-яЁё0-9][A-Za-zА-Яа-яЁё0-9 _-]{0,31}$")
 
 
 def is_valid_host(value: str) -> bool:

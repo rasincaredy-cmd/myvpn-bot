@@ -225,14 +225,50 @@ async def cb_panel_user_device_open(call: CallbackQuery, session: AsyncSession) 
              if p.status == PeerStatus.ACTIVE]
     accesses = await repo.list_wdtt_for_device(session, device.id)
     lines = [f"📱 <b>{device.label}</b>", f"• Статус: <b>{device.status}</b>"]
+    configs: list = []
     if peers:
-        lines.append("• Конфиги: " + ", ".join(labels.get(p.server_id, "?") for p in peers))
+        lines.append("• Конфиги по локациям:")
+        for p in peers:
+            loc = labels.get(p.server_id, "?")
+            lines.append(f"   • {loc} — 📊 {amnezia.fmt_bytes(p.traffic_used_bytes)}")
+            configs.append((p.id, loc))
     lines.append(f"• Доступов обхода: <b>{sum(1 for a in accesses if a.status == PeerStatus.ACTIVE)}</b>")
     await call.message.edit_text(
         "\n".join(lines),
-        reply_markup=admin_user_device_card_kb(device.id, user_id, page),
+        reply_markup=admin_user_device_card_kb(device.id, user_id, page, configs=configs),
     )
     await call.answer()
+
+
+@router.callback_query(F.data.startswith(f"{CB_PANEL}:ucfg:"))
+async def cb_panel_user_config_send(call: CallbackQuery, session: AsyncSession) -> None:
+    """Админ получает конфиг конкретной локации устройства юзера (.conf+QR+vpn://)."""
+    parts = call.data.split(":")
+    peer_id, user_id, page, device_id = (int(parts[2]), int(parts[3]), int(parts[4]), int(parts[5]))
+    peer = await repo.get_peer(session, peer_id)
+    if peer is None or peer.status != PeerStatus.ACTIVE:
+        await call.answer("Конфиг недоступен", show_alert=True)
+        return
+    server = await repo.get_server(session, peer.server_id)
+    if server is None:
+        await call.answer("Сервер недоступен", show_alert=True)
+        return
+    from bot.handlers.configs import _send_peer_artifacts, make_vpn_link
+    from bot.services.crypto import decrypt
+    params = amnezia.AmneziaParams.from_json(server.awg_params_json)
+    conf = amnezia.build_peer_conf(
+        peer_private_key=decrypt(peer.private_key_enc),
+        peer_ip=peer.ip,
+        server_public_key=server.server_public_key,
+        endpoint=server.server_endpoint,
+        params=params,
+        dns=server.dns,
+    )
+    await _send_peer_artifacts(
+        call.message.chat.id, server.name, peer.label, conf,
+        vpn_link=await make_vpn_link(session, server, peer.label, conf),
+    )
+    await call.answer("Конфиг отправлен")
 
 
 @router.callback_query(F.data.startswith(f"{CB_PANEL}:udevx:"))
@@ -272,7 +308,8 @@ async def cb_panel_user_bypass_open(call: CallbackQuery, session: AsyncSession) 
         f"🛡 <b>{access.label}</b>\n"
         f"• Платформа: <b>{plat}</b>\n"
         f"• Сервер: <code>{labels.get(access.server_id, '?')}</code>\n"
-        f"• Статус: <b>{access.status}</b>",
+        f"• Статус: <b>{access.status}</b>\n"
+        f"• 📊 Трафик: {amnezia.fmt_bytes(access.traffic_used_bytes)}",
         reply_markup=admin_user_bypass_card_kb(access.id, user_id, page),
     )
     await call.answer()

@@ -761,7 +761,8 @@ async def cb_server_wdtt_open(call: CallbackQuery, session: AsyncSession) -> Non
         f"🛡 <b>{access.label}</b>\n"
         f"• Платформа: <b>{plat}</b>\n"
         f"• Владелец: {who}\n"
-        f"• Статус: <b>{access.status}</b>",
+        f"• Статус: <b>{access.status}</b>\n"
+        f"• 📊 Трафик: {amnezia.fmt_bytes(access.traffic_used_bytes)}",
         reply_markup=server_wdtt_card_kb(access.id, access.server_id),
     )
     await call.answer()

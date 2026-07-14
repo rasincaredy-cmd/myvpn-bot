@@ -130,11 +130,13 @@ async def cb_wdtt_my_open(call: CallbackQuery, session: AsyncSession) -> None:
         return
     labels = await repo.server_labels_map(session)
     plat = _PLATFORMS.get(access.platform, ("—", ""))[0] if access.platform else "—"
+    from bot.services import amnezia
     text = (
         f"🛡 <b>{access.label}</b>\n"
         f"• Устройство/платформа: <b>{plat}</b>\n"
         f"• Локация: <code>{labels.get(access.server_id, '?')}</code>\n"
-        f"• Статус: <b>{access.status}</b>"
+        f"• Статус: <b>{access.status}</b>\n"
+        f"• 📊 Трафик: {amnezia.fmt_bytes(access.traffic_used_bytes)}"
     )
     if access.expires_at:
         text += f"\n• ⏱ Истекает: {access.expires_at.strftime('%d.%m.%Y %H:%M')} UTC"

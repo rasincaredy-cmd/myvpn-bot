@@ -354,8 +354,15 @@ def admin_user_items_kb(
     return kb.as_markup()
 
 
-def admin_user_device_card_kb(device_id: int, user_id: int, page: int) -> InlineKeyboardMarkup:
+def admin_user_device_card_kb(
+    device_id: int,
+    user_id: int,
+    page: int,
+    configs: list[tuple[int, str]] | None = None,  # (peer_id, loc_label)
+) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
+    for peer_id, loc in (configs or []):
+        kb.button(text=f"📥 {loc}", callback_data=f"{CB_PANEL}:ucfg:{peer_id}:{user_id}:{page}:{device_id}")
     kb.button(text="🗑 Удалить устройство", callback_data=f"{CB_PANEL}:udevx:{device_id}:{user_id}:{page}")
     kb.button(text="« К устройствам", callback_data=f"{CB_PANEL}:udev:{user_id}:{page}")
     kb.adjust(1)

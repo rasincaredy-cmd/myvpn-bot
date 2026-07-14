@@ -506,16 +506,19 @@ async def list_wdtt_for_device(
 
 
 async def sum_user_traffic(session: AsyncSession, user_id: int) -> int:
-    """Суммарный трафик по ВСЕМ пирам юзера (активным и отозванным).
+    """Суммарный трафик юзера за всё время = WG-пиры + доступы обхода БС.
 
     Отозванные тоже считаем — трафик уже потрачен. Разница с sub_traffic_base_bytes
     даёт расход за текущий период подписки."""
-    return (
-        await session.execute(
-            select(func.coalesce(func.sum(Peer.traffic_used_bytes), 0))
-            .where(Peer.user_id == user_id)
-        )
-    ).scalar() or 0
+    peers = (await session.execute(
+        select(func.coalesce(func.sum(Peer.traffic_used_bytes), 0))
+        .where(Peer.user_id == user_id)
+    )).scalar() or 0
+    wdtt = (await session.execute(
+        select(func.coalesce(func.sum(WdttAccess.traffic_used_bytes), 0))
+        .where(WdttAccess.user_id == user_id)
+    )).scalar() or 0
+    return peers + wdtt
 
 
 async def sub_traffic_used(session: AsyncSession, user: User) -> int:

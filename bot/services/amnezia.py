@@ -388,8 +388,9 @@ def build_peer_conf(
     server_public_key: str,
     endpoint: str,
     params: AmneziaParams,
-    dns: str = "1.1.1.1, 1.0.0.1",
+    dns: str | None = None,
 ) -> str:
+    dns = dns or "1.1.1.1, 1.0.0.1"
     return (
         "[Interface]\n"
         f"PrivateKey = {peer_private_key}\n"

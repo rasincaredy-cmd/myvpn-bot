@@ -34,7 +34,7 @@ from bot.texts import t
 from bot.utils.validators import is_valid_label
 
 # Переиспользуем машинерию создания/отправки пиров.
-from bot.handlers.configs import provision_device_peers, _send_peer_artifacts
+from bot.handlers.configs import provision_device_peers, _send_peer_artifacts, make_vpn_link
 
 router = Router(name="devices")
 
@@ -172,7 +172,10 @@ async def step_device_label(message: Message, state: FSMContext, session: AsyncS
     with contextlib.suppress(Exception):
         await status_msg.delete()
     for server, conf in made:
-        await _send_peer_artifacts(message.chat.id, server.name, label, conf)
+        await _send_peer_artifacts(
+            message.chat.id, server.name, label, conf,
+            vpn_link=await make_vpn_link(session, server, label, conf),
+        )
     await message.answer(
         t.device_created.format(label=label), reply_markup=subscription_kb(True)
     )
@@ -195,7 +198,10 @@ async def cb_dev_open(call: CallbackQuery, session: AsyncSession) -> None:
         if made:
             await session.commit()
             for server, conf in made:
-                await _send_peer_artifacts(call.message.chat.id, server.name, device.label, conf)
+                await _send_peer_artifacts(
+                    call.message.chat.id, server.name, device.label, conf,
+                    vpn_link=await make_vpn_link(session, server, device.label, conf),
+                )
 
     peers = await repo.list_peers_for_device(session, device.id)
     accesses = await repo.list_wdtt_for_device(session, device.id)
@@ -204,19 +210,56 @@ async def cb_dev_open(call: CallbackQuery, session: AsyncSession) -> None:
         f"📱 <b>{device.label}</b>",
         f"• Статус: <b>{device.status}</b>",
     ]
+    locations: list[tuple[int, str]] = []
     if active_peers:
         labels = await repo.server_labels_map(session)
         lines.append("• Конфиги по локациям:")
         for p in active_peers:
-            lines.append(f"   • {labels.get(p.server_id, '?')}")
+            loc = labels.get(p.server_id, "?")
+            lines.append(f"   • {loc}")
+            locations.append((p.id, loc))
     lines.append(
         f"• Доступов обхода: <b>{sum(1 for a in accesses if a.status == PeerStatus.ACTIVE)}</b>"
     )
     await call.message.edit_text(
         "\n".join(lines),
-        reply_markup=device_card_kb(device.id, can_get=active, can_revoke=active),
+        reply_markup=device_card_kb(
+            device.id, can_get=active, can_revoke=active, locations=locations
+        ),
     )
     await call.answer()
+
+
+@router.callback_query(F.data.startswith(f"{CB_DEVICE}:send1:"))
+async def cb_dev_send_one(call: CallbackQuery, session: AsyncSession) -> None:
+    """Отправить конфиг одной локации устройства (кнопка на локацию)."""
+    peer_id = int(call.data.rsplit(":", 1)[-1])
+    peer = await repo.get_peer(session, peer_id)
+    user = await repo.get_user_by_tg_id(session, call.from_user.id)
+    if peer is None or user is None or peer.user_id != user.id:
+        await call.answer("Не найдено", show_alert=True)
+        return
+    if peer.status != PeerStatus.ACTIVE:
+        await call.answer("Конфиг отозван", show_alert=True)
+        return
+    server = await repo.get_server(session, peer.server_id)
+    if server is None:
+        await call.answer("Сервер недоступен", show_alert=True)
+        return
+    params = amnezia.AmneziaParams.from_json(server.awg_params_json)
+    conf = amnezia.build_peer_conf(
+        peer_private_key=decrypt(peer.private_key_enc),
+        peer_ip=peer.ip,
+        server_public_key=server.server_public_key,
+        endpoint=server.server_endpoint,
+        params=params,
+        dns=server.dns,
+    )
+    await _send_peer_artifacts(
+        call.message.chat.id, server.name, peer.label, conf,
+        vpn_link=await make_vpn_link(session, server, peer.label, conf),
+    )
+    await call.answer("Готово")
 
 
 @router.callback_query(F.data.startswith(f"{CB_DEVICE}:send:"))
@@ -243,8 +286,12 @@ async def cb_dev_send(call: CallbackQuery, session: AsyncSession) -> None:
             server_public_key=server.server_public_key,
             endpoint=server.server_endpoint,
             params=params,
+            dns=server.dns,
         )
-        await _send_peer_artifacts(call.message.chat.id, server.name, peer.label, conf)
+        await _send_peer_artifacts(
+        call.message.chat.id, server.name, peer.label, conf,
+        vpn_link=await make_vpn_link(session, server, peer.label, conf),
+    )
     await call.answer("Готово")
 
 

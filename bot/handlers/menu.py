@@ -85,6 +85,7 @@ async def cb_server_open(call: CallbackQuery, session: AsyncSession) -> None:
         error_block=error_block,
     )
     text += f"\n🌍 Локация: {server.location or '—'}"
+    text += f"\n🌐 DNS: <code>{server.dns or '1.1.1.1, 1.0.0.1'}</code>"
     await call.message.edit_text(text, reply_markup=server_card(server.id, server.wdtt_enabled))
     await call.answer()
 
@@ -133,6 +134,55 @@ async def step_server_location(
     kb.button(text="« К серверу", callback_data=f"{CB_SERVERS}:open:{server.id}")
     await message.answer(
         f"✅ Локация: {server.location or '—'}", reply_markup=kb.as_markup()
+    )
+
+
+# --- DNS сервера -------------------------------------------------------------
+
+@router.callback_query(F.data.startswith(f"{CB_SERVERS}:dns:"))
+async def cb_server_dns(
+    call: CallbackQuery, session: AsyncSession, state: FSMContext
+) -> None:
+    server_id = int(call.data.rsplit(":", 1)[-1])
+    server = await repo.get_server(session, server_id)
+    if server is None:
+        await call.answer("Не найдено", show_alert=True)
+        return
+    await state.set_state(ServerEditStates.dns)
+    await state.update_data(server_id=server_id)
+    from aiogram.utils.keyboard import InlineKeyboardBuilder as IKB
+    kb = IKB()
+    kb.button(text="✖️ Отмена", callback_data=f"{CB_SERVERS}:open:{server_id}")
+    await call.message.edit_text(
+        "🌐 <b>DNS для конфигов</b>\n\n"
+        f"Текущий: <code>{server.dns or '1.1.1.1, 1.0.0.1'}</code>\n\n"
+        "Введи DNS-сервер(ы) через запятую (напр. <code>1.1.1.1, 1.0.0.1</code> "
+        "или <code>8.8.8.8</code>). Отправь <code>-</code> — вернуть дефолт.\n"
+        "<i>Действует на новые конфиги.</i>",
+        reply_markup=kb.as_markup(),
+    )
+    await call.answer()
+
+
+@router.message(ServerEditStates.dns, F.text, AdminFilter())
+async def step_server_dns(
+    message: Message, state: FSMContext, session: AsyncSession
+) -> None:
+    raw = message.text.strip()
+    data = await state.get_data()
+    await state.clear()
+    server = await repo.get_server(session, data["server_id"])
+    if server is None:
+        await message.answer("Сервер не найден.")
+        return
+    server.dns = None if raw == "-" else raw[:128]
+    await session.commit()
+    from aiogram.utils.keyboard import InlineKeyboardBuilder as IKB
+    kb = IKB()
+    kb.button(text="« К серверу", callback_data=f"{CB_SERVERS}:open:{server.id}")
+    await message.answer(
+        f"✅ DNS: <code>{server.dns or '1.1.1.1, 1.0.0.1'}</code>",
+        reply_markup=kb.as_markup(),
     )
 
 
@@ -589,6 +639,7 @@ async def cb_admin_peer_conf(call: CallbackQuery, session: AsyncSession) -> None
         server_public_key=server.server_public_key,
         endpoint=server.server_endpoint,
         params=params,
+        dns=server.dns,
     )
     await call.answer("Отправляю...")
     filename = f"{server.name}-{peer.label}.conf".replace(" ", "_")

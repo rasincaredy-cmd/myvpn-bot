@@ -97,6 +97,7 @@ def server_card(server_id: int, wdtt_enabled: bool = False) -> InlineKeyboardMar
     kb.button(text="📊 Трафик",        callback_data=f"{CB_SERVERS}:traffic:{server_id}")
     kb.button(text="🖥 Состояние",     callback_data=f"{CB_SERVERS}:stats:{server_id}")
     kb.button(text="🌍 Локация",       callback_data=f"{CB_SERVERS}:loc:{server_id}")
+    kb.button(text="🌐 DNS",           callback_data=f"{CB_SERVERS}:dns:{server_id}")
     # Тумблер доступности обхода БС на сервере (выдачу юзеры делают сами).
     kb.button(
         text="🛡 Обход БС: ВКЛ" if wdtt_enabled else "🛡 Обход БС: выкл",
@@ -104,7 +105,7 @@ def server_card(server_id: int, wdtt_enabled: bool = False) -> InlineKeyboardMar
     )
     kb.button(text="🗑 Удалить", callback_data=f"{CB_SERVERS}:del:{server_id}")
     kb.button(text="« К списку", callback_data=f"{CB_SERVERS}:list")
-    kb.adjust(2, 2, 2, 2, 1, 1, 1)
+    kb.adjust(2, 2, 2, 2, 2, 1, 1)
     return kb.as_markup()
 
 
@@ -456,10 +457,22 @@ def devices_list_kb(
     return kb.as_markup()
 
 
-def device_card_kb(device_id: int, can_get: bool, can_revoke: bool) -> InlineKeyboardMarkup:
+def device_card_kb(
+    device_id: int,
+    can_get: bool,
+    can_revoke: bool,
+    locations: list[tuple[int, str]] | None = None,  # (peer_id, loc_label)
+) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     if can_get:
-        kb.button(text="📥 Получить конфиг", callback_data=f"{CB_DEVICE}:send:{device_id}")
+        locs = locations or []
+        if len(locs) > 1:
+            # Несколько локаций → кнопка на каждую + «получить все» разом.
+            for peer_id, loc in locs:
+                kb.button(text=f"📥 {loc}", callback_data=f"{CB_DEVICE}:send1:{peer_id}")
+            kb.button(text="📥 Получить все", callback_data=f"{CB_DEVICE}:send:{device_id}")
+        else:
+            kb.button(text="📥 Получить конфиг", callback_data=f"{CB_DEVICE}:send:{device_id}")
     # Удаление доступно всегда: активное устройство удаляется (с отзывом), а
     # неактивное (истекшее) — убирается из списка, чтобы не висело мусором.
     kb.button(text="🗑 Удалить устройство", callback_data=f"{CB_DEVICE}:revoke:{device_id}")

@@ -14,7 +14,7 @@ from sqlalchemy import select
 from bot.config import settings
 from bot.db import repo
 from bot.db.base import session_scope
-from bot.db.models import Peer, PeerStatus, User
+from bot.db.models import Peer, PeerStatus, User, WdttAccess
 from bot.loader import bot
 from bot.services import amnezia
 from bot.services import wdtt as wdtt_svc
@@ -232,6 +232,42 @@ async def _run_checks() -> None:
                         )
                     )
             await session.commit()  # зафиксировать обновлённые счётчики
+
+        # ── 3a. Учёт трафика обхода БС (wdtt) ───────────────────────────────
+        # wdtt-сервер сам считает Up/DownBytes по паролю; берём их через `ctl list`
+        # и копим на WdttAccess (с защитой от сброса, как у пиров). Идёт в лимит
+        # подписки. Группируем активные доступы по серверу — один SSH на сервер.
+        wdtt_active = list((await session.execute(
+            select(WdttAccess).where(WdttAccess.status == PeerStatus.ACTIVE)
+        )).scalars())
+        if wdtt_active:
+            by_srv_w: dict[int, list[WdttAccess]] = {}
+            for a in wdtt_active:
+                by_srv_w.setdefault(a.server_id, []).append(a)
+            for server_id, accs in by_srv_w.items():
+                server = await repo.get_server(session, server_id)
+                if not server:
+                    continue
+                try:
+                    async with SSHClient(repo.creds_from_server(server)) as ssh:
+                        rows = await wdtt_svc.list_accesses(
+                            ssh, binary=settings.wdtt_binary_path
+                        )
+                except SSHError as exc:
+                    logger.warning("Wdtt traffic list SSH error server {}: {}", server_id, exc)
+                    continue
+                by_pw = {r.get("password"): r for r in rows}
+                for acc in accs:
+                    r = by_pw.get(decrypt(acc.password_enc))
+                    if r is None:
+                        continue
+                    raw = int(r.get("down_bytes", 0)) + int(r.get("up_bytes", 0))
+                    acc.traffic_used_bytes, acc.traffic_last_raw_bytes = (
+                        amnezia.accumulate_traffic(
+                            acc.traffic_used_bytes, acc.traffic_last_raw_bytes, raw
+                        )
+                    )
+            await session.commit()
 
         # ── 3b. Лимит трафика на ПОДПИСКУ ───────────────────────────────────
         # Расход считается суммарно по юзеру за период (Σ пиров − base). Превысил

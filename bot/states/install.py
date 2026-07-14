@@ -40,6 +40,7 @@ class PeerRenameStates(StatesGroup):
 
 class ServerEditStates(StatesGroup):
     location = State()
+    dns = State()
 
 
 class WdttStates(StatesGroup):

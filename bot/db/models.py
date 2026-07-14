@@ -127,6 +127,10 @@ class Server(Base):
     # NULL — не задана (показываем имя сервера как fallback).
     location: Mapped[str | None] = mapped_column(String(64))
 
+    # DNS для выдаваемых конфигов. NULL → дефолт (1.1.1.1, 1.0.0.1). Меняется в
+    # карточке сервера; влияет на новые конфиги (build_peer_conf).
+    dns: Mapped[str | None] = mapped_column(String(128))
+
     # Обход белых списков (wdtt / proxy-turn-vk): включён ли демон на этом сервере
     # и его порты "dtls,wg,tun". Выдача wdtt-доступов доступна только при wdtt_enabled.
     wdtt_enabled: Mapped[bool] = mapped_column(
@@ -273,6 +277,15 @@ class WdttAccess(Base):
     )
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # Учёт трафика обхода: wdtt-сервер сам считает Up/DownBytes по паролю и отдаёт
+    # их в `ctl list`. Копим с защитой от сброса (как у Peer) — идёт в лимит подписки.
+    traffic_used_bytes: Mapped[int] = mapped_column(
+        BigInteger, default=0, server_default="0", nullable=False
+    )
+    traffic_last_raw_bytes: Mapped[int] = mapped_column(
+        BigInteger, default=0, server_default="0", nullable=False
+    )
 
     # Битовая маска отправленных предупреждений об истечении (как у Peer).
     expiry_warn_flags: Mapped[int] = mapped_column(

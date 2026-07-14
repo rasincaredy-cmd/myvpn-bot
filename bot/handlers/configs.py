@@ -30,7 +30,7 @@ from bot.keyboards.inline import (
     to_server,
 )
 from bot.loader import bot
-from bot.services import amnezia
+from bot.services import amnezia, amnezia_native
 from bot.services.crypto import decrypt, encrypt
 from bot.services.qrgen import conf_to_qr_png
 from bot.services.ssh import SSHClient, SSHError
@@ -109,6 +109,7 @@ async def _create_peer_for_user(
         server_public_key=server.server_public_key,
         endpoint=server.server_endpoint,
         params=params,
+        dns=server.dns,
     )
     return conf, ip, label
 
@@ -145,13 +146,29 @@ async def provision_device_peers(
     return made
 
 
+def _split_dns(dns: str | None) -> tuple[str, str]:
+    parts = [p.strip() for p in (dns or "1.1.1.1, 1.0.0.1").split(",") if p.strip()]
+    return (parts[0] if parts else "1.1.1.1"), (parts[1] if len(parts) > 1 else "")
+
+
+async def make_vpn_link(session: AsyncSession, server: Server, label: str, conf: str) -> str:
+    """Строит `vpn://`-ссылку с человекочитаемым именем «Локация N · метка»."""
+    labels = await repo.server_labels_map(session)
+    name = f"{labels.get(server.id, server.name)} · {label}"
+    d1, d2 = _split_dns(server.dns)
+    return amnezia_native.build_vpn_link(
+        conf=conf, name=name, host=server.host, port=server.wg_port, dns1=d1, dns2=d2,
+    )
+
+
 async def _send_peer_artifacts(
     chat_id: int,
     server_name: str,
     label: str,
     conf: str,
+    vpn_link: str | None = None,
 ) -> None:
-    """Шлёт .conf файлом и QR картинкой."""
+    """Шлёт .conf файлом, QR картинкой и (опц.) `vpn://`-ссылку для one-tap импорта."""
     conf_bytes = conf.encode("utf-8")
     filename = f"{server_name}-{label}.conf".replace(" ", "_")
     await bot.send_document(
@@ -165,6 +182,8 @@ async def _send_peer_artifacts(
         photo=BufferedInputFile(qr, filename=f"{filename}.png"),
         caption="📱 QR — отсканируй в приложении AmneziaVPN.",
     )
+    if vpn_link:
+        await bot.send_message(chat_id, t.vpn_link_msg.format(link=vpn_link))
 
 
 # --- Список своих конфигов (любой юзер) -------------------------------------
@@ -272,6 +291,7 @@ async def cb_peer_send(call: CallbackQuery, session: AsyncSession) -> None:
         server_public_key=server.server_public_key,
         endpoint=server.server_endpoint,
         params=params,
+        dns=server.dns,
     )
     await _send_peer_artifacts(call.message.chat.id, server.name, peer.label, conf)
     await call.answer("Готово")

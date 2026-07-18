@@ -130,27 +130,22 @@ async def _poll_crypto_invoices(session) -> None:
 
 async def _try_autopay(session, user: User) -> bool:
     """Автопродление при истечении: если включено и баланса хватает — списываем
-    1 месяц ТЕКУЩЕГО тарифа вместо отзыва устройств. True — подписка продлена."""
-    from bot.services import billing, cryptopay
-    from bot.services.pricing import fmt_rub
+    1 месяц ТЕКУЩЕГО тарифа вместо отзыва устройств. True — подписка продлена.
 
-    if not user.autopay or not cryptopay.enabled():
-        return False
-    res = await billing.charge_and_extend(session, user, 1)
-    if not res.ok:
+    Логика и уведомление общие с мгновенным продлением после пополнения
+    (billing.autopay_if_expired / balance.notify_autopay): сюда подписка
+    доходит, только если деньги появились не через бот (или тик успел первым)."""
+    from bot.handlers.balance import notify_autopay
+    from bot.services import billing
+
+    res = await billing.autopay_if_expired(session, user)
+    if res is None:
         return False
     logger.info(
         "Autopay: user {} charged {} kopeks, until {}",
         user.id, res.price_kopeks, res.new_expires_at,
     )
-    await _notify(
-        user.tg_id,
-        f"♻️ Подписка автоматически продлена на месяц за "
-        f"{fmt_rub(res.price_kopeks)} с баланса "
-        f"(до {res.new_expires_at.strftime('%d.%m.%Y %H:%M')} UTC).\n"
-        f"Остаток: {fmt_rub(user.balance_kopeks)}. "
-        "Отключить автопродление можно в «🎫 Моя подписка».",
-    )
+    await notify_autopay(user, res)
     return True
 
 

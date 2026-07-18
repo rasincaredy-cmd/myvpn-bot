@@ -150,6 +150,75 @@ class TestCharge:
         assert txs[0].kind == "charge" and txs[0].amount_kopeks == -150_00
 
 
+class TestInstantAutopay:
+    """billing.autopay_if_expired — мгновенное автопродление после пополнения
+    (кнопка «Проверить», начисление админом) и тик планировщика."""
+
+    async def test_extends_expired_sub(self, session: AsyncSession) -> None:
+        past = datetime.now(timezone.utc) - timedelta(days=2)
+        user = await _make_user(
+            session, balance_kopeks=90_00, sub_expires_at=past,
+            sub_max_devices=1, sub_max_bypass=1, autopay=True,
+        )
+        res = await billing.autopay_if_expired(session, user)
+        await session.commit()
+        assert res is not None and res.ok and res.price_kopeks == 90_00
+        assert user.balance_kopeks == 0
+        left = res.new_expires_at - datetime.now(timezone.utc)
+        assert timedelta(days=29) < left < timedelta(days=31)
+
+    async def test_noop_when_sub_active(self, session: AsyncSession) -> None:
+        """Пополнение при ЖИВОЙ подписке ничего не списывает — юзер сам решает,
+        когда продлить."""
+        future = datetime.now(timezone.utc) + timedelta(days=10)
+        user = await _make_user(
+            session, balance_kopeks=500_00, sub_expires_at=future, autopay=True,
+        )
+        assert await billing.autopay_if_expired(session, user) is None
+        assert user.balance_kopeks == 500_00
+
+    async def test_noop_when_autopay_off(self, session: AsyncSession) -> None:
+        past = datetime.now(timezone.utc) - timedelta(days=2)
+        user = await _make_user(
+            session, balance_kopeks=500_00, sub_expires_at=past, autopay=False,
+        )
+        assert await billing.autopay_if_expired(session, user) is None
+        assert user.balance_kopeks == 500_00
+
+    async def test_noop_when_perpetual(self, session: AsyncSession) -> None:
+        user = await _make_user(
+            session, balance_kopeks=500_00, sub_expires_at=None, autopay=True,
+        )
+        assert await billing.autopay_if_expired(session, user) is None
+        assert user.balance_kopeks == 500_00
+
+    async def test_noop_when_not_enough_money(self, session: AsyncSession) -> None:
+        past = datetime.now(timezone.utc) - timedelta(days=2)
+        user = await _make_user(
+            session, balance_kopeks=10_00, sub_expires_at=past,
+            sub_max_devices=1, sub_max_bypass=1, autopay=True,
+        )
+        assert await billing.autopay_if_expired(session, user) is None
+        assert user.balance_kopeks == 10_00  # ничего не списано
+
+    async def test_deposit_then_autopay_full_flow(self, session: AsyncSession) -> None:
+        """Сценарий кнопки «Проверить»: зачисление инвойса → мгновенное продление."""
+        past = datetime.now(timezone.utc) - timedelta(days=1)
+        user = await _make_user(
+            session, sub_expires_at=past,
+            sub_max_devices=1, sub_max_bypass=1, autopay=True,
+        )
+        inv = await _make_invoice(session, user, 90_00)
+        dep = await billing.apply_paid_invoice(session, inv)
+        assert dep.credited and user.balance_kopeks == 90_00
+        res = await billing.autopay_if_expired(session, user)
+        await session.commit()
+        assert res is not None and res.ok
+        assert user.balance_kopeks == 0
+        txs = await repo.list_balance_txs(session, user.id)
+        assert [tx.kind for tx in txs] == ["charge", "deposit"]
+
+
 class TestAdminAdjust:
     async def test_add_balance_tx_updates_and_journals(self, session: AsyncSession) -> None:
         user = await _make_user(session)

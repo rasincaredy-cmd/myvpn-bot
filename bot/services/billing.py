@@ -136,3 +136,26 @@ async def charge_and_extend(
     return ChargeResult(
         ok=True, price_kopeks=price, new_expires_at=new_expiry, revive=rv
     )
+
+
+async def autopay_if_expired(
+    session: AsyncSession, user: User
+) -> ChargeResult | None:
+    """Автопродление, если подписка УЖЕ истекла: месяц текущего тарифа с баланса.
+
+    Общая точка для планировщика (тик по истечению) и мгновенного продления
+    сразу после пополнения (кнопка «Проверить», ручное начисление админом) —
+    чтобы юзер не ждал тика до 5 минут с деньгами на счету. None — продлевать
+    не надо (подписка активна/бессрочная, autopay выключен) или не хватило
+    баланса (charge_and_extend при нехватке ничего не пишет — отката не нужно).
+    Crypto Pay не требуется: списание идёт с баланса, а его могли пополнить
+    и руками (kind=admin за перевод на карту)."""
+    if not user.autopay or user.sub_expires_at is None:
+        return None
+    exp = user.sub_expires_at
+    if exp.tzinfo is None:
+        exp = exp.replace(tzinfo=timezone.utc)
+    if exp > datetime.now(timezone.utc):
+        return None
+    res = await charge_and_extend(session, user, 1)
+    return res if res.ok else None

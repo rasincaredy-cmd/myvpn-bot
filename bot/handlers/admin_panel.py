@@ -495,8 +495,22 @@ async def step_sub_balance(message: Message, state: FSMContext, session: AsyncSe
         )
     except Exception:
         pass
+    # Начисление юзеру с истёкшей подпиской и включённым автопродлением —
+    # продлеваем сразу, не заставляя ждать тика планировщика (до 5 минут).
+    extra = ""
+    if amount > 0:
+        from bot.handlers.balance import notify_autopay
+        from bot.services import billing
+        ap = await billing.autopay_if_expired(session, user)
+        if ap is not None:
+            await session.commit()
+            await notify_autopay(user, ap)
+            extra = (
+                f"\n♻️ Подписка сразу продлена автопродлением на месяц "
+                f"(−{fmt_rub(ap.price_kopeks)})."
+            )
     await message.answer(
-        f"✅ Баланс: <b>{fmt_rub(user.balance_kopeks)}</b>",
+        f"✅ Баланс: <b>{fmt_rub(user.balance_kopeks)}</b>{extra}",
         reply_markup=admin_sub_kb(user.id, data["page"]),
     )
 

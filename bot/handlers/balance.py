@@ -185,6 +185,13 @@ async def cb_bal_check(call: CallbackQuery, session: AsyncSession) -> None:
         await session.commit()
         await notify_deposit(dep)
         await session.refresh(user)
+        # Подписка уже истекла, автопродление включено? Продлеваем сразу на
+        # свежие деньги — не заставляем ждать тика планировщика (до 5 минут).
+        ap = await billing.autopay_if_expired(session, user)
+        if ap is not None:
+            await session.commit()
+            await notify_autopay(user, ap)
+            await session.refresh(user)
         await _render_balance(call.message.edit_text, session, user)
         await call.answer("Зачислено ✅")
         return
@@ -222,6 +229,30 @@ async def notify_deposit(dep: billing.DepositResult) -> None:
             )
         except Exception:
             pass
+
+
+async def notify_autopay(user, res: billing.ChargeResult) -> None:
+    """Уведомление об автопродлении с баланса. Общая для планировщика и
+    мгновенного продления после пополнения; ошибки Telegram глотаем."""
+    text = (
+        f"♻️ Подписка автоматически продлена на месяц за "
+        f"{fmt_rub(res.price_kopeks)} с баланса "
+        f"(до {res.new_expires_at.strftime('%d.%m.%Y %H:%M')} UTC).\n"
+        f"Остаток: {fmt_rub(user.balance_kopeks)}. "
+        "Отключить автопродление можно в «🎫 Моя подписка»."
+    )
+    rv = res.revive
+    if rv is not None and (rv.devices_restored or rv.bypass_restored):
+        text += (
+            "\n📱 Устройства восстановлены — прежние конфиги и ссылки "
+            "снова работают."
+        )
+    if rv is not None and rv.errors:
+        text += "\n⚠️ Часть устройств не восстановилась, напиши админу."
+    try:
+        await bot.send_message(user.tg_id, text)
+    except Exception:
+        pass
 
 
 # ── История ──────────────────────────────────────────────────────────────────

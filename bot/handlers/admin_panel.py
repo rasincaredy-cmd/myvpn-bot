@@ -582,6 +582,19 @@ async def step_sub_extend(message: Message, state: FSMContext, session: AsyncSes
             await tg_bot.send_message(user.tg_id, notify)
         except Exception:
             pass
+    else:
+        # Срок задан в прошлом = отключение: конфиги гаснут сразу, не ждём тика.
+        if await revive_svc.revoke_devices_for_user(session, user.id):
+            await session.commit()
+            msg += "\n🚫 Срок в прошлом — устройства отозваны сразу."
+            try:
+                await tg_bot.send_message(
+                    user.tg_id,
+                    "⏱ Подписка истекла — устройства и доступы обхода отключены.\n"
+                    "Конфиги сохраняются 30 дней: продлишь подписку — всё оживёт само.",
+                )
+            except Exception:
+                pass
 
     await message.answer(msg, reply_markup=admin_sub_kb(user.id, data["page"]))
 
@@ -626,10 +639,29 @@ async def cb_panel_sub_off(call: CallbackQuery, session: AsyncSession) -> None:
     user_id, page = int(parts[2]), int(parts[3])
     now = datetime.now(timezone.utc)
     await repo.set_subscription(session, user_id, expires_at=now, touch_expires=True)
+    # Конфиги гаснут сразу, а не на тике планировщика (симметрично мгновенному
+    # ревайву при продлении). Строки остаются REVOKED — продление всё оживит.
+    revoked = await revive_svc.revoke_devices_for_user(session, user_id)
     await session.commit()
     user = await repo.get_user_by_id(session, user_id)
+    if revoked:
+        from bot.services.scheduler import REVOKED_RETENTION_DAYS
+        try:
+            await tg_bot.send_message(
+                user.tg_id,
+                "⏱ Подписка истекла — устройства и доступы обхода отключены.\n"
+                f"Конфиги сохраняются {REVOKED_RETENTION_DAYS} дней: продлишь "
+                "подписку — всё оживёт само, перенастраивать не придётся.\n"
+                "Продлить: меню → «🎫 Моя подписка» → «🔁 Продлить» "
+                "(пополнить баланс — «💰 Баланс»).",
+            )
+        except Exception:
+            pass
     await _render_sub_card(call, session, user, page)
-    await call.answer("Подписка отключена (устройства отзовёт планировщик)")
+    await call.answer(
+        "Подписка отключена, устройства отозваны" if revoked
+        else "Подписка отключена (активных устройств не было)"
+    )
 
 
 # --- Рассылка ---------------------------------------------------------------

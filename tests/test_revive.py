@@ -82,6 +82,64 @@ class TestRevokeKeepsWdtt:
         assert access.revoked_at is not None
 
 
+class TestRevokeAll:
+    """revoke_devices_for_user — общий отзыв (планировщик + мгновенное
+    отключение из админки): снимает с серверов и метит REVOKED."""
+
+    async def test_revokes_everything_and_reports(
+        self, session: AsyncSession, monkeypatch
+    ) -> None:
+        user, server, device, peer, access = await _make_user_with_device(session)
+        _patch_ssh(monkeypatch)
+        removed_peers: list[str] = []
+        removed_pw: list[str] = []
+
+        async def fake_remove_peer(ssh, *, public_key: str) -> None:
+            removed_peers.append(public_key)
+
+        async def fake_remove_access(ssh, *, password: str, binary: str) -> None:
+            removed_pw.append(password)
+
+        monkeypatch.setattr(revive.amnezia, "remove_peer_on_server", fake_remove_peer)
+        monkeypatch.setattr(revive.wdtt_svc, "remove_access", fake_remove_access)
+
+        assert await revive.revoke_devices_for_user(session, user.id) is True
+        await session.commit()
+        await session.refresh(device)
+        await session.refresh(peer)
+        await session.refresh(access)
+        assert device.status == PeerStatus.REVOKED
+        assert peer.status == PeerStatus.REVOKED
+        assert access.status == PeerStatus.REVOKED
+        assert removed_peers == ["pp"]
+        assert removed_pw == ["PASS1"]
+
+    async def test_false_when_nothing_active(self, session: AsyncSession) -> None:
+        user = await repo.get_or_create_user(
+            session, tg_id=999, username="e", full_name="E"
+        )
+        assert await revive.revoke_devices_for_user(session, user.id) is False
+
+    async def test_ssh_error_still_marks_revoked(
+        self, session: AsyncSession, monkeypatch
+    ) -> None:
+        """Сервер недоступен — доступ на нём и так не работает; в БД всё равно
+        REVOKED, чтобы ревайв при продлении вернул как надо."""
+        user, server, device, peer, access = await _make_user_with_device(session)
+        _patch_ssh(monkeypatch)
+
+        async def boom(*a, **kw):
+            raise SSHError("down")
+
+        monkeypatch.setattr(revive.amnezia, "remove_peer_on_server", boom)
+        monkeypatch.setattr(revive.wdtt_svc, "remove_access", boom)
+
+        assert await revive.revoke_devices_for_user(session, user.id) is True
+        await session.commit()
+        await session.refresh(device)
+        assert device.status == PeerStatus.REVOKED
+
+
 class TestParseUri:
     def test_parse_ok(self) -> None:
         assert revive._parse_wdtt_uri(

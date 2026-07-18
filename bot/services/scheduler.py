@@ -60,40 +60,11 @@ def _as_utc(dt: datetime) -> datetime:
 
 
 async def _revoke_all_devices_for_user(session, user_id: int) -> bool:
-    """Отзывает ВСЕ активные устройства юзера: снимает WG-пиры и wdtt-доступы с
-    серверов (best-effort), затем метит устройства/пиры/wdtt-строки REVOKED
-    (см. repo.revoke_device) — они ждут ревайва при продлении retention-срок.
-    Возвращает True, если что-то отозвали (для уведомления)."""
-    devices = await repo.list_devices_for_user(session, user_id, active_only=True)
-    if not devices:
-        return False
-    for device in devices:
-        for peer in await repo.list_peers_for_device(session, device.id):
-            if peer.status != PeerStatus.ACTIVE:
-                continue
-            server = await repo.get_server(session, peer.server_id)
-            if server:
-                try:
-                    async with SSHClient(repo.creds_from_server(server)) as ssh:
-                        await amnezia.remove_peer_on_server(ssh, public_key=peer.public_key)
-                except SSHError as exc:
-                    logger.warning("Revoke-all peer remove err {}: {}", peer.id, exc)
-        for acc in await repo.list_wdtt_for_device(session, device.id):
-            if acc.status != PeerStatus.ACTIVE:
-                continue
-            server = await repo.get_server(session, acc.server_id)
-            if server:
-                try:
-                    async with SSHClient(repo.creds_from_server(server)) as ssh:
-                        await wdtt_svc.remove_access(
-                            ssh, password=decrypt(acc.password_enc),
-                            binary=settings.wdtt_binary_path,
-                        )
-                except SSHError as exc:
-                    logger.warning("Revoke-all wdtt remove err {}: {}", acc.id, exc)
-        await repo.revoke_device(session, device.id)
-        logger.info("Auto-revoked device {} (user {})", device.id, user_id)
-    return True
+    """Отзыв всех устройств юзера — общая логика в revive.revoke_devices_for_user
+    (зеркало ревайва; её же зовёт админка при мгновенном отключении подписки)."""
+    from bot.services import revive as revive_svc
+
+    return await revive_svc.revoke_devices_for_user(session, user_id)
 
 
 async def _poll_crypto_invoices(session) -> None:

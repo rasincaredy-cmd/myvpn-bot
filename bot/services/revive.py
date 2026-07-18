@@ -68,6 +68,47 @@ def _parse_wdtt_uri(uri: str) -> tuple[str, str] | None:
     return ",".join(parts[1:4]), parts[5]
 
 
+async def revoke_devices_for_user(session: AsyncSession, user_id: int) -> bool:
+    """Отзывает ВСЕ активные устройства юзера: снимает WG-пиры и wdtt-доступы с
+    серверов (best-effort), затем метит устройства/пиры/wdtt-строки REVOKED
+    (см. repo.revoke_device) — они ждут ревайва при продлении retention-срок.
+
+    Зеркало revive_devices_for_user. Зовётся планировщиком (истечение срока,
+    лимит трафика) и админкой (мгновенное отключение подписки — конфиги гаснут
+    сразу, без ожидания тика). Коммит и уведомление — на вызывающем.
+    Возвращает True, если что-то отозвали."""
+    devices = await repo.list_devices_for_user(session, user_id, active_only=True)
+    if not devices:
+        return False
+    for device in devices:
+        for peer in await repo.list_peers_for_device(session, device.id):
+            if peer.status != PeerStatus.ACTIVE:
+                continue
+            server = await repo.get_server(session, peer.server_id)
+            if server:
+                try:
+                    async with SSHClient(repo.creds_from_server(server)) as ssh:
+                        await amnezia.remove_peer_on_server(ssh, public_key=peer.public_key)
+                except SSHError as exc:
+                    logger.warning("Revoke-all peer remove err {}: {}", peer.id, exc)
+        for acc in await repo.list_wdtt_for_device(session, device.id):
+            if acc.status != PeerStatus.ACTIVE:
+                continue
+            server = await repo.get_server(session, acc.server_id)
+            if server:
+                try:
+                    async with SSHClient(repo.creds_from_server(server)) as ssh:
+                        await wdtt_svc.remove_access(
+                            ssh, password=decrypt(acc.password_enc),
+                            binary=settings.wdtt_binary_path,
+                        )
+                except SSHError as exc:
+                    logger.warning("Revoke-all wdtt remove err {}: {}", acc.id, exc)
+        await repo.revoke_device(session, device.id)
+        logger.info("Revoked device {} (user {})", device.id, user_id)
+    return True
+
+
 async def revive_devices_for_user(session: AsyncSession, user: User) -> ReviveResult:
     """Восстанавливает все REVOKED-устройства юзера (в пределах лимитов подписки).
 

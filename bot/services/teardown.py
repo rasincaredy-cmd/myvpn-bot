@@ -39,8 +39,9 @@ async def delete_device(session: AsyncSession, device: Device) -> None:
 
 
 async def revoke_bypass(session: AsyncSession, access: WdttAccess) -> None:
-    """Снимает пароль обхода с сервера и удаляет запись из БД (отозванный обход =
-    мёртвая ссылка, ревайва нет)."""
+    """Юзер/админ явно удаляет обход: снимаем пароль с сервера и удаляем запись
+    из БД насовсем. Не путать с отзывом по истечению подписки (repo.revoke_device)
+    — там строка остаётся REVOKED и ждёт ревайва при продлении."""
     if access.status == PeerStatus.ACTIVE:
         await _remove_bypass_on_server(session, access)
     await repo.delete_wdtt_access(session, access.id)

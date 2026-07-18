@@ -430,9 +430,10 @@ async def count_active_devices(session: AsyncSession, user_id: int) -> int:
 
 
 async def revoke_device(session: AsyncSession, device_id: int) -> None:
-    """Отзывает устройство. Пиры → REVOKED (держат IP, ждут возможного ревайва,
-    планировщик чистит через retention). Доступы обхода — УДАЛЯЕМ из БД: отозванный
-    wdtt = мёртвая ссылка (пароль на сервере снят, ревайва нет), хранить нечего."""
+    """Отзывает устройство. Пиры и доступы обхода → REVOKED: строки ждут
+    возможного ревайва при продлении подписки (пир держит IP, wdtt — пароль,
+    который сервер умеет восстановить через ctl add -password). Планировщик
+    чистит их через retention."""
     now = datetime.now(timezone.utc)
     await session.execute(
         update(Device).where(Device.id == device_id).values(status=PeerStatus.REVOKED)
@@ -444,17 +445,27 @@ async def revoke_device(session: AsyncSession, device_id: int) -> None:
         .values(status=PeerStatus.REVOKED, revoked_at=now)
     )
     await session.execute(
-        delete(WdttAccess).where(WdttAccess.device_id == device_id)
+        update(WdttAccess)
+        .where(WdttAccess.device_id == device_id)
+        .where(WdttAccess.status == PeerStatus.ACTIVE)
+        .values(status=PeerStatus.REVOKED, revoked_at=now)
     )
 
 
-async def purge_revoked_wdtt(session: AsyncSession) -> int:
-    """Разовая чистка: удаляет все ранее отозванные (REVOKED) wdtt-доступы.
-    Отозванный обход — мёртвая ссылка без возможности восстановления, в БД мусор."""
-    result = await session.execute(
-        delete(WdttAccess).where(WdttAccess.status == PeerStatus.REVOKED)
+async def revive_wdtt_access(session: AsyncSession, access_id: int) -> None:
+    # Пароль заново добавлен на сервер → его счётчики Up/Down стартуют с нуля;
+    # сбрасываем накопитель, чтобы защита от сброса не насчитала лишнего.
+    await session.execute(
+        update(WdttAccess)
+        .where(WdttAccess.id == access_id)
+        .values(
+            status=PeerStatus.ACTIVE,
+            revoked_at=None,
+            traffic_used_bytes=0,
+            traffic_last_raw_bytes=0,
+            expiry_warn_flags=0,
+        )
     )
-    return result.rowcount or 0
 
 
 async def delete_device(session: AsyncSession, device_id: int) -> None:

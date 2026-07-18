@@ -83,12 +83,12 @@ async def cb_wdtt_my(call: CallbackQuery, state: FSMContext, session: AsyncSessi
         username=call.from_user.username,
         full_name=call.from_user.full_name,
     )
-    # Отозванных wdtt в БД больше не держим (hard-delete при отзыве), но на всякий
-    # случай фильтруем — в списке только живые доступы.
-    accesses = [
-        a for a in await repo.list_wdtt_for_user(session, user.id)
-        if a.status == PeerStatus.ACTIVE
-    ]
+    # Показываем и отозванные (🚫): с Блока «Ревайв» они ждут продления подписки
+    # и оживут сами — пусть юзер видит, что доступ не пропал. Лимит считаем
+    # только по активным.
+    accesses = await repo.list_wdtt_for_user(session, user.id)
+    accesses.sort(key=lambda a: (a.status != PeerStatus.ACTIVE, a.id))
+    active_total = sum(1 for a in accesses if a.status == PeerStatus.ACTIVE)
     total = len(accesses)
     start = page * _WDTT_PER_PAGE
     page_items = accesses[start:start + _WDTT_PER_PAGE]
@@ -100,14 +100,17 @@ async def cb_wdtt_my(call: CallbackQuery, state: FSMContext, session: AsyncSessi
         rows.append((a.id, _mark(a.status), label, labels.get(a.server_id, "?")))
 
     # Лимит доступов юзер видит в шапке — как у устройств.
-    can_create = _sub_active(user) and total < user.sub_max_bypass
+    can_create = _sub_active(user) and active_total < user.sub_max_bypass
     text = (
         "🛡 <b>Обход белых списков</b>\n"
         "Работает там, где обычный VPN режется белыми списками.\n"
-        f"\nДоступов: <b>{total}/{user.sub_max_bypass}</b>"
+        f"\nДоступов: <b>{active_total}/{user.sub_max_bypass}</b>"
     )
     if not _sub_active(user):
-        text += "\n<i>Подписка истекла — создание недоступно.</i>"
+        text += (
+            "\n<i>Подписка истекла — создание недоступно. Доступы сохраняются "
+            "30 дней и оживут при продлении сами.</i>"
+        )
     elif not accesses:
         text += "\nПока пусто. Создай доступ под своё устройство."
 
@@ -140,6 +143,11 @@ async def cb_wdtt_my_open(call: CallbackQuery, session: AsyncSession) -> None:
     )
     if access.expires_at:
         text += f"\n• ⏱ Истекает: {access.expires_at.strftime('%d.%m.%Y %H:%M')} UTC"
+    if access.status != PeerStatus.ACTIVE:
+        text += (
+            "\n\n⏸ <i>Отключён до продления подписки. Прежняя ссылка оживёт "
+            "при продлении сама — удалять доступ не нужно.</i>"
+        )
     await call.message.edit_text(
         text, reply_markup=wdtt_user_card_kb(access.id, can_get=access.status == PeerStatus.ACTIVE)
     )
@@ -170,10 +178,8 @@ async def cb_wdtt_my_revoke(call: CallbackQuery, session: AsyncSession) -> None:
     from bot.services import teardown
     await teardown.revoke_bypass(session, access)
     await session.commit()
-    await call.message.edit_text(
-        t.wdtt_revoked.format(label=access.label), reply_markup=back_to_menu()
-    )
-    await call.answer()
+    # Удаление необратимо (ревайв невозможен) — фиксируем в лог.
+    logger.info("User {} deleted wdtt access {} ({})", user.id, access.id, access.label)
     await call.message.edit_text(
         t.wdtt_revoked.format(label=access.label), reply_markup=back_to_menu()
     )

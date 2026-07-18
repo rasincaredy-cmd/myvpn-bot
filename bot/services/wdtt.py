@@ -43,8 +43,14 @@ async def create_access(
     vk_hashes: str,
     ports: str | None,
     binary: str,
+    password: str | None = None,
 ) -> dict:
-    """Создаёт доступ на wdtt-сервере. Возвращает {'password', 'link', 'expires_at'}."""
+    """Создаёт доступ на wdtt-сервере. Возвращает {'password', 'link', 'expires_at'}.
+
+    password — режим restore (ревайв после продления): сервер добавляет ИМЕННО
+    этот пароль, и прежняя wdtt://-ссылка клиента снова работает. Вызывающий
+    обязан сверить, что вернулся тот же пароль (старый бинарь сервера молча
+    сгенерил бы новый)."""
     args = [
         "-op", "add",
         "-days", str(days),
@@ -52,8 +58,13 @@ async def create_access(
         "-hash", vk_hashes,
         "-ports", ports or _DEFAULT_PORTS,
     ]
+    if password:
+        args += ["-password", password]
     data = await _run_ctl(ssh, binary, args)
-    logger.info("wdtt access created (label={}, days={})", label, days)  # без секретов
+    logger.info(
+        "wdtt access {} (label={}, days={})",
+        "restored" if password else "created", label, days,
+    )  # без секретов
     return {
         "password": data["password"],
         "link": data["link"],

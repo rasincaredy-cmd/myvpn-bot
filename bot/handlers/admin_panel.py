@@ -29,6 +29,7 @@ from bot.keyboards.inline import (
 )
 from bot.loader import bot as tg_bot
 from bot.services import amnezia
+from bot.services import revive as revive_svc
 from bot.states.install import BroadcastStates, SubAdminStates
 from bot.utils.validators import parse_expiry, parse_traffic_limit
 
@@ -486,6 +487,36 @@ async def step_sub_extend(message: Message, state: FSMContext, session: AsyncSes
         f"✅ Срок установлен: <b>{result.strftime('%d.%m.%Y %H:%M')} UTC</b>"
         if result else "✅ Подписка сделана бессрочной."
     )
+
+    # Ревайв: если у юзера есть отозванные по истечению устройства — возвращаем
+    # их к жизни (те же конфиги/ссылки). Новый срок активен ⇒ можно оживлять.
+    sub_line = (
+        f"до {result.strftime('%d.%m.%Y %H:%M')} UTC" if result else "бессрочная"
+    )
+    now = datetime.now(timezone.utc)
+    if result is None or result > now:
+        rv = await revive_svc.revive_devices_for_user(session, user)
+        await session.commit()
+        if rv.touched:
+            msg += f"\n♻️ Восстановлено: устройств <b>{rv.devices_restored}</b>, обходов БС <b>{rv.bypass_restored}</b>."
+            if rv.devices_skipped_limit or rv.bypass_skipped_limit:
+                msg += (
+                    f"\n⚠️ Не влезло в лимиты: устройств {rv.devices_skipped_limit}, "
+                    f"обходов {rv.bypass_skipped_limit} (остались отозванными)."
+                )
+            if rv.errors:
+                msg += "\n❌ Не восстановлено: " + "; ".join(rv.errors)
+        notify = f"🎉 Подписка продлена ({sub_line})."
+        if rv.devices_restored or rv.bypass_restored:
+            notify += (
+                "\n♻️ Твои устройства восстановлены — прежние конфиги и ссылки "
+                "снова работают, ничего перенастраивать не нужно."
+            )
+        try:
+            await tg_bot.send_message(user.tg_id, notify)
+        except Exception:
+            pass
+
     await message.answer(msg, reply_markup=admin_sub_kb(user.id, data["page"]))
 
 

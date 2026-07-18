@@ -14,7 +14,7 @@ from sqlalchemy import select
 from bot.config import settings
 from bot.db import repo
 from bot.db.base import session_scope
-from bot.db.models import Peer, PeerStatus, User, WdttAccess
+from bot.db.models import Device, Peer, PeerStatus, User, WdttAccess
 from bot.loader import bot
 from bot.services import amnezia
 from bot.services import wdtt as wdtt_svc
@@ -26,9 +26,11 @@ from bot.services.ssh import SSHClient, SSHError
 # номер бита в User.sub_warn_flags. v1 — фиксированные; позже можно сделать настройку.
 WARN_OFFSETS_HOURS = (24, 1)
 
-# Сколько дней отозванный пир хранится в БД, прежде чем планировщик удалит его.
-# Отзыв не удаляет строку сразу — пир «ждёт» возможного возобновления; по
-# истечении срока чистим, чтобы не копить мусор и освободить занятый им IP.
+# Сколько дней отозванные пиры/wdtt-доступы хранятся в БД, прежде чем
+# планировщик удалит их. Отзыв не удаляет строки сразу — они «ждут» продления
+# подписки (Блок «Ревайв»: пир держит свои ключи+IP, wdtt — пароль, который
+# сервер восстанавливает через ctl add -password). По истечении срока чистим,
+# чтобы не копить мусор и освободить IP.
 REVOKED_RETENTION_DAYS = 30
 
 
@@ -59,8 +61,9 @@ def _as_utc(dt: datetime) -> datetime:
 
 async def _revoke_all_devices_for_user(session, user_id: int) -> bool:
     """Отзывает ВСЕ активные устройства юзера: снимает WG-пиры и wdtt-доступы с
-    серверов (best-effort), затем метит устройства/пиры REVOKED и удаляет wdtt-строки
-    (см. repo.revoke_device). Возвращает True, если что-то отозвали (для уведомления)."""
+    серверов (best-effort), затем метит устройства/пиры/wdtt-строки REVOKED
+    (см. repo.revoke_device) — они ждут ревайва при продлении retention-срок.
+    Возвращает True, если что-то отозвали (для уведомления)."""
     devices = await repo.list_devices_for_user(session, user_id, active_only=True)
     if not devices:
         return False
@@ -115,7 +118,9 @@ async def _run_checks() -> None:
                 touched = True
                 await _notify(
                     user.tg_id,
-                    "⏱ Подписка истекла — устройства и доступы обхода отозваны. "
+                    "⏱ Подписка истекла — устройства и доступы обхода отключены.\n"
+                    f"Конфиги сохраняются {REVOKED_RETENTION_DAYS} дней: продлишь "
+                    "подписку — всё оживёт само, перенастраивать не придётся. "
                     "Для продления напиши админу.",
                 )
         if touched:
@@ -195,6 +200,58 @@ async def _run_checks() -> None:
                 logger.info("Auto-deleted stale revoked peer {} ({})", p.id, p.label)
             # Фиксируем удаления сразу — как и отзывы выше, чтобы поздний сбой
             # в секции трафика их не откатил.
+            await session.commit()
+
+        # ── 2a. Автоудаление давно отозванных wdtt-доступов ─────────────────
+        # Симметрично пирам: REVOKED-строки ждут ревайва retention-срок, затем
+        # удаляются. Пароль с сервера снят ещё при отзыве; на случай, если тот
+        # SSH тогда не прошёл, — best-effort снимаем повторно (идемпотентно).
+        stale_wdtt = list((await session.execute(
+            select(WdttAccess)
+            .where(WdttAccess.status == PeerStatus.REVOKED)
+            .where(WdttAccess.revoked_at.isnot(None))
+            .where(WdttAccess.revoked_at < cutoff)
+        )).scalars())
+
+        if stale_wdtt:
+            by_srv_sw: dict[int, list[WdttAccess]] = {}
+            for a in stale_wdtt:
+                by_srv_sw.setdefault(a.server_id, []).append(a)
+            for server_id, alist in by_srv_sw.items():
+                server = await repo.get_server(session, server_id)
+                if not server:
+                    continue
+                try:
+                    async with SSHClient(repo.creds_from_server(server)) as ssh:
+                        for a in alist:
+                            try:
+                                await wdtt_svc.remove_access(
+                                    ssh, password=decrypt(a.password_enc),
+                                    binary=settings.wdtt_binary_path,
+                                )
+                            except SSHError as exc:
+                                logger.warning("Stale-wdtt remove SSH error acc {}: {}", a.id, exc)
+                except SSHError as exc:
+                    logger.warning("Stale-wdtt SSH connect error server {}: {}", server_id, exc)
+
+            for a in stale_wdtt:
+                await repo.delete_wdtt_access(session, a.id)
+                logger.info("Auto-deleted stale revoked wdtt access {} ({})", a.id, a.label)
+            await session.commit()
+
+        # ── 2b. Зомби-устройства ─────────────────────────────────────────────
+        # REVOKED-устройство, у которого retention уже удалил все пиры и обходы,
+        # восстанавливать нечем — убираем строку, чтобы не висела в списке 🚫.
+        zombies = list((await session.execute(
+            select(Device)
+            .where(Device.status == PeerStatus.REVOKED)
+            .where(~select(Peer.id).where(Peer.device_id == Device.id).exists())
+            .where(~select(WdttAccess.id).where(WdttAccess.device_id == Device.id).exists())
+        )).scalars())
+        if zombies:
+            for d in zombies:
+                await session.delete(d)
+                logger.info("Auto-deleted zombie revoked device {} ({})", d.id, d.label)
             await session.commit()
 
         # ── 3. Учёт трафика (накопление по пирам) ───────────────────────────

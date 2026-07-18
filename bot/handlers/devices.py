@@ -86,7 +86,10 @@ async def cb_dev_list(call: CallbackQuery, session: AsyncSession) -> None:
 
     head = "📱 <b>Мои устройства</b>"
     if not _sub_active(user):
-        head += "\n<i>Подписка истекла — продление у админа.</i>"
+        head += (
+            "\n<i>Подписка истекла — продление у админа. Устройства сохраняются "
+            "30 дней и оживут при продлении сами.</i>"
+        )
     elif not devices:
         head += "\n\nПока пусто. Добавь первое устройство — получишь конфиг."
 
@@ -210,6 +213,11 @@ async def cb_dev_open(call: CallbackQuery, session: AsyncSession) -> None:
         f"📱 <b>{device.label}</b>",
         f"• Статус: <b>{device.status}</b>",
     ]
+    if not active:
+        lines.append(
+            "\n⏸ <i>Отключено до продления подписки. Конфиги сохраняются "
+            "30 дней и оживут при продлении сами — удалять устройство не нужно.</i>"
+        )
     locations: list[tuple[int, str]] = []
     if active_peers:
         labels = await repo.server_labels_map(session)
@@ -308,6 +316,8 @@ async def cb_dev_revoke(call: CallbackQuery, session: AsyncSession) -> None:
     label = device.label
     await teardown.delete_device(session, device)
     await session.commit()
+    # Удаление необратимо (ревайв невозможен) — фиксируем в лог, кто и что снёс.
+    logger.info("User {} deleted device {} ({})", user.id, device_id, label)
     await call.message.edit_text(
         t.device_revoked.format(label=label), reply_markup=back_to_menu()
     )

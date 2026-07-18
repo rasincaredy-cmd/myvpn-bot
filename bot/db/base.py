@@ -41,15 +41,14 @@ async def init_db() -> None:
         await run_migrations(conn)
 
     # Грандфазер (Блок 9): существующие активные пиры → устройства. Идемпотентно.
+    # ВАЖНО: отозванные wdtt-строки на старте НЕ чистим — с Блока «Ревайв» они
+    # ждут продления подписки (retention в планировщике, как у пиров).
     from loguru import logger
-    from bot.db.repo import backfill_devices, purge_revoked_wdtt
+    from bot.db.repo import backfill_devices
     async with session_scope() as session:
         n = await backfill_devices(session)
-        purged = await purge_revoked_wdtt(session)
     if n:
         logger.info("Backfill: обёрнуто пиров в устройства: {}", n)
-    if purged:
-        logger.info("Чистка: удалено отозванных wdtt-доступов: {}", purged)
 
 
 @asynccontextmanager

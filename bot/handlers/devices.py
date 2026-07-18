@@ -34,7 +34,13 @@ from bot.texts import t
 from bot.utils.validators import is_valid_label
 
 # Переиспользуем машинерию создания/отправки пиров.
-from bot.handlers.configs import provision_device_peers, _send_peer_artifacts, make_vpn_link, config_display_base
+from bot.handlers.configs import (
+    provision_device_peers,
+    _safe_filename_base,
+    _send_peer_artifacts,
+    make_vpn_link,
+    config_display_base,
+)
 
 router = Router(name="devices")
 
@@ -301,6 +307,62 @@ async def cb_dev_send(call: CallbackQuery, session: AsyncSession) -> None:
         vpn_link=await make_vpn_link(session, server, peer.label, conf),
     )
     await call.answer("Готово")
+
+
+@router.callback_query(F.data.startswith(f"{CB_DEVICE}:ru:"))
+async def cb_dev_ru(call: CallbackQuery, session: AsyncSession) -> None:
+    """Конфиги устройства в режиме «RU напрямую»: те же ключи/IP, но AllowedIPs —
+    инверсия российских подсетей (rusplit). RU-трафик мимо VPN, остальное через.
+    Только .conf-файлом: ~2100 маршрутов не влезают в QR и vpn://-ссылку."""
+    from aiogram.types import BufferedInputFile
+
+    from bot.loader import bot as tg_bot
+    from bot.services import rusplit
+
+    device_id = int(call.data.rsplit(":", 1)[-1])
+    device = await repo.get_device(session, device_id)
+    user = await repo.get_user_by_tg_id(session, call.from_user.id)
+    if device is None or user is None or device.user_id != user.id:
+        await call.answer("Не найдено", show_alert=True)
+        return
+    peers = [p for p in await repo.list_peers_for_device(session, device.id)
+             if p.status == PeerStatus.ACTIVE]
+    if not peers:
+        await call.answer("Нет активных конфигов", show_alert=True)
+        return
+    await call.answer("Собираю…")
+    allowed = rusplit.allowed_ips_no_ru()
+    for peer in peers:
+        server = await repo.get_server(session, peer.server_id)
+        if server is None:
+            continue
+        params = amnezia.AmneziaParams.from_json(server.awg_params_json)
+        conf = amnezia.build_peer_conf(
+            peer_private_key=decrypt(peer.private_key_enc),
+            peer_ip=peer.ip,
+            server_public_key=server.server_public_key,
+            endpoint=server.server_endpoint,
+            params=params,
+            dns=server.dns,
+            allowed_ips=allowed,
+        )
+        base = _safe_filename_base(config_display_base(server))
+        filename = f"{base}-RU-напрямую-{peer.label}.conf".replace(" ", "_")
+        await tg_bot.send_document(
+            call.message.chat.id,
+            document=BufferedInputFile(conf.encode("utf-8"), filename=filename),
+            caption=f"🇷🇺 <code>{filename}</code>",
+        )
+    await tg_bot.send_message(
+        call.message.chat.id,
+        "🇷🇺 <b>Режим «RU напрямую»</b>: российские сайты идут мимо VPN "
+        "(твой обычный IP и скорость), всё остальное — через VPN.\n\n"
+        "Импортируй файл в AmneziaVPN <b>вместо</b> обычного конфига "
+        "(старый можно удалить в приложении). QR и vpn://-ссылки для этого "
+        "режима нет — список маршрутов в них не помещается.\n"
+        "<i>Небольшая часть мелких RU-сайтов всё же пойдёт через VPN — "
+        "так задумано, зато заблокированные ресурсы не отвалятся.</i>",
+    )
 
 
 @router.callback_query(F.data.startswith(f"{CB_DEVICE}:revoke:"))

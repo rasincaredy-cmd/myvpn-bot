@@ -389,8 +389,16 @@ def build_peer_conf(
     endpoint: str,
     params: AmneziaParams,
     dns: str | None = None,
+    allowed_ips: str | None = None,
 ) -> str:
+    """allowed_ips по умолчанию — ТОЧНО «0.0.0.0/0, ::/0» (с пробелом после
+    запятой): клиент Amnezia строковым сравнением по этой строке решает, полный
+    ли это туннель, и только тогда разблокирует своё меню раздельного
+    туннелирования (amnezia-client #2206). Иной список (например, инверсия RU
+    из services/rusplit.py) — сплит на уровне маршрутов WireGuard, работает
+    в любом клиенте."""
     dns = dns or "1.1.1.1, 1.0.0.1"
+    allowed_ips = allowed_ips or "0.0.0.0/0, ::/0"
     return (
         "[Interface]\n"
         f"PrivateKey = {peer_private_key}\n"
@@ -399,7 +407,7 @@ def build_peer_conf(
         f"{params.to_interface_block()}\n"
         "[Peer]\n"
         f"PublicKey = {server_public_key}\n"
-        "AllowedIPs = 0.0.0.0/0\n"
+        f"AllowedIPs = {allowed_ips}\n"
         f"Endpoint = {endpoint}\n"
         "PersistentKeepalive = 25\n"
     )

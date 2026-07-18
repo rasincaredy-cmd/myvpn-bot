@@ -510,6 +510,9 @@ def device_card_kb(
             kb.button(text="📥 Получить все", callback_data=f"{CB_DEVICE}:send:{device_id}")
         else:
             kb.button(text="📥 Получить конфиг", callback_data=f"{CB_DEVICE}:send:{device_id}")
+        # Версия с раздельным туннелированием: RU-трафик мимо VPN. Только
+        # файлом — инверсия RU-подсетей не влезает в QR/vpn:// (см. rusplit.py).
+        kb.button(text="🇷🇺 Конфиг «RU напрямую»", callback_data=f"{CB_DEVICE}:ru:{device_id}")
     # Удаление доступно всегда: активное устройство удаляется (с отзывом), а
     # неактивное (истекшее) — убирается из списка, чтобы не висело мусором.
     kb.button(text="🗑 Удалить устройство", callback_data=f"{CB_DEVICE}:revoke:{device_id}")

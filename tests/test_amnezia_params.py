@@ -103,8 +103,25 @@ class TestBuildPeerConf:
         # Секция peer.
         assert "PublicKey = SERVERPUB" in conf
         assert "Endpoint = 1.2.3.4:585" in conf
-        assert "AllowedIPs = 0.0.0.0/0" in conf
+        # ТОЧНАЯ строка полного туннеля (с пробелом после запятой) — клиент
+        # Amnezia сравнивает её посимвольно и иначе блокирует своё меню
+        # раздельного туннелирования (amnezia-client #2206).
+        assert "AllowedIPs = 0.0.0.0/0, ::/0\n" in conf
         assert "PersistentKeepalive = 25" in conf
+
+    def test_allowed_ips_override(self) -> None:
+        """Режим «RU напрямую»: список маршрутов подставляется как есть."""
+        params = generate_amnezia_params()
+        conf = build_peer_conf(
+            peer_private_key="x",
+            peer_ip="10.8.0.5",
+            server_public_key="y",
+            endpoint="1.2.3.4:585",
+            params=params,
+            allowed_ips="1.0.0.0/8, 2.0.0.0/7",
+        )
+        assert "AllowedIPs = 1.0.0.0/8, 2.0.0.0/7\n" in conf
+        assert "::/0" not in conf
 
     def test_interface_comes_before_peer(self) -> None:
         """Парсеры wg-quick требуют [Interface] перед [Peer]."""

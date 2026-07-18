@@ -27,6 +27,7 @@ from bot.keyboards.inline import (
     admin_peer_card,
     back_to_menu,
     confirm_delete_server,
+    location_choice_kb,
     server_card,
     server_peers_admin,
     server_wdtt_card_kb,
@@ -102,18 +103,39 @@ async def cb_server_location(
         await call.answer("Не найдено", show_alert=True)
         return
     await state.set_state(ServerEditStates.location)
-    await state.update_data(server_id=server_id)
-    from aiogram.utils.keyboard import InlineKeyboardBuilder as IKB
-    kb = IKB()
-    kb.button(text="✖️ Отмена", callback_data=f"{CB_SERVERS}:open:{server_id}")
+    # Существующие локации — кнопками (см. location_choice_kb): опечатка в тексте
+    # плодит две разные локации. Ввод текстом остаётся рабочим.
+    known = await repo.list_known_locations(session)
+    await state.update_data(server_id=server_id, loc_names=known)
     await call.message.edit_text(
         "🌍 <b>Локация сервера</b>\n\n"
         f"Текущая: {server.location or '—'}\n\n"
-        "Введи страну с флагом (напр. <code>🇩🇪 Германия</code>). "
-        "Отправь <code>-</code>, чтобы очистить.",
-        reply_markup=kb.as_markup(),
+        "Выбери из списка или введи текстом — страна с флагом "
+        "(напр. <code>🇩🇪 Германия</code>). <code>-</code> — очистить.",
+        reply_markup=location_choice_kb(
+            known, f"{CB_SERVERS}:locpick",
+            cancel_cb=f"{CB_SERVERS}:open:{server_id}",
+        ),
     )
     await call.answer()
+
+
+async def _finish_server_location(
+    send, state: FSMContext, session: AsyncSession, location: str | None
+) -> None:
+    """Общий финал текстового и кнопочного выбора локации: пишем и подтверждаем."""
+    data = await state.get_data()
+    await state.clear()
+    server = await repo.get_server(session, data["server_id"])
+    if server is None:
+        await send("Сервер не найден.")
+        return
+    server.location = location
+    await session.commit()
+    from aiogram.utils.keyboard import InlineKeyboardBuilder as IKB
+    kb = IKB()
+    kb.button(text="« К серверу", callback_data=f"{CB_SERVERS}:open:{server.id}")
+    await send(f"✅ Локация: {server.location or '—'}", reply_markup=kb.as_markup())
 
 
 @router.message(ServerEditStates.location, F.text, AdminFilter())
@@ -121,20 +143,39 @@ async def step_server_location(
     message: Message, state: FSMContext, session: AsyncSession
 ) -> None:
     raw = message.text.strip()
-    data = await state.get_data()
-    await state.clear()
-    server = await repo.get_server(session, data["server_id"])
-    if server is None:
-        await message.answer("Сервер не найден.")
-        return
-    server.location = None if raw == "-" else raw[:64]
-    await session.commit()
-    from aiogram.utils.keyboard import InlineKeyboardBuilder as IKB
-    kb = IKB()
-    kb.button(text="« К серверу", callback_data=f"{CB_SERVERS}:open:{server.id}")
-    await message.answer(
-        f"✅ Локация: {server.location or '—'}", reply_markup=kb.as_markup()
+    await _finish_server_location(
+        message.answer, state, session, None if raw == "-" else raw[:64]
     )
+
+
+@router.callback_query(ServerEditStates.location, F.data.startswith(f"{CB_SERVERS}:locpick:"))
+async def cb_server_location_pick(
+    call: CallbackQuery, state: FSMContext, session: AsyncSession
+) -> None:
+    choice = call.data.rsplit(":", 1)[-1]
+    data = await state.get_data()
+    if choice == "new":
+        from aiogram.utils.keyboard import InlineKeyboardBuilder as IKB
+        kb = IKB()
+        kb.button(text="✖️ Отмена", callback_data=f"{CB_SERVERS}:open:{data['server_id']}")
+        await call.message.edit_text(
+            "🌍 Введи локацию текстом — страна с флагом "
+            "(напр. <code>🇩🇪 Германия</code>). <code>-</code> — очистить.",
+            reply_markup=kb.as_markup(),
+        )
+        await call.answer()
+        return
+    if choice == "none":
+        location = None
+    else:
+        names = data.get("loc_names") or []
+        idx = int(choice)
+        if idx >= len(names):
+            await call.answer("Список устарел, введи локацию текстом.", show_alert=True)
+            return
+        location = names[idx]
+    await _finish_server_location(call.message.edit_text, state, session, location)
+    await call.answer()
 
 
 # --- DNS сервера -------------------------------------------------------------
@@ -733,17 +774,75 @@ async def _render_server_wdtt(call, session, server_id: int) -> None:
         plat = _PLAT.get(a.platform or "", "")
         lbl = a.label + (f" · {plat}" if plat else "") + f" · {who}"
         rows.append((a.id, lbl))
+    limit = "∞" if server.wdtt_max_accesses is None else str(server.wdtt_max_accesses)
     await call.message.edit_text(
-        f"🛡 <b>Обходы — {server.name}</b>\nАктивных: <b>{len(accesses)}</b>",
+        f"🛡 <b>Обходы — {server.name}</b>\n"
+        f"Активных: <b>{len(accesses)}</b> / лимит: <b>{limit}</b>\n"
+        "<i>Заполненный сервер юзерам при создании обхода не предлагается.</i>",
         reply_markup=server_wdtt_list_kb(rows, server_id),
     )
 
 
 @router.callback_query(F.data.startswith(f"{CB_SERVERS}:wdtt:"))
-async def cb_server_wdtt(call: CallbackQuery, session: AsyncSession) -> None:
+async def cb_server_wdtt(call: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
     server_id = int(call.data.rsplit(":", 1)[-1])
+    await state.clear()  # сюда ведёт «Отмена» из редактирования лимита обходов
     await _render_server_wdtt(call, session, server_id)
     await call.answer()
+
+
+@router.callback_query(F.data.startswith(f"{CB_SERVERS}:wlim:"))
+async def cb_server_wdtt_limit(
+    call: CallbackQuery, state: FSMContext, session: AsyncSession
+) -> None:
+    server_id = int(call.data.rsplit(":", 1)[-1])
+    server = await repo.get_server(session, server_id)
+    if server is None:
+        await call.answer("Не найдено", show_alert=True)
+        return
+    await state.set_state(ServerEditStates.wdtt_limit)
+    await state.update_data(server_id=server_id)
+    limit = "∞" if server.wdtt_max_accesses is None else str(server.wdtt_max_accesses)
+    from aiogram.utils.keyboard import InlineKeyboardBuilder as IKB
+    kb = IKB()
+    kb.button(text="✖️ Отмена", callback_data=f"{CB_SERVERS}:wdtt:{server_id}")
+    await call.message.edit_text(
+        "✏️ <b>Лимит обходов на сервере</b>\n\n"
+        f"Сейчас: <b>{limit}</b>\n\n"
+        "Введи максимум активных доступов (<code>0</code> — закрыть новую выдачу, "
+        "существующие продолжают работать). <code>-</code> — без лимита.",
+        reply_markup=kb.as_markup(),
+    )
+    await call.answer()
+
+
+@router.message(ServerEditStates.wdtt_limit, F.text, AdminFilter())
+async def step_server_wdtt_limit(
+    message: Message, state: FSMContext, session: AsyncSession
+) -> None:
+    raw = message.text.strip()
+    if raw == "-":
+        value = None
+    elif raw.isdigit() and int(raw) <= 100_000:
+        value = int(raw)
+    else:
+        await message.answer("Число ≥ 0 или <code>-</code> (без лимита). Ещё раз:")
+        return
+    data = await state.get_data()
+    await state.clear()
+    server = await repo.get_server(session, data["server_id"])
+    if server is None:
+        await message.answer("Сервер не найден.")
+        return
+    server.wdtt_max_accesses = value
+    await session.commit()
+    from aiogram.utils.keyboard import InlineKeyboardBuilder as IKB
+    kb = IKB()
+    kb.button(text="« К обходам", callback_data=f"{CB_SERVERS}:wdtt:{server.id}")
+    await message.answer(
+        f"✅ Лимит обходов: {'∞' if value is None else value}",
+        reply_markup=kb.as_markup(),
+    )
 
 
 @router.callback_query(F.data.startswith(f"{CB_SERVERS}:wopen:"))

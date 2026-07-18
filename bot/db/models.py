@@ -139,6 +139,10 @@ class Server(Base):
     wdtt_ports: Mapped[str | None] = mapped_column(
         String(32), default="56000,56001,9000"
     )
+    # Ёмкость обхода: максимум АКТИВНЫХ wdtt-доступов на сервере. NULL — без
+    # лимита, 0 — новая выдача закрыта (существующие доступы продолжают жить).
+    # Заполненный сервер не предлагается юзерам при создании доступа.
+    wdtt_max_accesses: Mapped[int | None] = mapped_column(Integer)
 
     peers: Mapped[list["Peer"]] = relationship(
         back_populates="server", cascade="all, delete-orphan"

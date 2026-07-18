@@ -254,7 +254,7 @@ async def cb_panel_user_config_send(call: CallbackQuery, session: AsyncSession) 
     if server is None:
         await call.answer("Сервер недоступен", show_alert=True)
         return
-    from bot.handlers.configs import _send_peer_artifacts, make_vpn_link
+    from bot.handlers.configs import _send_peer_artifacts, make_vpn_link, config_display_base
     from bot.services.crypto import decrypt
     params = amnezia.AmneziaParams.from_json(server.awg_params_json)
     conf = amnezia.build_peer_conf(
@@ -266,7 +266,7 @@ async def cb_panel_user_config_send(call: CallbackQuery, session: AsyncSession) 
         dns=server.dns,
     )
     await _send_peer_artifacts(
-        call.message.chat.id, server.name, peer.label, conf,
+        call.message.chat.id, config_display_base(server), peer.label, conf,
         vpn_link=await make_vpn_link(session, server, peer.label, conf),
     )
     await call.answer("Конфиг отправлен")

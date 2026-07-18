@@ -34,7 +34,7 @@ from bot.texts import t
 from bot.utils.validators import is_valid_label
 
 # Переиспользуем машинерию создания/отправки пиров.
-from bot.handlers.configs import provision_device_peers, _send_peer_artifacts, make_vpn_link
+from bot.handlers.configs import provision_device_peers, _send_peer_artifacts, make_vpn_link, config_display_base
 
 router = Router(name="devices")
 
@@ -176,7 +176,7 @@ async def step_device_label(message: Message, state: FSMContext, session: AsyncS
         await status_msg.delete()
     for server, conf in made:
         await _send_peer_artifacts(
-            message.chat.id, server.name, label, conf,
+            message.chat.id, config_display_base(server), label, conf,
             vpn_link=await make_vpn_link(session, server, label, conf),
         )
     await message.answer(
@@ -202,7 +202,7 @@ async def cb_dev_open(call: CallbackQuery, session: AsyncSession) -> None:
             await session.commit()
             for server, conf in made:
                 await _send_peer_artifacts(
-                    call.message.chat.id, server.name, device.label, conf,
+                    call.message.chat.id, config_display_base(server), device.label, conf,
                     vpn_link=await make_vpn_link(session, server, device.label, conf),
                 )
 
@@ -264,7 +264,7 @@ async def cb_dev_send_one(call: CallbackQuery, session: AsyncSession) -> None:
         dns=server.dns,
     )
     await _send_peer_artifacts(
-        call.message.chat.id, server.name, peer.label, conf,
+        call.message.chat.id, config_display_base(server), peer.label, conf,
         vpn_link=await make_vpn_link(session, server, peer.label, conf),
     )
     await call.answer("Готово")
@@ -297,7 +297,7 @@ async def cb_dev_send(call: CallbackQuery, session: AsyncSession) -> None:
             dns=server.dns,
         )
         await _send_peer_artifacts(
-        call.message.chat.id, server.name, peer.label, conf,
+        call.message.chat.id, config_display_base(server), peer.label, conf,
         vpn_link=await make_vpn_link(session, server, peer.label, conf),
     )
     await call.answer("Готово")

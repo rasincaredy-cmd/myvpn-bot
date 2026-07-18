@@ -21,6 +21,7 @@ from bot.keyboards.inline import (
     cancel_only,
     install_auth_method,
     install_confirm,
+    location_choice_kb,
     main_menu,
 )
 from bot.loader import bot
@@ -70,7 +71,7 @@ async def cb_install_start(call: CallbackQuery, state: FSMContext) -> None:
 # --- Шаги -------------------------------------------------------------------
 
 @router.message(InstallStates.name, F.text)
-async def step_name(message: Message, state: FSMContext) -> None:
+async def step_name(message: Message, state: FSMContext, session: AsyncSession) -> None:
     name = message.text.strip()
     if not is_valid_server_name(name):
         await message.answer(
@@ -80,7 +81,17 @@ async def step_name(message: Message, state: FSMContext) -> None:
         return
     await state.update_data(name=name)
     await state.set_state(InstallStates.location)
-    await message.answer(t.install_ask_location, reply_markup=cancel_only())
+    # Существующие локации — кнопками: опечатка при вводе текстом («🇩🇪 Германия»
+    # и «🇩🇪  Германия») плодит две разные локации. Ввод текстом остаётся рабочим.
+    known = await repo.list_known_locations(session)
+    if known:
+        await state.update_data(loc_names=known)
+        await message.answer(
+            t.install_ask_location_pick,
+            reply_markup=location_choice_kb(known, f"{CB_INSTALL}:loc"),
+        )
+    else:
+        await message.answer(t.install_ask_location, reply_markup=cancel_only())
 
 
 @router.message(InstallStates.location, F.text)
@@ -90,6 +101,28 @@ async def step_location(message: Message, state: FSMContext) -> None:
     await state.update_data(location=location)
     await state.set_state(InstallStates.host)
     await message.answer(t.install_ask_host, reply_markup=cancel_only())
+
+
+@router.callback_query(InstallStates.location, F.data.startswith(f"{CB_INSTALL}:loc:"))
+async def cb_install_location(call: CallbackQuery, state: FSMContext) -> None:
+    choice = call.data.rsplit(":", 1)[-1]
+    if choice == "new":
+        await call.message.edit_text(t.install_ask_location, reply_markup=cancel_only())
+        await call.answer()
+        return
+    if choice == "none":
+        location = None
+    else:
+        names = (await state.get_data()).get("loc_names") or []
+        idx = int(choice)
+        if idx >= len(names):
+            await call.answer("Список устарел, введи локацию текстом.", show_alert=True)
+            return
+        location = names[idx]
+    await state.update_data(location=location)
+    await state.set_state(InstallStates.host)
+    await call.message.edit_text(t.install_ask_host, reply_markup=cancel_only())
+    await call.answer()
 
 
 @router.message(InstallStates.host, F.text)

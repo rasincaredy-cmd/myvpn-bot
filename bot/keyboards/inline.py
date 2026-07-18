@@ -115,6 +115,7 @@ def server_wdtt_list_kb(
     kb = InlineKeyboardBuilder()
     for access_id, label in rows:
         kb.button(text=f"🛡 {label}", callback_data=f"{CB_SERVERS}:wopen:{access_id}")
+    kb.button(text="✏️ Лимит обходов", callback_data=f"{CB_SERVERS}:wlim:{server_id}")
     kb.button(text="« К серверу", callback_data=f"{CB_SERVERS}:open:{server_id}")
     kb.adjust(1)
     return kb.as_markup()
@@ -160,6 +161,33 @@ def pick_server(servers: list[Server], action_prefix: str) -> InlineKeyboardMark
     for s in servers:
         kb.button(text=f"🖥 {s.name}", callback_data=f"{action_prefix}:{s.id}")
     kb.button(text="✖️ Отмена", callback_data=CB_CANCEL)
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def pick_location_kb(names: list[str], action_prefix: str) -> InlineKeyboardMarkup:
+    """Выбор локации из списка. Кнопки по ИНДЕКСУ (юникод-название с флагом может
+    не влезть в 64 байта callback_data) — список имён кладётся в FSM state."""
+    kb = InlineKeyboardBuilder()
+    for i, name in enumerate(names):
+        kb.button(text=name, callback_data=f"{action_prefix}:{i}")
+    kb.button(text="✖️ Отмена", callback_data=CB_CANCEL)
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def location_choice_kb(
+    names: list[str], action_prefix: str, cancel_cb: str = CB_CANCEL
+) -> InlineKeyboardMarkup:
+    """Локация для сервера (админ): существующие — кнопками (защита от опечаток,
+    «🇩🇪 Германия» и «🇩🇪  Германия» стали бы двумя локациями), новая — текстом.
+    Кнопки по индексу, список имён — в FSM state."""
+    kb = InlineKeyboardBuilder()
+    for i, name in enumerate(names):
+        kb.button(text=name, callback_data=f"{action_prefix}:{i}")
+    kb.button(text="✏️ Новая локация", callback_data=f"{action_prefix}:new")
+    kb.button(text="🚫 Без локации", callback_data=f"{action_prefix}:none")
+    kb.button(text="✖️ Отмена", callback_data=cancel_cb)
     kb.adjust(1)
     return kb.as_markup()
 

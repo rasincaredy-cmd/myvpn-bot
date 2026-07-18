@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 import asyncio
 import contextlib
+import re
 import secrets
 
 from aiogram import F, Router
@@ -118,8 +119,10 @@ async def provision_device_peers(
     session: AsyncSession, user: User, device: "object"
 ) -> list[tuple[Server, str]]:
     """Создаёт по одному WG-пиру на КАЖДОЙ READY-локации, где у устройства ещё нет
-    активного пира (Блок 8: устройство = группа конфигов по странам). Best-effort —
-    упавшую локацию пропускаем, дозакинем при следующем открытии устройства.
+    активного пира (Блок 8: устройство = группа конфигов по странам). Если в локации
+    несколько серверов — берём наименее загруженный по активным пирам (Блок
+    «Распределение»); упавший сервер не хороним локацию — пробуем следующий.
+    Существующие пиры не переезжают: конфиг на руках у клиента привязан к серверу.
     Возвращает [(server, conf), ...] для отправки пользователю."""
     servers = await repo.list_ready_servers(session)
     existing = {
@@ -127,22 +130,26 @@ async def provision_device_peers(
         for p in await repo.list_peers_for_device(session, device.id)
         if p.status == PeerStatus.ACTIVE
     }
+    load = await repo.count_active_peers_by_server(session)
     made: list[tuple[Server, str]] = []
-    for server in servers:
-        if server.id in existing:
-            continue
-        try:
-            conf, _ip, _ = await _create_peer_for_user(
-                session, server, user, device.label,
-                device_id=device.id, expires_at=None,
-            )
-        except SSHError as exc:
-            logger.warning("Device {} provision on server {} failed: {}", device.id, server.id, exc)
-            continue
-        except Exception:
-            logger.exception("Device {} provision on server {} crashed", device.id, server.id)
-            continue
-        made.append((server, conf))
+    for group in repo.group_by_location(servers).values():
+        if any(s.id in existing for s in group):
+            continue  # в этой локации у устройства уже есть конфиг
+        for server in sorted(group, key=lambda s: load.get(s.id, 0)):
+            try:
+                conf, _ip, _ = await _create_peer_for_user(
+                    session, server, user, device.label,
+                    device_id=device.id, expires_at=None,
+                )
+            except SSHError as exc:
+                logger.warning("Device {} provision on server {} failed: {}", device.id, server.id, exc)
+                continue
+            except Exception:
+                logger.exception("Device {} provision on server {} crashed", device.id, server.id)
+                continue
+            load[server.id] = load.get(server.id, 0) + 1
+            made.append((server, conf))
+            break
     return made
 
 
@@ -151,14 +158,28 @@ def _split_dns(dns: str | None) -> tuple[str, str]:
     return (parts[0] if parts else "1.1.1.1"), (parts[1] if len(parts) > 1 else "")
 
 
+def config_display_base(server: Server) -> str:
+    """Имя конфига для юзера: локация БЕЗ номера сервера («🇳🇱 Нидерланды», а не
+    «🇳🇱 Нидерланды 2») — юзеру не важно, какой именно сервер локации ему достался.
+    В интерфейсе бота нумерация «Локация N» остаётся (server_labels_map).
+    Фолбэк — имя сервера, если локация не задана."""
+    return server.location or server.name
+
+
 async def make_vpn_link(session: AsyncSession, server: Server, label: str, conf: str) -> str:
-    """Строит `vpn://`-ссылку с человекочитаемым именем «Локация N · метка»."""
-    labels = await repo.server_labels_map(session)
-    name = f"{labels.get(server.id, server.name)} · {label}"
+    """Строит `vpn://`-ссылку с человекочитаемым именем «Локация · метка»."""
+    name = f"{config_display_base(server)} · {label}"
     d1, d2 = _split_dns(server.dns)
     return amnezia_native.build_vpn_link(
         conf=conf, name=name, host=server.host, port=server.wg_port, dns1=d1, dns2=d2,
     )
+
+
+def _safe_filename_base(name: str) -> str:
+    """Имя файла без эмодзи/флагов: «🇳🇱 Нидерланды» → «Нидерланды». Amnezia при
+    импорте .conf называет конфиг по имени файла, поэтому файл — тоже витрина."""
+    cleaned = re.sub(r"[^\w\s.-]", "", name).strip()
+    return cleaned or "config"
 
 
 async def _send_peer_artifacts(
@@ -170,7 +191,7 @@ async def _send_peer_artifacts(
 ) -> None:
     """Шлёт .conf файлом, QR картинкой и (опц.) `vpn://`-ссылку для one-tap импорта."""
     conf_bytes = conf.encode("utf-8")
-    filename = f"{server_name}-{label}.conf".replace(" ", "_")
+    filename = f"{_safe_filename_base(server_name)}-{label}.conf".replace(" ", "_")
     await bot.send_document(
         chat_id,
         document=BufferedInputFile(conf_bytes, filename=filename),
@@ -293,7 +314,7 @@ async def cb_peer_send(call: CallbackQuery, session: AsyncSession) -> None:
         params=params,
         dns=server.dns,
     )
-    await _send_peer_artifacts(call.message.chat.id, server.name, peer.label, conf)
+    await _send_peer_artifacts(call.message.chat.id, config_display_base(server), peer.label, conf)
     await call.answer("Готово")
 
 
@@ -399,7 +420,7 @@ async def step_peer_label(
     with contextlib.suppress(Exception):
         await status_msg.delete()
 
-    await _send_peer_artifacts(message.chat.id, server.name, label, conf)
+    await _send_peer_artifacts(message.chat.id, config_display_base(server), label, conf)
     await message.answer(
         t.peer_created.format(server=server.name, label=label, ip=ip),
         reply_markup=to_server(server.id),
@@ -667,7 +688,7 @@ async def redeem_invite(
         await message.answer(t.error_generic)
         return True
 
-    await _send_peer_artifacts(message.chat.id, server.name, label, conf)
+    await _send_peer_artifacts(message.chat.id, config_display_base(server), label, conf)
     await message.answer(
         t.peer_created.format(server=server.name, label=label, ip=ip),
         reply_markup=back_to_menu(),

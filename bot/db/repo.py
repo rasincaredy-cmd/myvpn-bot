@@ -51,6 +51,49 @@ async def server_labels_map(session: AsyncSession) -> dict[int, str]:
     return result
 
 
+def group_by_location(servers: list[Server]) -> dict[str, list[Server]]:
+    """Группирует сервера по локации (Блок «Распределение»). Сервер без локации —
+    сам себе группа (ключ `#id`), чтобы не слипались в одну псевдо-локацию."""
+    groups: dict[str, list[Server]] = {}
+    for s in servers:
+        groups.setdefault(s.location or f"#{s.id}", []).append(s)
+    return groups
+
+
+async def count_active_peers_by_server(session: AsyncSession) -> dict[int, int]:
+    """id сервера → число АКТИВНЫХ пиров. Метрика загрузки для распределения
+    новых устройств внутри локации."""
+    rows = await session.execute(
+        select(Peer.server_id, func.count())
+        .where(Peer.status == PeerStatus.ACTIVE)
+        .group_by(Peer.server_id)
+    )
+    return {sid: n for sid, n in rows.all()}
+
+
+async def count_active_wdtt_by_server(session: AsyncSession) -> dict[int, int]:
+    """id сервера → число АКТИВНЫХ wdtt-доступов. Для ёмкости обхода
+    (Server.wdtt_max_accesses) и распределения внутри локации."""
+    rows = await session.execute(
+        select(WdttAccess.server_id, func.count())
+        .where(WdttAccess.status == PeerStatus.ACTIVE)
+        .group_by(WdttAccess.server_id)
+    )
+    return {sid: n for sid, n in rows.all()}
+
+
+async def list_known_locations(session: AsyncSession) -> list[str]:
+    """Уникальные локации всех серверов — для выбора кнопками (защита от опечаток:
+    «🇩🇪 Германия» и «🇩🇪  Германия» стали бы двумя разными локациями)."""
+    rows = await session.execute(
+        select(Server.location)
+        .where(Server.location.is_not(None))
+        .distinct()
+        .order_by(Server.location)
+    )
+    return [loc for (loc,) in rows.all()]
+
+
 def creds_from_server(server: Server) -> SSHCredentials:
     """Распаковывает зашифрованные SSH-креды из БД в SSHCredentials."""
     return SSHCredentials(

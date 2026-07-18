@@ -41,6 +41,7 @@ class PeerRenameStates(StatesGroup):
 class ServerEditStates(StatesGroup):
     location = State()
     dns = State()
+    wdtt_limit = State()  # ёмкость обхода: Server.wdtt_max_accesses
 
 
 class WdttStates(StatesGroup):

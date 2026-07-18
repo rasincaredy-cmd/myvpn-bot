@@ -18,13 +18,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
 from bot.db import repo
-from bot.db.models import PeerStatus, ServerStatus
+from bot.db.models import PeerStatus
 from bot.filters.admin import AdminFilter
 from bot.keyboards.inline import (
     CB_WDTT,
     back_to_menu,
     cancel_only,
-    pick_server,
+    pick_location_kb,
     server_card,
     wdtt_platform_kb,
     wdtt_pick_device_kb,
@@ -56,6 +56,24 @@ def _as_utc(dt: datetime) -> datetime:
 
 def _sub_active(user) -> bool:
     return user.sub_expires_at is None or _as_utc(user.sub_expires_at) > datetime.now(timezone.utc)
+
+
+async def _wdtt_location_groups(session: AsyncSession):
+    """Локация → READY-сервера с включённым обходом и СВОБОДНОЙ ёмкостью
+    (wdtt_max_accesses; NULL — безлимит). Заполненные сервера юзеру не предлагаются.
+    Возвращает (группы, загрузка по серверам, есть_ли_wdtt_сервера_вообще)."""
+    servers = [s for s in await repo.list_ready_servers(session) if s.wdtt_enabled]
+    load = await repo.count_active_wdtt_by_server(session)
+    free = [
+        s for s in servers
+        if s.wdtt_max_accesses is None or load.get(s.id, 0) < s.wdtt_max_accesses
+    ]
+    return repo.group_by_location(free), load, bool(servers)
+
+
+def _least_loaded(group, load: dict[int, int]):
+    """Наименее загруженный сервер группы — равномерное распределение внутри локации."""
+    return min(group, key=lambda s: load.get(s.id, 0))
 
 
 def _sub_days_left(user) -> int:
@@ -229,32 +247,47 @@ async def cb_wdtt_new(call: CallbackQuery, state: FSMContext, session: AsyncSess
             show_alert=True,
         )
         return
-    servers = [
-        s for s in await repo.list_ready_servers(session) if s.wdtt_enabled
-    ]
-    if not servers:
+    groups, load, any_wdtt = await _wdtt_location_groups(session)
+    if not any_wdtt:
         await call.answer("Обход БС пока не доступен ни на одном сервере.", show_alert=True)
         return
-    if len(servers) == 1:
-        await state.update_data(server_id=servers[0].id)
+    if not groups:
+        await call.answer(
+            "Свободные слоты обхода закончились — попробуй позже.", show_alert=True
+        )
+        return
+    if len(groups) == 1:
+        (group,) = groups.values()
+        await state.update_data(server_id=_least_loaded(group, load).id)
         await _ask_device(call, state, session, user)
         return
+    keys = list(groups)
+    # Сервер без локации попал бы в кнопки как «#id» — показываем его имя.
+    names = [k if not k.startswith("#") else groups[k][0].name for k in keys]
+    await state.update_data(wdtt_loc_keys=keys)
     await state.set_state(WdttStates.pick_server)
     await call.message.edit_text(
-        t.wdtt_pick_server, reply_markup=pick_server(servers, f"{CB_WDTT}:srv")
+        t.wdtt_pick_server, reply_markup=pick_location_kb(names, f"{CB_WDTT}:loc")
     )
     await call.answer()
 
 
-@router.callback_query(WdttStates.pick_server, F.data.startswith(f"{CB_WDTT}:srv:"))
-async def cb_wdtt_pick_server(call: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
-    server_id = int(call.data.rsplit(":", 1)[-1])
-    server = await repo.get_server(session, server_id)
-    if server is None or not server.wdtt_enabled or server.status != ServerStatus.READY:
-        await call.answer("Сервер недоступен", show_alert=True)
+@router.callback_query(WdttStates.pick_server, F.data.startswith(f"{CB_WDTT}:loc:"))
+async def cb_wdtt_pick_location(call: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    data = await state.get_data()
+    keys = data.get("wdtt_loc_keys") or []
+    idx = int(call.data.rsplit(":", 1)[-1])
+    if idx >= len(keys):
+        await call.answer("Список устарел, начни заново.", show_alert=True)
+        return
+    # Свежая выборка: пока юзер думал, ёмкость локации могла закончиться.
+    groups, load, _ = await _wdtt_location_groups(session)
+    group = groups.get(keys[idx])
+    if not group:
+        await call.answer("В этой локации не осталось слотов обхода.", show_alert=True)
         return
     user = await repo.get_user_by_tg_id(session, call.from_user.id)
-    await state.update_data(server_id=server_id)
+    await state.update_data(server_id=_least_loaded(group, load).id)
     await _ask_device(call, state, session, user)
 
 
@@ -328,6 +361,17 @@ async def cb_wdtt_platform(call: CallbackQuery, state: FSMContext, session: Asyn
         await call.message.edit_text("Сервер или устройство недоступны.", reply_markup=back_to_menu())
         await call.answer()
         return
+    # Ёмкость перепроверяем в момент создания: пока юзер шёл по шагам,
+    # последний слот на сервере мог занять кто-то другой.
+    if server.wdtt_max_accesses is not None:
+        load = await repo.count_active_wdtt_by_server(session)
+        if load.get(server.id, 0) >= server.wdtt_max_accesses:
+            await call.message.edit_text(
+                "Свободные слоты обхода на сервере закончились — попробуй позже.",
+                reply_markup=back_to_menu(),
+            )
+            await call.answer()
+            return
 
     # Своя VK-ссылка юзера (если выбрал) переопределяет ссылку сервиса из конфига.
     vk_hashes = data.get("vk_hash") or settings.wdtt_vk_hashes

@@ -4,6 +4,7 @@ from aiogram import F, Router
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
+from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.db import repo
@@ -30,6 +31,9 @@ async def cmd_start_deep(
     session: AsyncSession,
 ) -> None:
     await state.clear()
+    # Для рефералки важно знать, был ли юзер в базе ДО этого /start:
+    # реферер привязывается только к действительно новым.
+    existed = await repo.get_user_by_tg_id(session, message.from_user.id) is not None
     user = await repo.get_or_create_user(
         session,
         tg_id=message.from_user.id,
@@ -38,6 +42,22 @@ async def cmd_start_deep(
     )
 
     token = (command.args or "").strip()
+
+    # Реф-ссылка t.me/<bot>?start=ref_<user.id> (Блок «Баланс»).
+    if token.startswith("ref_"):
+        if not existed and user.referrer_id is None:
+            ref_raw = token[4:]
+            referrer = (
+                await repo.get_user_by_id(session, int(ref_raw))
+                if ref_raw.isdigit() else None
+            )
+            if referrer is not None and referrer.id != user.id:
+                user.referrer_id = referrer.id
+                await session.commit()
+                logger.info("Referral: user {} invited by {}", user.id, referrer.id)
+        await _send_main_menu(message, user.is_admin)
+        return
+
     from bot.handlers.configs import redeem_invite
 
     if token:
@@ -216,6 +236,10 @@ async def cb_cancel(call: CallbackQuery, state: FSMContext, session: AsyncSessio
     if dest == "dev":
         from bot.handlers.devices import cb_dev_list
         await cb_dev_list(call, session)
+        return
+    if dest == "bal":
+        from bot.handlers.balance import cb_bal_my
+        await cb_bal_my(call, state, session)
         return
     if server_id is not None:
         server = await repo.get_server(session, server_id)

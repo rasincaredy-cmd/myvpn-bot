@@ -7,6 +7,7 @@ from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
+from loguru import logger
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -150,6 +151,7 @@ async def _user_card_text(session: AsyncSession, user) -> str:
         "🔴 Заблокирован" if user.is_blocked
         else ("👑 Админ" if user.is_admin else _TIER_LABEL[tier])
     )
+    from bot.services.pricing import fmt_rub
     return (
         f"👤 <b>{user.full_name or '—'}</b>\n"
         f"• Username: {('@' + user.username) if user.username else '—'}\n"
@@ -159,6 +161,7 @@ async def _user_card_text(session: AsyncSession, user) -> str:
         f"• Обход БС: <b>{bypass}/{user.sub_max_bypass}</b>\n"
         f"• Срок: <b>{srok}</b>\n"
         f"• Трафик: <b>{trf}</b>\n"
+        f"• Баланс: <b>{fmt_rub(user.balance_kopeks)}</b>\n"
         f"• С нами с: {user.created_at.strftime('%d.%m.%Y')}"
     )
 
@@ -445,6 +448,55 @@ async def step_sub_bypass(message: Message, state: FSMContext, session: AsyncSes
     user = await repo.get_user_by_id(session, data["user_id"])
     await message.answer(
         f"✅ Лимит обхода БС: <b>{user.sub_max_bypass}</b>",
+        reply_markup=admin_sub_kb(user.id, data["page"]),
+    )
+
+
+@router.callback_query(F.data.startswith(f"{CB_PANEL}:sub_bal:"))
+async def cb_panel_sub_bal(call: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    parts = call.data.split(":")
+    user = await repo.get_user_by_id(session, int(parts[2]))
+    if user is None:
+        await call.answer("Не найдено", show_alert=True)
+        return
+    await state.set_state(SubAdminStates.set_balance)
+    await state.update_data(user_id=user.id, page=int(parts[3]))
+    from bot.services.pricing import fmt_rub
+    await call.message.edit_text(
+        f"💰 <b>Баланс юзера: {fmt_rub(user.balance_kopeks)}</b>\n\n"
+        "Введи изменение в рублях со знаком: <code>+90</code> — начислить "
+        "(например, за перевод на карту), <code>-50</code> — списать.",
+    )
+    await call.answer()
+
+
+@router.message(SubAdminStates.set_balance, F.text)
+async def step_sub_balance(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    raw = message.text.strip().replace("₽", "").strip()
+    sign = raw[:1]
+    if sign not in "+-" or not raw[1:].isdigit() or int(raw[1:]) == 0 or int(raw[1:]) > 1_000_000:
+        await message.answer("Формат: <code>+90</code> или <code>-50</code> (рубли). Ещё раз:")
+        return
+    data = await state.get_data()
+    await state.clear()
+    amount = int(raw[1:]) * 100 * (1 if sign == "+" else -1)
+    await repo.add_balance_tx(
+        session, data["user_id"], amount, "admin", note="Ручная правка админом"
+    )
+    await session.commit()
+    user = await repo.get_user_by_id(session, data["user_id"])
+    from bot.services.pricing import fmt_rub
+    logger.info("Admin balance adjust: user {} {}{} kopeks", user.id, sign, abs(amount))
+    try:
+        await tg_bot.send_message(
+            user.tg_id,
+            f"💰 Админ изменил твой баланс: <b>{fmt_rub(amount)}</b>. "
+            f"Сейчас на счету: <b>{fmt_rub(user.balance_kopeks)}</b>.",
+        )
+    except Exception:
+        pass
+    await message.answer(
+        f"✅ Баланс: <b>{fmt_rub(user.balance_kopeks)}</b>",
         reply_markup=admin_sub_kb(user.id, data["page"]),
     )
 

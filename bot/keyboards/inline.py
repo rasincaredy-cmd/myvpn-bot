@@ -19,6 +19,7 @@ CB_DEVICE = "dev"  # устройства (Блок 9)
 CB_SUB = "sub"     # подписка (Блок 9)
 CB_NOP = "nop"
 CB_CANCEL = "cancel"
+CB_BAL = "bal"     # баланс/оплата/рефералка (Блок «Баланс»)
 
 
 # --- Главное меню -------------------------------------------------------------
@@ -28,6 +29,7 @@ def main_menu(is_admin: bool) -> InlineKeyboardMarkup:
     kb.button(text="📱 Мои устройства", callback_data=f"{CB_DEVICE}:list")
     kb.button(text="🛡 Обход БС", callback_data=f"{CB_WDTT}:my")
     kb.button(text="🎫 Моя подписка", callback_data=f"{CB_SUB}:my")
+    kb.button(text="💰 Баланс", callback_data=f"{CB_BAL}:my")
     kb.button(text="🌍 Локации", callback_data=f"{CB_MENU}:locations")
     # У админа то же меню, что у юзера, плюс ОДНА кнопка — вход в админ-панель.
     # Всё управление сервисом (установка VPN, серверы, выдача конфигов/инвайтов)
@@ -516,11 +518,72 @@ def device_card_kb(
     return kb.as_markup()
 
 
-def subscription_kb(has_devices_slot: bool) -> InlineKeyboardMarkup:
+def subscription_kb(
+    has_devices_slot: bool,
+    *,
+    can_pay: bool = False,       # показать «Продлить» (Crypto Pay включён)
+    autopay: bool | None = None,  # None — тумблер не показывать (нет смысла без оплаты)
+) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
+    if can_pay:
+        kb.button(text="🔁 Продлить / купить", callback_data=f"{CB_BAL}:extend")
+    if autopay is not None:
+        kb.button(
+            text="♻️ Автопродление: ВКЛ" if autopay else "♻️ Автопродление: выкл",
+            callback_data=f"{CB_BAL}:autopay",
+        )
     kb.button(text="📱 Мои устройства", callback_data=f"{CB_DEVICE}:list")
     kb.button(text="« В меню", callback_data=f"{CB_MENU}:open")
     kb.adjust(1)
+    return kb.as_markup()
+
+
+# --- Баланс (Блок «Баланс») ---------------------------------------------------
+
+def balance_kb(can_deposit: bool) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    if can_deposit:
+        kb.button(text="➕ Пополнить", callback_data=f"{CB_BAL}:dep")
+    kb.button(text="📜 История", callback_data=f"{CB_BAL}:hist")
+    kb.button(text="👥 Реферальная программа", callback_data=f"{CB_BAL}:ref")
+    kb.button(text="« В меню", callback_data=f"{CB_MENU}:open")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def deposit_amounts_kb(amounts_rub: list[int]) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    for rub in amounts_rub:
+        kb.button(text=f"{rub} ₽", callback_data=f"{CB_BAL}:dep:{rub}")
+    kb.button(text="✏️ Своя сумма", callback_data=f"{CB_BAL}:dep:custom")
+    kb.button(text="« К балансу", callback_data=f"{CB_BAL}:my")
+    kb.adjust(2, 2, 1, 1)
+    return kb.as_markup()
+
+
+def invoice_kb(pay_url: str, row_id: int) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="💳 Оплатить в @CryptoBot", url=pay_url)
+    kb.button(text="✅ Я оплатил — проверить", callback_data=f"{CB_BAL}:check:{row_id}")
+    kb.button(text="« К балансу", callback_data=f"{CB_BAL}:my")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def extend_kb(devices: int, bypass: int, term_prices: list[tuple[int, str]]) -> InlineKeyboardMarkup:
+    """Экран продления: тариф крутится ±, сроки с ценами. Всё состояние — в
+    callback data (без FSM): ext:<dev>:<byp> перерисовка, buy:<dev>:<byp>:<mes>."""
+    kb = InlineKeyboardBuilder()
+    kb.button(text="−", callback_data=f"{CB_BAL}:ext:{devices - 1}:{bypass}")
+    kb.button(text=f"📱 Устройств: {devices}", callback_data=CB_NOP)
+    kb.button(text="+", callback_data=f"{CB_BAL}:ext:{devices + 1}:{bypass}")
+    kb.button(text="−", callback_data=f"{CB_BAL}:ext:{devices}:{bypass - 1}")
+    kb.button(text=f"🛡 Обходов: {bypass}", callback_data=CB_NOP)
+    kb.button(text="+", callback_data=f"{CB_BAL}:ext:{devices}:{bypass + 1}")
+    for months, label in term_prices:
+        kb.button(text=label, callback_data=f"{CB_BAL}:buy:{devices}:{bypass}:{months}")
+    kb.button(text="« К подписке", callback_data=f"{CB_SUB}:my")
+    kb.adjust(3, 3, 2, 2, 1)
     return kb.as_markup()
 
 
@@ -530,6 +593,7 @@ def admin_sub_kb(user_id: int, page: int) -> InlineKeyboardMarkup:
     kb.button(text="🛡 Лимит обхода БС",  callback_data=f"{CB_PANEL}:sub_bp:{user_id}:{page}")
     kb.button(text="📅 Задать срок",     callback_data=f"{CB_PANEL}:sub_ext:{user_id}:{page}")
     kb.button(text="📊 Лимит трафика",   callback_data=f"{CB_PANEL}:sub_trf:{user_id}:{page}")
+    kb.button(text="💰 Баланс ±",        callback_data=f"{CB_PANEL}:sub_bal:{user_id}:{page}")
     kb.button(text="🚫 Отключить (срок в 0)", callback_data=f"{CB_PANEL}:sub_off:{user_id}:{page}")
     kb.button(text="« К пользователю",   callback_data=f"{CB_PANEL}:user:{user_id}:{page}")
     kb.adjust(1)

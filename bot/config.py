@@ -47,6 +47,17 @@ class Settings(BaseSettings):
     # Пусто → в тексте помощи предложим написать через /start у админа.
     support_contact: str = ""
 
+    # ── Блок «Баланс»: оплата через Crypto Pay (@CryptoBot) ────────────────
+    # Токен приложения Crypto Pay. Пусто = оплата выключена: разделы пополнения
+    # и продления скрыты, работает только ручное начисление админом.
+    cryptopay_token: str = ""
+    # Реф-награда: % от КАЖДОГО пополнения реферала, падает на баланс пригласившего.
+    referral_percent: int = 15
+    # Цены, ₽/мес: база (1 устройство + 1 обход БС) и каждое следующее.
+    price_base_rub: int = 90
+    price_extra_device_rub: int = 30
+    price_extra_bypass_rub: int = 30
+
     @field_validator("admin_ids", mode="before")
     @classmethod
     def _parse_admin_ids(cls, v: object) -> object:

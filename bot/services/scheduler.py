@@ -96,16 +96,81 @@ async def _revoke_all_devices_for_user(session, user_id: int) -> bool:
     return True
 
 
+async def _poll_crypto_invoices(session) -> None:
+    """Сверяет активные инвойсы с Crypto Pay: paid → зачислить (идемпотентно),
+    expired → пометить. Ошибки API не валят тик — попробуем на следующем."""
+    from bot.services import billing, cryptopay
+
+    if not cryptopay.enabled():
+        return
+    open_invoices = await repo.list_open_invoices(session)
+    if not open_invoices:
+        return
+    try:
+        statuses = await cryptopay.get_invoice_statuses(
+            [inv.invoice_id for inv in open_invoices]
+        )
+    except cryptopay.CryptoPayError as exc:
+        logger.warning("CryptoPay poll failed: {}", exc)
+        return
+    changed = False
+    for inv in open_invoices:
+        status = statuses.get(inv.invoice_id)
+        if status == "paid":
+            dep = await billing.apply_paid_invoice(session, inv)
+            changed = True
+            from bot.handlers.balance import notify_deposit
+            await notify_deposit(dep)
+        elif status == "expired":
+            inv.status = "expired"
+            changed = True
+    if changed:
+        await session.commit()
+
+
+async def _try_autopay(session, user: User) -> bool:
+    """Автопродление при истечении: если включено и баланса хватает — списываем
+    1 месяц ТЕКУЩЕГО тарифа вместо отзыва устройств. True — подписка продлена."""
+    from bot.services import billing, cryptopay
+    from bot.services.pricing import fmt_rub
+
+    if not user.autopay or not cryptopay.enabled():
+        return False
+    res = await billing.charge_and_extend(session, user, 1)
+    if not res.ok:
+        return False
+    logger.info(
+        "Autopay: user {} charged {} kopeks, until {}",
+        user.id, res.price_kopeks, res.new_expires_at,
+    )
+    await _notify(
+        user.tg_id,
+        f"♻️ Подписка автоматически продлена на месяц за "
+        f"{fmt_rub(res.price_kopeks)} с баланса "
+        f"(до {res.new_expires_at.strftime('%d.%m.%Y %H:%M')} UTC).\n"
+        f"Остаток: {fmt_rub(user.balance_kopeks)}. "
+        "Отключить автопродление можно в «🎫 Моя подписка».",
+    )
+    return True
+
+
 async def _run_checks() -> None:
     now = datetime.now(timezone.utc)
 
     async with session_scope() as session:
 
+        # ── 0. Поллинг инвойсов Crypto Pay (Блок «Баланс») ───────────────────
+        # Вебхуков нет: добираем оплаты, которые юзер не подтвердил кнопкой
+        # «Проверить» (закрыл экран). Зачисление идемпотентно, гонка с кнопкой
+        # не задваивает депозит. Делаем ДО истечения — свежие деньги могут
+        # спасти подписку автопродлением в секции 1.
+        await _poll_crypto_invoices(session)
+
         # ── 1. Истечение подписки: отзыв ВСЕХ устройств юзера ────────────────
         # Единый гейт сервиса — срок подписки. У кого sub_expires_at <= now, отзываем
         # все активные устройства (WG-пиры + доступы обхода) и уведомляем один раз.
         # У кого устройств уже нет (отозвали на прошлом тике) — helper вернёт False,
-        # повторно не уведомляем.
+        # повторно не уведомляем. Перед отзывом — попытка автопродления с баланса.
         expired_users = list((await session.execute(
             select(User)
             .where(User.sub_expires_at.isnot(None))
@@ -114,14 +179,18 @@ async def _run_checks() -> None:
 
         touched = False
         for user in expired_users:
+            if await _try_autopay(session, user):
+                touched = True
+                continue
             if await _revoke_all_devices_for_user(session, user.id):
                 touched = True
                 await _notify(
                     user.tg_id,
                     "⏱ Подписка истекла — устройства и доступы обхода отключены.\n"
                     f"Конфиги сохраняются {REVOKED_RETENTION_DAYS} дней: продлишь "
-                    "подписку — всё оживёт само, перенастраивать не придётся. "
-                    "Для продления напиши админу.",
+                    "подписку — всё оживёт само, перенастраивать не придётся.\n"
+                    "Продлить: меню → «🎫 Моя подписка» → «🔁 Продлить» "
+                    "(пополнить баланс — «💰 Баланс»).",
                 )
         if touched:
             await session.commit()

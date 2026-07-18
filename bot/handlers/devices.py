@@ -341,14 +341,32 @@ async def cb_sub_my(call: CallbackQuery, session: AsyncSession) -> None:
         user.sub_traffic_limit_bytes,
         expired=not _sub_active(user),
     )
+    from bot.services import cryptopay
+    from bot.services.pricing import fmt_rub
+
     text = (
         "🎫 <b>Моя подписка</b>\n"
         f"• Устройства: <b>{used}/{user.sub_max_devices}</b>\n"
         f"• Обход БС: <b>{bypass}/{user.sub_max_bypass}</b>\n"
         f"• Срок: <b>{_sub_line(user)}</b>\n"
-        f"• Трафик: <b>{trf_line}</b>"
+        f"• Трафик: <b>{trf_line}</b>\n"
+        f"• Баланс: <b>{fmt_rub(user.balance_kopeks)}</b>"
     )
+    can_pay = cryptopay.enabled()
     if not _sub_active(user):
-        text += "\n\n<i>Подписка истекла — доступы отозваны. Напиши админу для продления.</i>"
-    await call.message.edit_text(text, reply_markup=subscription_kb(_sub_active(user)))
+        text += (
+            "\n\n<i>Подписка истекла — доступы отозваны, конфиги ждут продления. "
+            + ("Жми «Продлить» — всё оживёт само.</i>" if can_pay
+               else "Напиши админу для продления.</i>")
+        )
+    # Бессрочным (спец-юзеры/админ) продление и автопродление не показываем.
+    perpetual = user.sub_expires_at is None and not user.is_trial
+    await call.message.edit_text(
+        text,
+        reply_markup=subscription_kb(
+            _sub_active(user),
+            can_pay=can_pay and not perpetual,
+            autopay=user.autopay if (can_pay and not perpetual) else None,
+        ),
+    )
     await call.answer()

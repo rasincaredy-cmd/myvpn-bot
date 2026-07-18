@@ -63,3 +63,8 @@ class SubAdminStates(StatesGroup):
     extend_days = State()
     set_traffic = State()
     set_bypass = State()
+    set_balance = State()  # ручное ± к балансу (Блок «Баланс»)
+
+
+class BalanceStates(StatesGroup):
+    custom_amount = State()  # своя сумма пополнения

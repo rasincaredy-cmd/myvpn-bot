@@ -81,6 +81,21 @@ class User(Base):
         Integer, default=0, server_default="0", nullable=False
     )
 
+    # ── Блок «Баланс» ────────────────────────────────────────────────────
+    # Баланс в КОПЕЙКАХ (никаких float у денег). Меняется ТОЛЬКО через
+    # repo.add_balance_tx — она же пишет строку журнала balance_txs.
+    balance_kopeks: Mapped[int] = mapped_column(
+        BigInteger, default=0, server_default="0", nullable=False
+    )
+    # Кто привёл (users.id). Ставится один раз при ПЕРВОМ /start по реф-ссылке;
+    # без FK-констрейнта — SQLite ADD COLUMN на живой базе не умеет REFERENCES.
+    referrer_id: Mapped[int | None] = mapped_column(Integer)
+    # Автопродление при истечении: если хватает баланса — планировщик списывает
+    # месяц текущего тарифа вместо отзыва устройств. Юзер может выключить.
+    autopay: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default="1", nullable=False
+    )
+
     peers: Mapped[list["Peer"]] = relationship(back_populates="user")
 
 
@@ -295,3 +310,48 @@ class WdttAccess(Base):
     expiry_warn_flags: Mapped[int] = mapped_column(
         Integer, default=0, server_default="0", nullable=False
     )
+
+
+class BalanceTx(Base):
+    """Журнал движения баланса (Блок «Баланс»). Каждая смена User.balance_kopeks —
+    строка здесь (repo.add_balance_tx — единственная точка входа). Сумма со знаком:
+    + пополнение/награда, − списание."""
+
+    __tablename__ = "balance_txs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    amount_kopeks: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    # deposit — пополнение через Crypto Pay; charge — оплата подписки;
+    # ref — реф-награда с пополнения реферала; admin — ручная правка админом.
+    kind: Mapped[str] = mapped_column(String(16), index=True)
+    note: Mapped[str | None] = mapped_column(String(256))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class CryptoInvoice(Base):
+    """Инвойс Crypto Pay (@CryptoBot) на пополнение баланса. Статус меняется
+    поллингом планировщика или кнопкой «Проверить оплату»; зачисление — строго
+    через billing.apply_paid_invoice (идемпотентно)."""
+
+    __tablename__ = "crypto_invoices"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    # ID инвойса на стороне Crypto Pay.
+    invoice_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
+    amount_kopeks: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    status: Mapped[str] = mapped_column(  # active | paid | expired
+        String(16), default="active", server_default="'active'", nullable=False
+    )
+    url: Mapped[str] = mapped_column(String(512))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

@@ -110,7 +110,8 @@ class TestBuildPeerConf:
         assert "PersistentKeepalive = 25" in conf
 
     def test_allowed_ips_override(self) -> None:
-        """Режим «RU напрямую»: список маршрутов подставляется как есть."""
+        """Кастомный allowed_ips подставляется как есть (параметр оставлен
+        для гибкости; фича «RU напрямую» удалена 19.07.2026)."""
         params = generate_amnezia_params()
         conf = build_peer_conf(
             peer_private_key="x",

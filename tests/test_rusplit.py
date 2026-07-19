@@ -1,9 +1,10 @@
 """Тесты Блока «RU напрямую»: инверсия RU-подсетей для AllowedIPs.
 
-Ключевые инварианты: при дефолтном пороге /24 ВЕСЬ RU-реестр идёт напрямую
-(включая mail.ru/reg.ru в мелких блоках — иначе полрунета шло бы через VPN);
-весь остальной мир — через туннель; приватные сети всегда мимо туннеля (LAN
-юзера работает); инверсия без дыр и без пересечений.
+Ключевые инварианты: ключевые RU-сервисы (mail.ru, сбер, vk, яндекс…) идут
+напрямую; весь остальной мир — через туннель; приватные сети всегда мимо
+туннеля (LAN юзера работает); инверсия без дыр и без пересечений; конфиг
+НЕ раздувается до размеров, роняющих клиент Amnezia (регресс: порог /32 →
+~21600 маршрутов / 348КБ → краш приложения при импорте, см. rusplit.py).
 """
 from __future__ import annotations
 
@@ -49,13 +50,38 @@ class TestInversion:
         )
         assert not _covers(allowed, str(big.network_address))
 
-    def test_every_ru_block_direct(self) -> None:
-        """При дефолтном /24 КАЖДАЯ сеть из RU-реестра идёт напрямую, не в туннель.
-        Регресс на баг: с порогом /18 mail.ru/reg.ru (мелкие блоки) шли через VPN."""
-        assert settings.ru_direct_max_prefixlen == 32
+    def test_key_ru_services_direct(self) -> None:
+        """Ключевые RU-сервисы идут напрямую, не в туннель. Регресс на баг:
+        с порогом /18 mail.ru/reg.ru (блоки /20–/21) шли через VPN.
+        IP приколочены (снапшот DNS 19.07.2026) — тесты без сети."""
+        assert settings.ru_direct_max_prefixlen == 21
         allowed = _allowed_nets()
-        for net in rusplit._load_ru_networks():
-            assert not _covers(allowed, str(net.network_address)), net
+        anchors = {
+            "mail.ru": "89.221.239.1",        # 89.221.232.0/21
+            "reg.ru": "194.67.72.31",         # 194.67.64.0/20
+            "vk.com": "87.240.132.72",        # 87.240.128.0/18
+            "yandex.ru": "5.255.255.77",      # 5.255.192.0/18
+            "sberbank.ru": "84.252.149.206",  # 84.252.144.0/21
+            "gosuslugi.ru": "213.59.253.7",   # 213.59.128.0/17
+            "avito.ru": "176.114.124.24",     # 176.114.112.0/20
+        }
+        for host, ip in anchors.items():
+            assert not _covers(allowed, ip), f"{host} ({ip}) уехал в туннель"
+
+    def test_small_ru_block_tunneled(self) -> None:
+        """Мелкий RU-блок (> порога) идёт в туннель — безопасное направление
+        ошибки: заблокированный сайт не окажется «напрямую»."""
+        allowed = _allowed_nets()
+        small = next(
+            n for n in rusplit._load_ru_networks()
+            if n.prefixlen > settings.ru_direct_max_prefixlen
+            # сам не внутри крупного RU-блока и не в приватных
+            and not any(
+                n.subnet_of(b) for b in rusplit._load_ru_networks()
+                if b.prefixlen <= settings.ru_direct_max_prefixlen
+            )
+        )
+        assert _covers(allowed, str(small.network_address))
 
     def test_world_tunneled_lan_direct(self) -> None:
         allowed = _allowed_nets()
@@ -64,10 +90,11 @@ class TestInversion:
         assert not _covers(allowed, "192.168.1.1")  # LAN — напрямую
         assert not _covers(allowed, "10.8.0.1")     # и наша WG-подсеть
 
-    def test_size_within_telegram_file(self) -> None:
-        """Полное покрытие — тяжёлый конфиг, но раздаём файлом: должен влезать
-        в разумный .conf (Telegram-файл до 2ГБ, WireGuard тянет ~20k маршрутов)."""
+    def test_size_amnezia_can_swallow(self) -> None:
+        """Регресс на краш Amnezia: 21600 маршрутов / 348КБ роняли приложение
+        при импорте. Держимся ниже 11216 маршрутов (проверенно-рабочий конфиг
+        из amnezia-client#2248) с запасом."""
         line = rusplit.allowed_ips_no_ru()
         routes = line.count(",") + 1
-        assert 15_000 < routes < 30_000
-        assert len(line) < 500_000
+        assert 5_000 < routes < 10_000
+        assert len(line) < 180_000

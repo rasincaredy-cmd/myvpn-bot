@@ -313,7 +313,7 @@ async def cb_dev_send(call: CallbackQuery, session: AsyncSession) -> None:
 async def cb_dev_ru(call: CallbackQuery, session: AsyncSession) -> None:
     """Конфиги устройства в режиме «RU напрямую»: те же ключи/IP, но AllowedIPs —
     инверсия российских подсетей (rusplit). RU-трафик мимо VPN, остальное через.
-    Только .conf-файлом: ~2100 маршрутов не влезают в QR и vpn://-ссылку."""
+    Только .conf-файлом: ~8500 маршрутов не влезают в QR и vpn://-ссылку."""
     from aiogram.types import BufferedInputFile
 
     from bot.loader import bot as tg_bot

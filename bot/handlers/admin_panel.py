@@ -57,6 +57,32 @@ async def cmd_admin(event: Message | CallbackQuery, state: FSMContext) -> None:
         await event.answer(text, reply_markup=admin_panel_menu())
 
 
+# --- Бэкап ------------------------------------------------------------------
+
+@router.callback_query(F.data == f"{CB_PANEL}:backup_now")
+async def cb_panel_backup(call: CallbackQuery) -> None:
+    """Ручной бэкап: тот же архив, что ночной, — всем админам. Ночной маркер
+    не трогаем: регулярный бэкап должен идти своим расписанием."""
+    from bot.services import backup as backup_svc
+
+    if not backup_svc.enabled():
+        await call.answer(
+            "Бэкап выключен: задай BACKUP_PASSWORD в .env и перезапусти бота. "
+            "Пароль сохрани и вне сервера!",
+            show_alert=True,
+        )
+        return
+    await call.answer("Собираю бэкап…")
+    try:
+        filename = await backup_svc.send_backup_to_admins()
+        logger.info("Manual backup sent: {}", filename)
+    except Exception as exc:
+        logger.exception("Manual backup failed")
+        await tg_bot.send_message(
+            call.message.chat.id, f"❌ Бэкап не получился: {exc}"
+        )
+
+
 # --- Статистика -------------------------------------------------------------
 
 @router.callback_query(F.data == f"{CB_PANEL}:stats")

@@ -389,10 +389,30 @@ async def _run_checks() -> None:
 
 async def run() -> None:
     """Запускать как asyncio.create_task() при старте бота."""
+    from bot.services import backup as backup_svc
+
     logger.info("Peer limit scheduler started (interval: 5 min)")
+    if backup_svc.enabled():
+        logger.info("Backup enabled, will run nightly at {:02d}:00 UTC", settings.backup_hour_utc)
+    else:
+        logger.warning("Backup DISABLED (BACKUP_PASSWORD not set) — балансы и пиры БЕЗ ЗАЩИТЫ")
+
     while True:
         await asyncio.sleep(300)
         try:
             await _run_checks()
         except Exception:
             logger.exception("Scheduler _run_checks crashed")
+
+        # ── 4. Ночной бэкап ──────────────────────────────────────────────────
+        # Раз в день в backup_hour_utc отправляем админам зашифрованный tar
+        # (БД + .env). Маркер-файл last_backup_date.txt переживает рестарт.
+        try:
+            now = datetime.now(timezone.utc)
+            if backup_svc.nightly_due(now):
+                logger.info("Starting nightly backup")
+                filename = await backup_svc.send_backup_to_admins()
+                backup_svc.mark_done(now)
+                logger.info("Nightly backup sent: {}", filename)
+        except Exception:
+            logger.exception("Nightly backup failed")

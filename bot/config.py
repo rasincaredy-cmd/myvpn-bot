@@ -70,6 +70,14 @@ class Settings(BaseSettings):
     price_extra_device_rub: int = 30
     price_extra_bypass_rub: int = 30
 
+    # ── Блок «Бэкап» ─────────────────────────────────────────────────────────
+    # Пароль шифрования бэкапов (БД + .env): хранить и ВНЕ VPS (менеджер паролей).
+    # Пусто = бэкапы отключены. Пароль нужен и для восстановления — без него
+    # бэкап не расшифровать.
+    backup_password: str = ""
+    # Час UTC для ночного бэкапа (планировщик пошлёт файл админам раз в день).
+    backup_hour_utc: int = 3
+
     @field_validator("admin_ids", mode="before")
     @classmethod
     def _parse_admin_ids(cls, v: object) -> object:

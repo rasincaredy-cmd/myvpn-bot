@@ -318,6 +318,7 @@ def admin_panel_menu() -> InlineKeyboardMarkup:
     kb.button(text="📊 Статистика",   callback_data=f"{CB_PANEL}:stats")
     kb.button(text="👤 Пользователи", callback_data=f"{CB_PANEL}:users:0")
     kb.button(text="📢 Рассылка",     callback_data=f"{CB_PANEL}:broadcast")
+    kb.button(text="📦 Бэкап сейчас", callback_data=f"{CB_PANEL}:backup_now")
     kb.button(text="« В меню",        callback_data=f"{CB_MENU}:open")
     kb.adjust(1)
     return kb.as_markup()

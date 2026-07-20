@@ -152,11 +152,11 @@ async def _run_checks() -> None:
                 touched = True
                 await _notify(
                     user.tg_id,
-                    "⏱ Подписка истекла — устройства и доступы обхода отключены.\n"
-                    f"Конфиги сохраняются {REVOKED_RETENTION_DAYS} дней: продлишь "
-                    "подписку — всё оживёт само, перенастраивать не придётся.\n"
-                    "Продлить: меню → «🎫 Моя подписка» → «🔁 Продлить» "
-                    "(пополнить баланс — «💰 Баланс»).",
+                    "⏱ <b>Подписка закончилась</b> — VPN и обход БС встали на паузу.\n"
+                    f"Ничего не пропало: конфиги хранятся {REVOKED_RETENTION_DAYS} "
+                    "дней, продлишь — все устройства включатся сами, "
+                    "перенастраивать не нужно.\n"
+                    "Продлить: меню → «🎫 Моя подписка» → «🔁 Продлить / купить».",
                 )
         if touched:
             await session.commit()
@@ -386,10 +386,13 @@ async def _run_checks() -> None:
                 logger.info("Auto-revoked user {} devices (traffic limit)", user.id)
                 await _notify(
                     user.tg_id,
-                    f"📊 Достигнут лимит трафика подписки "
+                    f"📊 <b>Трафик подписки закончился</b> "
                     f"({amnezia.fmt_bytes(used)} из "
-                    f"{amnezia.fmt_bytes(user.sub_traffic_limit_bytes)}). "
-                    "Устройства отозваны — для сброса напиши админу.",
+                    f"{amnezia.fmt_bytes(user.sub_traffic_limit_bytes)}) — "
+                    "устройства встали на паузу.\n"
+                    "Счётчик обнулится при продлении на новый срок. Продлить: "
+                    "меню → «🎫 Моя подписка». Нужно больше трафика — напиши "
+                    "в поддержку.",
                 )
         if limit_touched:
             await session.commit()

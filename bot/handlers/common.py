@@ -86,9 +86,19 @@ async def cmd_start(
 
 
 async def _send_main_menu(message: Message, is_admin: bool) -> None:
-    text = (t.start_admin if is_admin else t.start_user).format(
-        name=message.from_user.full_name or "друг"
-    )
+    if is_admin:
+        text = t.start_admin.format(name=message.from_user.full_name or "друг")
+    else:
+        from bot.config import settings
+        from bot.services.pricing import fmt_rub, monthly_price_kopeks
+
+        text = t.start_user.format(
+            name=message.from_user.full_name or "друг",
+            trial_days=settings.trial_days,
+            trial_devices=settings.trial_devices,
+            trial_gb=settings.trial_traffic_gb,
+            base_price=fmt_rub(monthly_price_kopeks(1, 1)),
+        )
     await message.answer(text, reply_markup=main_menu(is_admin))
 
 
@@ -140,12 +150,14 @@ async def cb_menu_locations(call: CallbackQuery, session: AsyncSession) -> None:
 
 
 def _notify_text(enabled: bool) -> str:
+    # Заголовок дословно повторяет кнопку меню «🔔 Оповещения» — связка
+    # «нажал → увидел» без синонимов.
     state = "включены ✅" if enabled else "выключены 🔕"
     return (
-        "🔔 <b>Предупреждения об истечении</b>\n\n"
+        "🔔 <b>Оповещения</b>\n\n"
         f"Сейчас: <b>{state}</b>\n\n"
-        "Бот заранее пришлёт сообщение, когда срок действия твоей подписки "
-        "подходит к концу — за 24 часа и за 1 час до отключения устройств."
+        "Бот заранее пришлёт сообщение, когда подписка будет заканчиваться — "
+        "за 24 часа и за 1 час до отключения устройств."
     )
 
 

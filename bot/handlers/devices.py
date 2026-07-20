@@ -31,6 +31,7 @@ from bot.services.crypto import decrypt
 from bot.services.ssh import SSHClient, SSHError
 from bot.states.install import DeviceStates
 from bot.texts import t
+from bot.utils.timefmt import fmt_msk
 from bot.utils.validators import is_valid_label
 
 # Переиспользуем машинерию создания/отправки пиров.
@@ -62,8 +63,8 @@ def _sub_line(user) -> str:
     if user.sub_expires_at is None:
         return "бессрочно"
     if not _sub_active(user):
-        return f"истекла {user.sub_expires_at.strftime('%d.%m.%Y')}"
-    return f"до {user.sub_expires_at.strftime('%d.%m.%Y %H:%M')} UTC"
+        return f"истёк {fmt_msk(user.sub_expires_at, with_time=False)}"
+    return f"до {fmt_msk(user.sub_expires_at)} (МСК)"
 
 
 # --- Мои устройства ----------------------------------------------------------
@@ -93,11 +94,17 @@ async def cb_dev_list(call: CallbackQuery, session: AsyncSession) -> None:
     head = "📱 <b>Мои устройства</b>"
     if not _sub_active(user):
         head += (
-            "\n<i>Подписка истекла — продление у админа. Устройства сохраняются "
-            "30 дней и оживут при продлении сами.</i>"
+            "\n<i>Подписка закончилась — устройства на паузе, конфиги хранятся "
+            "30 дней. Продли её в «🎫 Подписка» (кнопка ниже) — всё заработает "
+            "само, заново ничего настраивать не нужно.</i>"
         )
     elif not devices:
-        head += "\n\nПока пусто. Добавь первое устройство — получишь конфиг."
+        head += (
+            "\n\nПока пусто. Устройство — это твой телефон, планшет или "
+            "компьютер, на котором будет работать VPN.\n"
+            "Жми «➕ Добавить устройство» — пришлю всё нужное для подключения "
+            "и подскажу, как настроить."
+        )
 
     await call.message.edit_text(
         head,
@@ -118,7 +125,11 @@ async def cb_dev_add(call: CallbackQuery, state: FSMContext, session: AsyncSessi
         full_name=call.from_user.full_name,
     )
     if not _sub_active(user):
-        await call.answer("Подписка истекла — обратись к админу.", show_alert=True)
+        await call.answer(
+            "Подписка закончилась. Продли её в разделе «🎫 Подписка» — "
+            "устройства оживут сами.",
+            show_alert=True,
+        )
         return
     used = await repo.count_active_devices(session, user.id)
     if used >= user.sub_max_devices:
@@ -128,7 +139,7 @@ async def cb_dev_add(call: CallbackQuery, state: FSMContext, session: AsyncSessi
         )
         return
     if not await repo.list_ready_servers(session):
-        await call.answer("Нет доступных серверов. Попробуй позже.", show_alert=True)
+        await call.answer("Локации сейчас недоступны — попробуй чуть позже.", show_alert=True)
         return
     await state.set_state(DeviceStates.label)
     await state.update_data(cancel_to="dev")  # отмена → список устройств
@@ -140,7 +151,10 @@ async def cb_dev_add(call: CallbackQuery, state: FSMContext, session: AsyncSessi
 async def step_device_label(message: Message, state: FSMContext, session: AsyncSession) -> None:
     label = message.text.strip()
     if not is_valid_label(label):
-        await message.answer("Метка: буквы/цифры/пробел/-_, до 32 символов. Ещё раз:")
+        await message.answer(
+            "Такое название не подходит. До 32 символов: буквы, цифры, пробелы, "
+            "дефис или подчёркивание — например, «Телефон мамы». Попробуй ещё раз:"
+        )
         return
     await state.clear()
     user = await repo.get_or_create_user(
@@ -151,10 +165,17 @@ async def step_device_label(message: Message, state: FSMContext, session: AsyncS
     )
     # Повторная проверка лимита/срока (мог измениться, пока вводил метку).
     if not _sub_active(user) or await repo.count_active_devices(session, user.id) >= user.sub_max_devices:
-        await message.answer("Лимит устройств или срок подписки не позволяют.", reply_markup=back_to_menu())
+        await message.answer(
+            "Не получилось добавить устройство: достигнут лимит по подписке "
+            "или она закончилась. Загляни в «🎫 Моя подписка».",
+            reply_markup=back_to_menu(),
+        )
         return
     if not await repo.list_ready_servers(session):
-        await message.answer("Нет доступных серверов.", reply_markup=back_to_menu())
+        await message.answer(
+            "Локации сейчас недоступны — попробуй чуть позже.",
+            reply_markup=back_to_menu(),
+        )
         return
 
     status_msg = await message.answer("⏳ Создаю устройство...")
@@ -168,13 +189,20 @@ async def step_device_label(message: Message, state: FSMContext, session: AsyncS
         await session.commit()
     except SSHError as exc:
         await session.rollback()
+        # Сырой exc юзеру не показываем: пугает, может раскрыть host:port
+        # сервера и сломать HTML-разметку символом «<».
         logger.warning("Device create failed: {}", exc)
-        await status_msg.edit_text(f"❌ Не удалось создать устройство: <code>{exc}</code>")
+        await status_msg.edit_text(
+            "⚠️ Не получилось создать устройство — что-то сбоит на нашей "
+            "стороне. Подожди пару минут и попробуй ещё раз. Не помогло — "
+            "загляни в «🆘 Поддержка», разберёмся.",
+            reply_markup=back_to_menu(),
+        )
         return
     except Exception:
         await session.rollback()
         logger.exception("Unexpected device create error")
-        await status_msg.edit_text(t.error_generic)
+        await status_msg.edit_text(t.error_generic, reply_markup=back_to_menu())
         return
 
     import contextlib
@@ -217,7 +245,7 @@ async def cb_dev_open(call: CallbackQuery, session: AsyncSession) -> None:
     active_peers = [p for p in peers if p.status == PeerStatus.ACTIVE]
     lines = [
         f"📱 <b>{device.label}</b>",
-        f"• Статус: <b>{device.status}</b>",
+        f"• Статус: <b>{t.STATUS_RU.get(device.status, device.status)}</b>",
     ]
     if not active:
         lines.append(
@@ -347,26 +375,56 @@ async def cb_sub_my(call: CallbackQuery, session: AsyncSession) -> None:
         user.sub_traffic_limit_bytes,
         expired=not _sub_active(user),
     )
+    from bot.config import settings
     from bot.services import cryptopay
-    from bot.services.pricing import fmt_rub
+    from bot.services.pricing import fmt_rub, monthly_price_kopeks
 
+    can_pay = cryptopay.enabled()
+    on_trial = user.is_trial and _sub_active(user) and user.sub_expires_at is not None
+    title = "🎫 <b>Моя подписка</b>"
+    if on_trial:
+        title += " — пробный период"
     text = (
-        "🎫 <b>Моя подписка</b>\n"
+        f"{title}\n"
         f"• Устройства: <b>{used}/{user.sub_max_devices}</b>\n"
         f"• Обход БС: <b>{bypass}/{user.sub_max_bypass}</b>\n"
         f"• Срок: <b>{_sub_line(user)}</b>\n"
         f"• Трафик: <b>{trf_line}</b>\n"
         f"• Баланс: <b>{fmt_rub(user.balance_kopeks)}</b>"
     )
-    can_pay = cryptopay.enabled()
+    if on_trial:
+        # Лимиты триала не дублируем — они уже видны строками выше (и могли
+        # быть изменены админом индивидуально).
+        text += (
+            f"\n\n🎁 <i>Это бесплатный пробный период на {settings.trial_days} "
+            "дней. Когда он закончится, VPN просто встанет на паузу — ничего "
+            "настраивать заново не придётся, все конфиги сохранятся. Дальше — "
+            f"от {fmt_rub(monthly_price_kopeks(1, 1))}/мес (1 устройство + "
+            "1 обход БС)."
+            + (" Кстати, продлить можно уже сейчас: оплаченный срок прибавится "
+               "к пробному, ни дня не сгорит." if can_pay else "")
+            + "</i>"
+        )
     if not _sub_active(user):
         text += (
-            "\n\n<i>Подписка истекла — доступы отозваны, конфиги ждут продления. "
-            + ("Жми «Продлить» — всё оживёт само.</i>" if can_pay
-               else "Напиши админу для продления.</i>")
+            "\n\n<i>Подписка закончилась — VPN на паузе, но всё сохранено: "
+            "заново ничего настраивать не придётся. "
+            + ("Жми «🔁 Продлить / купить» — устройства включатся сами.</i>" if can_pay
+               else "Напиши в поддержку («🆘 Поддержка» в меню) — продлим.</i>")
         )
     # Бессрочным (спец-юзеры/админ) продление и автопродление не показываем.
     perpetual = user.sub_expires_at is None and not user.is_trial
+    if can_pay and not perpetual:
+        # Текст нарочно не зависит от user.autopay: тумблер обновляет только
+        # кнопки, и «включено/выключено» в тексте после нажатия начало бы врать.
+        # Текущее состояние видно прямо на кнопке «♻️ Автопродление: ВКЛ/выкл».
+        text += (
+            "\n\n♻️ <i>Автопродление (кнопка ниже): если включено — когда срок "
+            "закончится, бот сам продлит подписку на месяц с баланса, и VPN не "
+            "прервётся. Если денег на балансе не хватит, ничего не спишется — "
+            "бот подождёт пополнения и продлит сразу после него. Выключено — "
+            "VPN просто встанет на паузу, пока не продлишь вручную.</i>"
+        )
     await call.message.edit_text(
         text,
         reply_markup=subscription_kb(

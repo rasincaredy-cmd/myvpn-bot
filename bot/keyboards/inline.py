@@ -46,9 +46,9 @@ def main_menu(is_admin: bool) -> InlineKeyboardMarkup:
 def notify_settings_kb(enabled: bool) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     if enabled:
-        kb.button(text="🔕 Выключить предупреждения", callback_data=f"{CB_MENU}:notify_toggle")
+        kb.button(text="🔕 Выключить оповещения", callback_data=f"{CB_MENU}:notify_toggle")
     else:
-        kb.button(text="🔔 Включить предупреждения", callback_data=f"{CB_MENU}:notify_toggle")
+        kb.button(text="🔔 Включить оповещения", callback_data=f"{CB_MENU}:notify_toggle")
     kb.button(text="« В меню", callback_data=f"{CB_MENU}:open")
     kb.adjust(1)
     return kb.as_markup()
@@ -569,10 +569,12 @@ def balance_kb(can_deposit: bool) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def deposit_amounts_kb(amounts_rub: list[int]) -> InlineKeyboardMarkup:
+def deposit_amounts_kb(amounts: list[tuple[int, str]]) -> InlineKeyboardMarkup:
+    """amounts: (рубли, подпись кнопки) — подписи считаются из прайсинга
+    («90 ₽ — месяц»), чтобы суммы не выглядели случайными числами."""
     kb = InlineKeyboardBuilder()
-    for rub in amounts_rub:
-        kb.button(text=f"{rub} ₽", callback_data=f"{CB_BAL}:dep:{rub}")
+    for rub, label in amounts:
+        kb.button(text=label, callback_data=f"{CB_BAL}:dep:{rub}")
     kb.button(text="✏️ Своя сумма", callback_data=f"{CB_BAL}:dep:custom")
     kb.button(text="« К балансу", callback_data=f"{CB_BAL}:my")
     kb.adjust(2, 2, 1, 1)
@@ -600,8 +602,11 @@ def extend_kb(devices: int, bypass: int, term_prices: list[tuple[int, str]]) -> 
     kb.button(text="+", callback_data=f"{CB_BAL}:ext:{devices}:{bypass + 1}")
     for months, label in term_prices:
         kb.button(text=label, callback_data=f"{CB_BAL}:buy:{devices}:{bypass}:{months}")
+    # Выход на пополнение прямо отсюда: юзеру с пустым балансом не нужно
+    # догадываться, что пополнение живёт в разделе «Баланс».
+    kb.button(text="➕ Пополнить баланс", callback_data=f"{CB_BAL}:dep")
     kb.button(text="« К подписке", callback_data=f"{CB_SUB}:my")
-    kb.adjust(3, 3, 2, 2, 1)
+    kb.adjust(3, 3, 2, 2, 1, 1)
     return kb.as_markup()
 
 
@@ -620,20 +625,10 @@ def admin_sub_kb(user_id: int, page: int) -> InlineKeyboardMarkup:
 
 # --- Обход белых списков (wdtt) ----------------------------------------------
 
-def wdtt_days_kb() -> InlineKeyboardMarkup:
-    kb = InlineKeyboardBuilder()
-    for text_, days in [("30 дней", 30), ("90 дней", 90), ("180 дней", 180),
-                        ("Год", 365), ("Бессрочно", 0)]:
-        kb.button(text=text_, callback_data=f"{CB_WDTT}:days:{days}")
-    kb.button(text="✖️ Отмена", callback_data=CB_CANCEL)
-    kb.adjust(2, 2, 1, 1)
-    return kb.as_markup()
-
-
 def wdtt_vk_choice_kb() -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-    kb.button(text="⚡ Ссылка сервиса", callback_data=f"{CB_WDTT}:vk:svc")
-    kb.button(text="🔗 Своя VK-ссылка", callback_data=f"{CB_WDTT}:vk:own")
+    kb.button(text="⚡ Рекомендуемый вариант", callback_data=f"{CB_WDTT}:vk:svc")
+    kb.button(text="🔗 Своя ссылка на звонок VK", callback_data=f"{CB_WDTT}:vk:own")
     kb.button(text="✖️ Отмена", callback_data=CB_CANCEL)
     kb.adjust(1)
     return kb.as_markup()
@@ -692,7 +687,7 @@ def wdtt_user_list_kb(
             callback_data=f"{CB_WDTT}:myopen:{access_id}",
         )
     if can_create:
-        kb.button(text="➕ Создать доступ обхода", callback_data=f"{CB_WDTT}:new")
+        kb.button(text="➕ Добавить обход", callback_data=f"{CB_WDTT}:new")
     if has_prev:
         kb.button(text="← Назад",  callback_data=f"{CB_WDTT}:my:{page - 1}")
     if has_next:

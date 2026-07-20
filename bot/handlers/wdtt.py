@@ -37,17 +37,32 @@ from bot.services.crypto import decrypt, encrypt
 from bot.services.ssh import SSHClient, SSHError
 from bot.states.install import WdttStates
 from bot.texts import t
+from bot.utils.timefmt import fmt_msk
 
 router = Router(name="wdtt")
 
 _WDTT_PER_PAGE = 8
 
-# platform → (подпись, название приложения)
+# platform → (подпись, название приложения, URL установки).
+# URL пока None: реальных ссылок на скачивание нет — до их появления юзеру
+# показываем «пришлём в поддержке» (см. _app_block). Как появятся — вписать
+# сюда, текст выдачи подхватит сам.
 _PLATFORMS = {
-    "android": ("Android", "WDTT (Android)"),
-    "ios": ("iOS", "vk-turn-proxy (iOS)"),
-    "pc": ("ПК", "PWDTT (Windows/Linux/macOS)"),
+    "android": ("Android", "WDTT (Android)", None),
+    "ios": ("iOS", "vk-turn-proxy (iOS)", None),
+    "pc": ("ПК", "PWDTT (Windows/Linux/macOS)", None),
 }
+
+
+def _app_block(platform: str) -> str:
+    """Строка «где взять приложение» для t.wdtt_created."""
+    url = _PLATFORMS.get(platform, ("", "", None))[2]
+    if url:
+        return url
+    return (
+        "<i>Ссылку на приложение пришлём в поддержке — жми «🆘 Поддержка» "
+        "в меню, ответим быстро.</i>"
+    )
 
 
 def _as_utc(dt: datetime) -> datetime:
@@ -119,18 +134,14 @@ async def cb_wdtt_my(call: CallbackQuery, state: FSMContext, session: AsyncSessi
 
     # Лимит доступов юзер видит в шапке — как у устройств.
     can_create = _sub_active(user) and active_total < user.sub_max_bypass
-    text = (
-        "🛡 <b>Обход белых списков</b>\n"
-        "Работает там, где обычный VPN режется белыми списками.\n"
-        f"\nДоступов: <b>{active_total}/{user.sub_max_bypass}</b>"
-    )
+    text = t.wdtt_intro.format(used=active_total, limit=user.sub_max_bypass)
     if not _sub_active(user):
         text += (
-            "\n<i>Подписка истекла — создание недоступно. Доступы сохраняются "
-            "30 дней и оживут при продлении сами.</i>"
+            "\n<i>Подписка закончилась — добавить обход пока нельзя. Твои "
+            "обходы сохраняются 30 дней и оживут при продлении сами.</i>"
         )
     elif not accesses:
-        text += "\nПока пусто. Создай доступ под своё устройство."
+        text += "\nПока пусто. Жми «➕ Добавить обход»."
 
     await call.message.edit_text(
         text,
@@ -154,13 +165,13 @@ async def cb_wdtt_my_open(call: CallbackQuery, session: AsyncSession) -> None:
     from bot.services import amnezia
     text = (
         f"🛡 <b>{access.label}</b>\n"
-        f"• Устройство/платформа: <b>{plat}</b>\n"
-        f"• Локация: <code>{labels.get(access.server_id, '?')}</code>\n"
-        f"• Статус: <b>{access.status}</b>\n"
+        f"• Платформа: <b>{plat}</b>\n"
+        f"• 🌍 Локация: <b>{labels.get(access.server_id, '—')}</b>\n"
+        f"• Статус: <b>{t.STATUS_RU.get(access.status, access.status)}</b>\n"
         f"• 📊 Трафик: {amnezia.fmt_bytes(access.traffic_used_bytes)}"
     )
     if access.expires_at:
-        text += f"\n• ⏱ Истекает: {access.expires_at.strftime('%d.%m.%Y %H:%M')} UTC"
+        text += f"\n• ⏱ Действует до: {fmt_msk(access.expires_at, with_time=False)}"
     if access.status != PeerStatus.ACTIVE:
         text += (
             "\n\n⏸ <i>Отключён до продления подписки. Прежняя ссылка оживёт "
@@ -249,11 +260,11 @@ async def cb_wdtt_new(call: CallbackQuery, state: FSMContext, session: AsyncSess
         return
     groups, load, any_wdtt = await _wdtt_location_groups(session)
     if not any_wdtt:
-        await call.answer("Обход БС пока не доступен ни на одном сервере.", show_alert=True)
+        await call.answer("Обход БС пока недоступен ни в одной локации — попробуй позже.", show_alert=True)
         return
     if not groups:
         await call.answer(
-            "Свободные слоты обхода закончились — попробуй позже.", show_alert=True
+            "Свободные места для обхода закончились — попробуй чуть позже.", show_alert=True
         )
         return
     if len(groups) == 1:
@@ -284,7 +295,7 @@ async def cb_wdtt_pick_location(call: CallbackQuery, state: FSMContext, session:
     groups, load, _ = await _wdtt_location_groups(session)
     group = groups.get(keys[idx])
     if not group:
-        await call.answer("В этой локации не осталось слотов обхода.", show_alert=True)
+        await call.answer("В этой локации не осталось свободных мест — выбери другую.", show_alert=True)
         return
     user = await repo.get_user_by_tg_id(session, call.from_user.id)
     await state.update_data(server_id=_least_loaded(group, load).id)
@@ -367,7 +378,8 @@ async def cb_wdtt_platform(call: CallbackQuery, state: FSMContext, session: Asyn
         load = await repo.count_active_wdtt_by_server(session)
         if load.get(server.id, 0) >= server.wdtt_max_accesses:
             await call.message.edit_text(
-                "Свободные слоты обхода на сервере закончились — попробуй позже.",
+                "Свободные места для обхода только что закончились — "
+                "попробуй ещё раз чуть позже.",
                 reply_markup=back_to_menu(),
             )
             await call.answer()
@@ -387,9 +399,13 @@ async def cb_wdtt_platform(call: CallbackQuery, state: FSMContext, session: Asyn
                 binary=settings.wdtt_binary_path,
             )
     except SSHError as exc:
+        # Сырой exc юзеру не показываем — техножаргон на английском пугает.
         logger.warning("wdtt create failed: {}", exc)
         await call.message.edit_text(
-            f"❌ Не удалось создать доступ: <code>{exc}</code>", reply_markup=back_to_menu()
+            "😔 Не получилось создать обход — на сервере какая-то заминка.\n"
+            "Попробуй ещё раз через пару минут. Если не поможет — жми "
+            "«🆘 Поддержка» в меню, разберёмся.",
+            reply_markup=back_to_menu(),
         )
         await call.answer()
         return
@@ -416,11 +432,11 @@ async def cb_wdtt_platform(call: CallbackQuery, state: FSMContext, session: Asyn
     await session.commit()
 
     labels = await repo.server_labels_map(session)
-    _, app_name = _PLATFORMS[platform]
+    app_name = _PLATFORMS[platform][1]
     await call.message.edit_text(
         t.wdtt_created.format(
             label=device.label, server=labels.get(server.id, server.name),
-            app=app_name, link=link,
+            app=app_name, app_block=_app_block(platform), link=link,
         ),
         reply_markup=back_to_menu(),
     )

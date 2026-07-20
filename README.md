@@ -1,12 +1,12 @@
-# MyVPN — Telegram-бот для AmneziaWG
+# Moschata VPN — Telegram-бот для AmneziaWG
 
-Telegram-бот, который ставит **AmneziaWG** на твой VPS и раздаёт peer-конфиги через чат и одноразовые инвайт-ссылки.
+Telegram-бот, который ставит **AmneziaWG** на твой VPS и раздаёт peer-конфиги через чат и одноразовые инвайт-ссылки. Название — от *Desmana moschata*, русской выхухоли (она же маскот сервиса).
 
 Бот не пропускает трафик через себя — это «пульт управления». Сам VPN живёт на VPS, который ты добавляешь через `/install`. Один бот может управлять несколькими серверами одновременно.
 
 ```
 ┌──────────────────┐   SSH    ┌──────────────────┐  WireGuard/UDP  ┌──────────┐
-│ Бот @MyVPN_bot   │ ───────► │  VPN-VPS         │  ◄────────────  │  Клиент  │
+│ @MoschataVPN_bot │ ───────► │  VPN-VPS         │  ◄────────────  │  Клиент  │
 │  (этот процесс)  │          │  AmneziaWG awg0  │                 │ AmneziaVPN│
 └─────────▲────────┘          └──────────────────┘                 └──────────┘
           │ HTTPS
@@ -77,7 +77,7 @@ python -m bot
 ```ini
 # /etc/systemd/system/myvpn-bot.service
 [Unit]
-Description=MyVPN Telegram bot
+Description=Moschata VPN Telegram bot
 After=network-online.target
 Wants=network-online.target
 

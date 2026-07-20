@@ -36,12 +36,26 @@ from bot.services.pricing import (
 )
 from bot.states.install import BalanceStates
 from bot.texts import t
+from bot.utils.timefmt import fmt_msk
 
 router = Router(name="balance")
 
-# Кнопки быстрых сумм пополнения = цены базового тарифа за 1/3/6/12 мес.
-_DEPOSIT_AMOUNTS_RUB = [90, 240, 450, 810]
+# Сроки для кнопок быстрых сумм: цена базового тарифа за 1/3/6/12 мес.
+# Суммы считаются из прайсинга, а не хардкодятся — при смене цены кнопки
+# не разъедутся с реальной стоимостью.
+_DEPOSIT_TERMS = [(1, "месяц"), (3, "3 мес"), (6, "полгода"), (12, "год")]
 _CUSTOM_MIN_RUB, _CUSTOM_MAX_RUB = 10, 100_000
+
+
+def _deposit_amounts() -> list[tuple[int, str]]:
+    monthly = monthly_price_kopeks(1, 1)
+    return [
+        (
+            term_price_kopeks(monthly, months) // 100,
+            f"{fmt_rub(term_price_kopeks(monthly, months))} — {word}",
+        )
+        for months, word in _DEPOSIT_TERMS
+    ]
 # Пределы тарифа на экране продления.
 _MAX_DEVICES, _MAX_BYPASS = 10, 10
 
@@ -65,9 +79,15 @@ async def _get_user(session: AsyncSession, call_or_msg) -> "object":
 # ── Экран баланса ────────────────────────────────────────────────────────────
 
 async def _render_balance(edit_or_answer, session: AsyncSession, user) -> None:
-    text = f"💰 <b>Баланс: {fmt_rub(user.balance_kopeks)}</b>"
+    text = (
+        f"💰 <b>Баланс: {fmt_rub(user.balance_kopeks)}</b>\n\n"
+        "С баланса оплачивается подписка: пополни здесь, а продлить можно "
+        "в разделе «🎫 Моя подписка».\n"
+        f"Приглашай друзей — {settings.referral_percent}% с их пополнений "
+        "тоже падают сюда."
+    )
     if not cryptopay.enabled():
-        text += "\n\n<i>Пополнение временно недоступно — напиши админу.</i>"
+        text += "\n\n<i>Пополнение временно недоступно — напиши в поддержку.</i>"
     await edit_or_answer(text, reply_markup=balance_kb(cryptopay.enabled()))
 
 
@@ -88,9 +108,14 @@ async def cb_bal_deposit(call: CallbackQuery, session: AsyncSession) -> None:
         return
     await call.message.edit_text(
         "➕ <b>Пополнение баланса</b>\n\n"
-        "Оплата криптой через @CryptoBot по курсу (сумма — в рублях). "
-        "Выбери сумму:",
-        reply_markup=deposit_amounts_kb(_DEPOSIT_AMOUNTS_RUB),
+        "Платёж проходит через @CryptoBot — платёжный бот прямо в Telegram. "
+        "Сумма — в обычных рублях.\n\n"
+        "<i>Крипты нет? Не страшно: её можно купить с банковской карты прямо "
+        "в @CryptoBot за пару минут (раздел «Купить») и сразу оплатить счёт.</i>\n\n"
+        "Выбери сумму:\n"
+        "<i>Суммы на кнопках — стоимость базового тарифа (1 устройство + "
+        "1 обход БС) на месяц, 3 месяца, полгода и год.</i>",
+        reply_markup=deposit_amounts_kb(_deposit_amounts()),
     )
     await call.answer()
 
@@ -154,6 +179,8 @@ async def _create_and_show_invoice(
     await session.commit()
     await send(
         f"💳 Счёт на <b>{fmt_rub(amount_kopeks)}</b> создан (действует 1 час).\n\n"
+        "<i>Крипты нет? Купи её с карты прямо в @CryptoBot (раздел «Купить») — "
+        "и оплати счёт.</i>\n\n"
         "Оплати в @CryptoBot и жми «Проверить» — обычно баланс зачисляется "
         "за пару секунд. Если закроешь экран — не страшно, бот сам увидит "
         "оплату в течение ~5 минут.",
@@ -204,7 +231,11 @@ async def cb_bal_check(call: CallbackQuery, session: AsyncSession) -> None:
         )
         await call.answer()
         return
-    await call.answer("Оплата пока не видна. Оплатил? Подожди пару секунд и жми ещё раз.", show_alert=True)
+    await call.answer(
+        "Оплата пока не видна. Если платёж уже отправлен — подожди пару секунд "
+        "и жми ещё раз.",
+        show_alert=True,
+    )
 
 
 async def notify_deposit(dep: billing.DepositResult) -> None:
@@ -237,7 +268,7 @@ async def notify_autopay(user, res: billing.ChargeResult) -> None:
     text = (
         f"♻️ Подписка автоматически продлена на месяц за "
         f"{fmt_rub(res.price_kopeks)} с баланса "
-        f"(до {res.new_expires_at.strftime('%d.%m.%Y %H:%M')} UTC).\n"
+        f"(до {fmt_msk(res.new_expires_at)} МСК).\n"
         f"Остаток: {fmt_rub(user.balance_kopeks)}. "
         "Отключить автопродление можно в «🎫 Моя подписка»."
     )
@@ -248,7 +279,7 @@ async def notify_autopay(user, res: billing.ChargeResult) -> None:
             "снова работают."
         )
     if rv is not None and rv.errors:
-        text += "\n⚠️ Часть устройств не восстановилась, напиши админу."
+        text += "\n⚠️ Часть устройств не восстановилась — напиши в поддержку, починим."
     try:
         await bot.send_message(user.tg_id, text)
     except Exception:
@@ -290,12 +321,17 @@ async def cb_bal_ref(call: CallbackQuery, session: AsyncSession) -> None:
     invited = await repo.count_referrals(session, user.id)
     earned = await repo.sum_ref_earned(session, user.id)
     text = (
-        "👥 <b>Реферальная программа</b>\n\n"
-        f"Приглашай друзей — получай <b>{settings.referral_percent}%</b> "
-        "с каждого их пополнения на свой баланс.\n\n"
+        f"👥 <b>Приведи друга — получай {settings.referral_percent}% "
+        "с каждого его пополнения</b>\n\n"
+        "Отправь другу свою ссылку. Каждый раз, когда он пополняет баланс, "
+        f"тебе приходит <b>{settings.referral_percent}%</b> от суммы — "
+        "настоящими деньгами на твой баланс, ими можно оплачивать свою "
+        "подписку. Не разово, а с каждого пополнения, всегда.\n\n"
         f"Твоя ссылка (нажми, чтобы скопировать):\n<code>{link}</code>\n\n"
         f"• Приглашено: <b>{invited}</b>\n"
-        f"• Заработано: <b>{fmt_rub(earned)}</b>"
+        f"• Заработано: <b>{fmt_rub(earned)}</b>\n\n"
+        "<i>Можно просто переслать другу: «Держи VPN, который работает: "
+        f"{link} — первые {settings.trial_days} дней бесплатно»</i>"
     )
     from aiogram.utils.keyboard import InlineKeyboardBuilder as IKB
     kb = IKB()
@@ -324,11 +360,15 @@ async def _render_extend(edit, user, devices: int, bypass: int) -> None:
     monthly = monthly_price_kopeks(devices, bypass)
     text = (
         "🔁 <b>Продление подписки</b>\n\n"
-        f"Тариф: <b>{devices}</b> устр. + <b>{bypass}</b> обход БС "
-        f"= <b>{fmt_rub(monthly)}/мес</b>\n"
+        f"Считаем просто: <b>{settings.price_base_rub} ₽/мес</b> — это "
+        "1 устройство + 1 обход БС. Каждое дополнительное устройство или "
+        f"обход — <b>+{settings.price_extra_device_rub} ₽/мес</b>.\n\n"
+        f"Твой тариф: 📱 устройств — <b>{devices}</b>, 🛡 обходов БС — <b>{bypass}</b>\n"
+        f"Цена: <b>{fmt_rub(monthly)}/мес</b>\n"
         f"💰 На балансе: <b>{fmt_rub(user.balance_kopeks)}</b>\n\n"
-        "Срок прибавится к текущему, тариф применится сразу. "
-        "Подкрути тариф ±, выбери срок:"
+        "Настрой количество кнопками − и +, потом выбери срок — чем дольше, "
+        "тем дешевле. Оплаченные дни прибавятся к текущей подписке, новый "
+        "тариф заработает сразу."
     )
     await edit(text, reply_markup=extend_kb(devices, bypass, _term_price_rows(devices, bypass)))
 
@@ -369,16 +409,17 @@ async def cb_bal_buy(call: CallbackQuery, session: AsyncSession) -> None:
     if not res.ok:
         await session.rollback()
         await call.answer(
-            f"Не хватает {fmt_rub(res.missing_kopeks)} "
-            f"(цена {fmt_rub(res.price_kopeks)}). Пополни баланс.",
+            f"Не хватает {fmt_rub(res.missing_kopeks)}: цена "
+            f"{fmt_rub(res.price_kopeks)}, на балансе "
+            f"{fmt_rub(user.balance_kopeks)}. "
+            "Жми «➕ Пополнить баланс» под сообщением 👇",
             show_alert=True,
         )
         return
     await session.commit()
-    until = res.new_expires_at.strftime("%d.%m.%Y %H:%M")
     text = (
         f"🎉 Подписка оплачена: <b>{months} мес</b> за <b>{fmt_rub(res.price_kopeks)}</b>.\n"
-        f"Действует до <b>{until} UTC</b>.\n"
+        f"Действует до <b>{fmt_msk(res.new_expires_at)} МСК</b>.\n"
         f"💰 Остаток: <b>{fmt_rub(user.balance_kopeks)}</b>"
     )
     rv = res.revive
@@ -388,7 +429,7 @@ async def cb_bal_buy(call: CallbackQuery, session: AsyncSession) -> None:
             "снова работают."
         )
     if rv is not None and rv.errors:
-        text += "\n⚠️ Часть не восстановилась, напиши админу."
+        text += "\n⚠️ Часть устройств не восстановилась — напиши в поддержку, починим."
     await call.message.edit_text(text, reply_markup=back_to_menu())
     await call.answer("Оплачено 🎉")
 

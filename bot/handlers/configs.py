@@ -37,6 +37,7 @@ from bot.services.qrgen import conf_to_qr_png
 from bot.services.ssh import SSHClient, SSHError
 from bot.states.install import InviteStates, PeerStates
 from bot.texts import t
+from bot.utils.timefmt import fmt_msk
 from bot.utils.validators import is_valid_label
 
 router = Router(name="configs")
@@ -195,13 +196,27 @@ async def _send_peer_artifacts(
     await bot.send_document(
         chat_id,
         document=BufferedInputFile(conf_bytes, filename=filename),
-        caption=f"📄 <code>{filename}</code>",
+        caption=(
+            f"📄 <code>{filename}</code> — файл с настройками VPN. Пригодится "
+            "для компьютера: открой AmneziaVPN → «＋» → выбери этот файл."
+        ),
     )
     qr = conf_to_qr_png(conf)
+    # Типичный кейс — юзер настраивает ТОТ ЖЕ телефон, где открыт Telegram:
+    # отсканировать QR с экрана собственного телефона нельзя, объясняем.
+    qr_caption = (
+        "📱 QR-код — если настраиваешь <b>другое</b> устройство: открой на нём "
+        "AmneziaVPN → «＋» → «Сканировать QR-код» и наведи камеру на этот экран."
+    )
+    if vpn_link:
+        qr_caption += (
+            "\n<i>Настраиваешь этот телефон? Используй ссылку из следующего "
+            "сообщения.</i>"
+        )
     await bot.send_photo(
         chat_id,
         photo=BufferedInputFile(qr, filename=f"{filename}.png"),
-        caption="📱 QR — отсканируй в приложении AmneziaVPN.",
+        caption=qr_caption,
     )
     if vpn_link:
         await bot.send_message(chat_id, t.vpn_link_msg.format(link=vpn_link))
@@ -224,7 +239,8 @@ async def cb_peer_list(call: CallbackQuery, session: AsyncSession) -> None:
     peers = await repo.list_peers_for_user(session, user.id)
     if not peers:
         await call.message.edit_text(
-            "У тебя пока нет конфигов. Жди инвайт от админа или создай сам.",
+            "Пока пусто. Добавь устройство в разделе «📱 Мои устройства» — "
+            "конфиг придёт автоматически.",
             reply_markup=back_to_menu(),
         )
         await call.answer()
@@ -263,12 +279,16 @@ async def cb_peer_open(call: CallbackQuery, session: AsyncSession) -> None:
     srv = await repo.get_server(session, peer.server_id)
     text = (
         f"📄 <b>{peer.label}</b>\n"
-        f"• Сервер: <code>{srv.name if srv else '?'}</code>\n"
-        f"• IP: <code>{peer.ip}</code>\n"
-        f"• Статус: <b>{peer.status}</b>"
+        f"• 🌍 Локация: {config_display_base(srv) if srv else '?'}\n"
+        f"• Статус: <b>{t.STATUS_RU.get(peer.status, peer.status)}</b>"
     )
+    # IP и имя сервера — внутренние детали, юзеру не показываем (только админу).
+    if user.is_admin:
+        text += f"\n• IP: <code>{peer.ip}</code>"
+        if srv:
+            text += f"\n• Сервер: <code>{srv.name}</code>"
     if peer.expires_at:
-        text += f"\n• ⏱ Истекает: {peer.expires_at.strftime('%d.%m.%Y %H:%M')} UTC"
+        text += f"\n• ⏱ Действует до: {fmt_msk(peer.expires_at, with_time=False)}"
     if peer.traffic_limit_bytes:
         text += (
             f"\n• 📊 Трафик: {amnezia.fmt_bytes(peer.traffic_used_bytes)}"
@@ -297,7 +317,7 @@ async def cb_peer_send(call: CallbackQuery, session: AsyncSession) -> None:
         await call.answer("Не найдено", show_alert=True)
         return
     if peer.status != PeerStatus.ACTIVE:
-        await call.answer("Peer отозван", show_alert=True)
+        await call.answer("Этот конфиг отключён", show_alert=True)
         return
     server = await repo.get_server(session, peer.server_id)
     if server is None:
@@ -677,20 +697,27 @@ async def redeem_invite(
         await session.commit()
     except SSHError as exc:
         await session.rollback()
+        # Сырой exc юзеру не показываем (техножаргон + может раскрыть host).
         logger.warning("Invite redeem failed: {}", exc)
-        await message.answer(f"❌ Не удалось создать конфиг: <code>{exc}</code>")
+        await message.answer(
+            "⚠️ Не получилось создать конфиг. Попробуй открыть ссылку ещё раз "
+            "чуть позже — или напиши в поддержку («🆘 Поддержка» в меню).",
+            reply_markup=back_to_menu(),
+        )
         # Возвращаем True: токен погасить не успели, но redeem был валидным —
         # не показываем пользователю «инвайт некорректен».
         return True
     except Exception:
         await session.rollback()
         logger.exception("Unexpected invite redeem error")
-        await message.answer(t.error_generic)
+        await message.answer(t.error_generic, reply_markup=back_to_menu())
         return True
 
     await _send_peer_artifacts(message.chat.id, config_display_base(server), label, conf)
+    # Юзерский финал инвайта: без peer/IP/имени сервера (это всё в t.peer_created
+    # для админского потока) — локация, устройство и инструкция по установке.
     await message.answer(
-        t.peer_created.format(server=server.name, label=label, ip=ip),
+        t.invite_config_created.format(server=config_display_base(server), label=label),
         reply_markup=back_to_menu(),
     )
     return True

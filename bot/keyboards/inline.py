@@ -20,6 +20,7 @@ CB_SUB = "sub"     # подписка (Блок 9)
 CB_NOP = "nop"
 CB_CANCEL = "cancel"
 CB_BAL = "bal"     # баланс/оплата/рефералка (Блок «Баланс»)
+CB_SUPPORT = "sup" # сапорт-чат (Блок «Сапорт-чат»)
 
 
 # --- Главное меню -------------------------------------------------------------
@@ -451,6 +452,22 @@ def user_card_kb(user_id: int, is_blocked: bool, page: int) -> InlineKeyboardMar
         kb.button(text="🚫 Заблокировать",  callback_data=f"{CB_PANEL}:block:{user_id}:{page}")
     kb.button(text="« К списку", callback_data=f"{CB_PANEL}:users:{page}")
     kb.adjust(2, 1, 1, 1)
+    return kb.as_markup()
+
+
+# --- Сапорт-чат (Блок «Сапорт-чат») -------------------------------------------
+
+def support_intro_kb() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✍️ Написать в поддержку", callback_data=f"{CB_SUPPORT}:start")
+    kb.button(text="« В меню", callback_data=f"{CB_MENU}:open")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def support_dialog_kb() -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✅ Завершить диалог", callback_data=f"{CB_MENU}:open")
     return kb.as_markup()
 
 

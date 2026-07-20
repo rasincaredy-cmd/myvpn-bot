@@ -2,7 +2,17 @@ from __future__ import annotations
 
 from aiogram import Dispatcher
 
-from bot.handlers import admin_panel, balance, common, configs, devices, install, menu, wdtt
+from bot.handlers import (
+    admin_panel,
+    balance,
+    common,
+    configs,
+    devices,
+    install,
+    menu,
+    support,
+    wdtt,
+)
 
 
 def register_handlers(dp: Dispatcher) -> None:
@@ -14,3 +24,6 @@ def register_handlers(dp: Dispatcher) -> None:
     dp.include_router(admin_panel.router)
     dp.include_router(wdtt.router)
     dp.include_router(balance.router)
+    # Сапорт-чат — СТРОГО последним: его реплай-хендлер без state-фильтра
+    # ловит только сообщения, не забранные FSM-сценариями выше.
+    dp.include_router(support.router)

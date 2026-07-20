@@ -289,6 +289,14 @@ async def _run_checks() -> None:
                 logger.info("Auto-deleted zombie revoked device {} ({})", d.id, d.label)
             await session.commit()
 
+        # ── 2c. Чистка старых маршрутов сапорт-чата ─────────────────────────
+        # Пары «сообщение юзера ↔ копия у админа» старше 30 дней: реплай на них
+        # уже не доставится (support_route_lost), держать строки незачем.
+        purged = await repo.purge_old_support_routes(session, days=REVOKED_RETENTION_DAYS)
+        if purged:
+            await session.commit()
+            logger.info("Purged {} old support routes", purged)
+
         # ── 3. Учёт трафика (накопление по пирам) ───────────────────────────
         # Копим трафик для ВСЕХ активных пиров, чтобы счётчик пережил ребут сервера.
         # Лимит теперь на ПОДПИСКУ (см. 3b), а не на отдельный пир.

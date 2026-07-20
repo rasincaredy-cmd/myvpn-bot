@@ -8,6 +8,7 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -309,6 +310,39 @@ class WdttAccess(Base):
     # Битовая маска отправленных предупреждений об истечении (как у Peer).
     expiry_warn_flags: Mapped[int] = mapped_column(
         Integer, default=0, server_default="0", nullable=False
+    )
+
+
+class SupportMsg(Base):
+    """Маршрут сапорт-чата (Блок «Сапорт-чат»). Одна строка связывает сообщение
+    в чате юзера с сообщением в чате админа — в ОБЕ стороны:
+
+    • юзер написал в поддержку → копия у админа: реплай админа на неё по
+      (admin_tg_id, admin_msg_id) находит юзера и его исходное сообщение;
+    • ответ поддержки доставлен юзеру → реплай юзера на него по
+      (user_tg_id, user_msg_id) уходит обратно в поддержку без режима диалога.
+
+    Старые строки чистит планировщик (retention 30 дней, как у пиров)."""
+
+    __tablename__ = "support_msgs"
+    __table_args__ = (
+        Index("ix_support_admin_msg", "admin_tg_id", "admin_msg_id"),
+        Index("ix_support_user_msg", "user_tg_id", "user_msg_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    # Денормализованный tg_id юзера: доставка не требует джойна с users.
+    user_tg_id: Mapped[int] = mapped_column(BigInteger)
+    # Сообщение в чате юзера (его вопрос ИЛИ доставленный ему ответ поддержки).
+    user_msg_id: Mapped[int] = mapped_column(Integer)
+    admin_tg_id: Mapped[int] = mapped_column(BigInteger)
+    # Сообщение в чате админа (копия вопроса ИЛИ его собственный ответ).
+    admin_msg_id: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
     )
 
 

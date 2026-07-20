@@ -68,3 +68,7 @@ class SubAdminStates(StatesGroup):
 
 class BalanceStates(StatesGroup):
     custom_amount = State()  # своя сумма пополнения
+
+
+class SupportStates(StatesGroup):
+    dialog = State()  # юзер пишет в поддержку; каждое сообщение уходит админам

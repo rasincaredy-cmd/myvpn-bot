@@ -185,13 +185,17 @@ async def cb_menu_notify_toggle(call: CallbackQuery, session: AsyncSession) -> N
 @router.callback_query(F.data == f"{CB_MENU}:help")
 async def cmd_help(event: Message | CallbackQuery) -> None:
     from bot.config import settings
-    contact = settings.support_contact or "напиши администратору сервиса"
-    text = t.help_text.format(contact=contact)
+    from bot.keyboards.inline import support_intro_kb
+    # Прямой контакт — опциональное дополнение к сапорт-чату (если задан в .env).
+    contact_block = (
+        f"\nНапрямую: {settings.support_contact}" if settings.support_contact else ""
+    )
+    text = t.help_text.format(contact_block=contact_block)
     if isinstance(event, CallbackQuery):
-        await event.message.edit_text(text, reply_markup=back_to_menu())
+        await event.message.edit_text(text, reply_markup=support_intro_kb())
         await event.answer()
     else:
-        await event.answer(text, reply_markup=back_to_menu())
+        await event.answer(text, reply_markup=support_intro_kb())
 
 
 # --- /exit, /cancel — отмена любого состояния --------------------------------

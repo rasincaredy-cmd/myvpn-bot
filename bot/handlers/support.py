@@ -34,8 +34,10 @@ from bot.texts import t
 
 router = Router(name="support")
 
-# Заголовок + текст должны влезать в лимит Telegram (4096); длиннее — шлём копией.
-_INLINE_TEXT_LIMIT = 3800
+# Лимит Telegram на текст сообщения. Сравниваем с ГОТОВОЙ строкой (после
+# html.escape: & → &amp; и т.п. раздувают текст) — иначе длинное сообщение
+# упадёт с "message is too long" и юзер получит ложное «поддержка недоступна».
+_TG_TEXT_LIMIT = 4096
 
 
 def _user_header(message: Message) -> str:
@@ -60,16 +62,18 @@ async def _deliver_to_admins(message: Message, session: AsyncSession) -> bool:
         full_name=message.from_user.full_name,
     )
     header = _user_header(message)
-    as_text = message.text is not None and len(message.text) <= _INLINE_TEXT_LIMIT
+    text_html = (
+        f"{header}\n\n{html.escape(message.text)}"
+        if message.text is not None else None
+    )
+    as_text = text_html is not None and len(text_html) <= _TG_TEXT_LIMIT
 
     delivered = 0
     for admin_id in settings.admin_ids:
         try:
             admin_msg_ids: list[int] = []
             if as_text:
-                sent = await tg_bot.send_message(
-                    admin_id, f"{header}\n\n{html.escape(message.text)}"
-                )
+                sent = await tg_bot.send_message(admin_id, text_html)
                 admin_msg_ids.append(sent.message_id)
             else:
                 head = await tg_bot.send_message(admin_id, header)
@@ -123,17 +127,24 @@ async def _admin_reply_to_user(message: Message, session: AsyncSession) -> None:
         session, message.from_user.id, message.reply_to_message.message_id
     )
     if route is None:
-        await message.reply(t.support_route_lost)
+        # Бот шлёт админу и не-сапортные сообщения (бэкапы, уведомления о
+        # пополнениях) — реплай на них не ошибка, подсказку даём только если
+        # админ явно целился в сапорт (маркер 💬 из _user_header).
+        target_text = message.reply_to_message.text or message.reply_to_message.caption or ""
+        if target_text.startswith("💬"):
+            await message.reply(t.support_route_lost)
         return
     reply_params = ReplyParameters(
         message_id=route.user_msg_id, allow_sending_without_reply=True
     )
+    answer_html = (
+        f"{t.support_answer_header}\n\n{html.escape(message.text)}"
+        if message.text is not None else None
+    )
     try:
-        if message.text is not None and len(message.text) <= _INLINE_TEXT_LIMIT:
+        if answer_html is not None and len(answer_html) <= _TG_TEXT_LIMIT:
             sent = await tg_bot.send_message(
-                route.user_tg_id,
-                f"{t.support_answer_header}\n\n{html.escape(message.text)}",
-                reply_parameters=reply_params,
+                route.user_tg_id, answer_html, reply_parameters=reply_params,
             )
         else:
             sent = await tg_bot.copy_message(

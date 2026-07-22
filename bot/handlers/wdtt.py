@@ -43,14 +43,25 @@ router = Router(name="wdtt")
 
 _WDTT_PER_PAGE = 8
 
-# platform → (подпись, название приложения, URL установки).
-# URL пока None: реальных ссылок на скачивание нет — до их появления юзеру
-# показываем «пришлём в поддержке» (см. _app_block). Как появятся — вписать
-# сюда, текст выдачи подхватит сам.
+# platform → (подпись, название приложения, URL установки / инструкция).
 _PLATFORMS = {
-    "android": ("Android", "WDTT (Android)", None),
-    "ios": ("iOS", "vk-turn-proxy (iOS)", None),
-    "pc": ("ПК", "PWDTT (Windows/Linux/macOS)", None),
+    "android": (
+        "Android", "WDTT (Android)",
+        "https://github.com/amurcanov/proxy-turn-vk-android/releases",
+    ),
+    "ios": (
+        "iOS", "VK Turn Proxy (iOS)",
+        (
+            "Установка через TestFlight:\n"
+            "1. Скачай <b>TestFlight</b> из App Store.\n"
+            "2. Установи <b>VK Turn Proxy</b> через TestFlight по ссылке-приглашению "
+            "(пришлём в поддержке — жми «🆘 Поддержка» в меню)."
+        ),
+    ),
+    "pc": (
+        "ПК", "PWDTT (Windows/Linux/macOS)",
+        "https://github.com/luminescq/PWDTT/releases",
+    ),
 }
 
 

@@ -53,9 +53,8 @@ _PLATFORMS = {
         "iOS", "VK Turn Proxy (iOS)",
         (
             "Установка через TestFlight:\n"
-            "1. Скачай <b>TestFlight</b> из App Store.\n"
-            "2. Установи <b>VK Turn Proxy</b> через TestFlight по ссылке-приглашению "
-            "(пришлём в поддержке — жми «🆘 Поддержка» в меню)."
+            "1. Скачай <a href=\"https://apps.apple.com/rs/app/testflight/id899247664\">TestFlight</a> из App Store.\n"
+            "2. Открой <a href=\"https://testflight.apple.com/join/ANm6cmDv\">ссылку-приглашение</a> и установи <b>VK Turn Proxy</b>."
         ),
     ),
     "pc": (

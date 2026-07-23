@@ -12,7 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.db import repo
-from bot.db.models import Invite, Peer, PeerStatus, Server, ServerStatus, User
+from bot.db.models import BalanceTx, Invite, Peer, PeerStatus, Server, ServerStatus, User
 from bot.filters.admin import AdminFilter
 from bot.keyboards.inline import (
     CB_PANEL,
@@ -119,10 +119,22 @@ async def cb_panel_stats(call: CallbackQuery, session: AsyncSession) -> None:
             select(func.count(Invite.id)).where(Invite.used_at.is_(None))
         )
     ).scalar() or 0
+    # Конверсия триал→оплата: сколько юзеров хоть раз ПЛАТИЛИ за подписку
+    # (kind='charge' в журнале баланса — покупка/автопродление; депозиты и ручные
+    # правки админа не в счёт). Показывает, доезжает ли онбординг до денег.
+    users_paid_ever = (
+        await session.execute(
+            select(func.count(func.distinct(BalanceTx.user_id)))
+            .where(BalanceTx.kind == "charge")
+        )
+    ).scalar() or 0
+    conv_pct = round(users_paid_ever * 100 / users_total) if users_total else 0
 
     await call.message.edit_text(
         "📊 <b>Статистика</b>\n\n"
         f"👤 Юзеров: <b>{users_total}</b>  (🔴 заблокировано: {users_blocked})\n"
+        f"💎 Конверсия: <b>{users_paid_ever}</b> из {users_total} покупали подписку "
+        f"({conv_pct}%)\n"
         f"🖥 Серверов: <b>{servers_ready}</b> готовых / <b>{servers_total}</b> всего\n"
         f"📄 Peers: <b>{peers_active}</b> активных / <b>{peers_total}</b> всего\n"
         f"🎟 Инвайтов: <b>{invites_pending}</b> непогашенных / <b>{invites_total}</b> всего",

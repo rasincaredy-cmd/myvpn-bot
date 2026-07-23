@@ -14,6 +14,7 @@ from bot.keyboards.inline import (
     back_to_menu,
     main_menu,
     notify_settings_kb,
+    onboarding_hint_kb,
     server_card,
 )
 from bot.texts import t
@@ -56,6 +57,7 @@ async def cmd_start_deep(
                 await session.commit()
                 logger.info("Referral: user {} invited by {}", user.id, referrer.id)
         await _send_main_menu(message, user.is_admin)
+        await _send_onboarding_hint(message, is_new=not existed, is_admin=user.is_admin)
         return
 
     from bot.handlers.configs import redeem_invite
@@ -67,6 +69,7 @@ async def cmd_start_deep(
         await message.answer(t.invite_invalid)
 
     await _send_main_menu(message, user.is_admin)
+    await _send_onboarding_hint(message, is_new=not existed, is_admin=user.is_admin)
 
 
 @router.message(CommandStart())
@@ -76,6 +79,7 @@ async def cmd_start(
     session: AsyncSession,
 ) -> None:
     await state.clear()
+    existed = await repo.get_user_by_tg_id(session, message.from_user.id) is not None
     user = await repo.get_or_create_user(
         session,
         tg_id=message.from_user.id,
@@ -83,6 +87,16 @@ async def cmd_start(
         full_name=message.from_user.full_name,
     )
     await _send_main_menu(message, user.is_admin)
+    await _send_onboarding_hint(message, is_new=not existed, is_admin=user.is_admin)
+
+
+async def _send_onboarding_hint(message: Message, *, is_new: bool, is_admin: bool) -> None:
+    """Второе сообщение сразу после ПЕРВОГО /start: триал выдаётся молча, и без
+    наводки юзер не знает, что дальше. Кнопка ведёт прямо к добавлению устройства.
+    Повторные /start (existed=True) подсказку не шлют — не спамим."""
+    if not is_new or is_admin:
+        return
+    await message.answer(t.onboarding_hint, reply_markup=onboarding_hint_kb())
 
 
 async def _send_main_menu(message: Message, is_admin: bool) -> None:

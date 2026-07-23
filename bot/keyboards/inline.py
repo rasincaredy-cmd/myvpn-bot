@@ -43,6 +43,13 @@ def main_menu(is_admin: bool) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
+def onboarding_hint_kb() -> InlineKeyboardMarkup:
+    """Одна кнопка под подсказкой новому юзеру: сразу к добавлению устройства."""
+    kb = InlineKeyboardBuilder()
+    kb.button(text="📱 Мои устройства", callback_data=f"{CB_DEVICE}:list")
+    return kb.as_markup()
+
+
 def notify_settings_kb(enabled: bool) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     if enabled:

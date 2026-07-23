@@ -186,11 +186,27 @@ async def _run_checks() -> None:
                     user.sub_warn_flags |= (1 << i)
                 warned = True
                 if user.expiry_warn_enabled and await repo.count_active_devices(session, user.id):
-                    await _notify(
-                        user.tg_id,
-                        f"⏳ Подписка истекает примерно через {_humanize_left(remaining)}. "
-                        "Продли, чтобы устройства и обход БС не отключились.",
-                    )
+                    # Триальщику на суточном пороге — не сухое предупреждение,
+                    # а мягкий питч с ценой: это последний момент повлиять на
+                    # конверсию. Пороги общие (sub_warn_flags), дублей нет.
+                    if user.is_trial and 0 in fireable:
+                        from bot.services.pricing import fmt_rub, monthly_price_kopeks
+
+                        text = (
+                            "🎁 <b>Пробный период заканчивается</b> примерно через "
+                            f"{_humanize_left(remaining)}.\n"
+                            "Понравилось? Подписка — от "
+                            f"{fmt_rub(monthly_price_kopeks(1, 1))}/мес, все твои "
+                            "устройства продолжат работать без перенастройки.\n"
+                            "Продлить: меню → «🎫 Моя подписка» → «🔁 Продлить / купить»."
+                        )
+                    else:
+                        text = (
+                            "⏳ Подписка истекает примерно через "
+                            f"{_humanize_left(remaining)}. "
+                            "Продли, чтобы устройства и обход БС не отключились."
+                        )
+                    await _notify(user.tg_id, text)
             except Exception:
                 logger.exception("Sub expiry-warning failed for user {}", user.id)
         if warned:
@@ -427,3 +443,21 @@ async def run() -> None:
                 logger.info("Nightly backup sent: {}", filename)
         except Exception:
             logger.exception("Nightly backup failed")
+
+        # ── 5. Проверка живости ссылок на обход-приложения ──────────────────
+        # Раз в linkcheck_interval_days дней курлим ссылки из wdtt._PLATFORMS
+        # (GitHub-релизы, TestFlight). Сломанные — алертом админам; всё живо —
+        # молчим. Маркер ставим и при проблемах: алерт уже ушёл, долбить
+        # каждые 5 минут не надо.
+        try:
+            from bot.services import linkcheck as linkcheck_svc
+
+            now = datetime.now(timezone.utc)
+            if linkcheck_svc.due(now):
+                problems = await linkcheck_svc.run_check()
+                linkcheck_svc.mark_done(now)
+                if problems:
+                    await linkcheck_svc.notify_admins(problems)
+                logger.info("Linkcheck done: {} problem(s)", len(problems))
+        except Exception:
+            logger.exception("Linkcheck failed")

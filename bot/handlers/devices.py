@@ -23,6 +23,7 @@ from bot.keyboards.inline import (
     back_to_menu,
     cancel_only,
     device_card_kb,
+    device_created_kb,
     devices_list_kb,
     subscription_kb,
 )
@@ -95,8 +96,14 @@ async def cb_dev_list(call: CallbackQuery, session: AsyncSession) -> None:
     if not _sub_active(user):
         head += (
             "\n<i>Подписка закончилась — устройства на паузе, конфиги хранятся "
-            "30 дней. Продли её в «🎫 Подписка» (кнопка ниже) — всё заработает "
-            "само, заново ничего настраивать не нужно.</i>"
+            "30 дней. Продли её в «🎫 Моя подписка» (кнопка ниже) — всё "
+            "заработает само, заново ничего настраивать не нужно.</i>"
+        )
+    elif user.sub_max_devices == 0 and not devices:
+        head += (
+            "\n\nВ твоём тарифе сейчас нет устройств — только обход БС. "
+            "Понадобится VPN — добавь устройства в «🎫 Моя подписка» → "
+            "«🔁 Продлить / купить»."
         )
     elif not devices:
         head += (
@@ -126,19 +133,27 @@ async def cb_dev_add(call: CallbackQuery, state: FSMContext, session: AsyncSessi
     )
     if not _sub_active(user):
         await call.answer(
-            "Подписка закончилась. Продли её в разделе «🎫 Подписка» — "
+            "Подписка закончилась. Продли её в разделе «🎫 Моя подписка» — "
             "устройства оживут сами.",
             show_alert=True,
         )
         return
     used = await repo.count_active_devices(session, user.id)
     if used >= user.sub_max_devices:
-        await call.answer(
-            f"Достигнут лимит устройств ({used}/{user.sub_max_devices}).",
-            show_alert=True,
-        )
+        if user.sub_max_devices == 0:
+            # Не «(0/0)» — это читается как баг. Объясняем: таков тариф.
+            await call.answer(
+                "В твоём тарифе нет устройств. Добавить их можно в «🎫 Моя "
+                "подписка» → «🔁 Продлить / купить».",
+                show_alert=True,
+            )
+        else:
+            await call.answer(
+                f"Достигнут лимит устройств ({used}/{user.sub_max_devices}).",
+                show_alert=True,
+            )
         return
-    if not await repo.list_ready_servers(session):
+    if not await repo.list_ready_servers(session, for_user=user):
         await call.answer("Локации сейчас недоступны — попробуй чуть позже.", show_alert=True)
         return
     await state.set_state(DeviceStates.label)
@@ -171,7 +186,7 @@ async def step_device_label(message: Message, state: FSMContext, session: AsyncS
             reply_markup=back_to_menu(),
         )
         return
-    if not await repo.list_ready_servers(session):
+    if not await repo.list_ready_servers(session, for_user=user):
         await message.answer(
             "Локации сейчас недоступны — попробуй чуть позже.",
             reply_markup=back_to_menu(),
@@ -214,7 +229,7 @@ async def step_device_label(message: Message, state: FSMContext, session: AsyncS
             vpn_link=await make_vpn_link(session, server, label, conf),
         )
     await message.answer(
-        t.device_created.format(label=label), reply_markup=subscription_kb(True)
+        t.device_created.format(label=label), reply_markup=device_created_kb()
     )
 
 
@@ -337,6 +352,65 @@ async def cb_dev_send(call: CallbackQuery, session: AsyncSession) -> None:
     await call.answer("Готово")
 
 
+@router.callback_query(F.data.startswith(f"{CB_DEVICE}:ren:"))
+async def cb_dev_rename(call: CallbackQuery, state: FSMContext, session: AsyncSession) -> None:
+    """Переименование своего устройства (Блок «Ревизия»). Только метка в БД:
+    конфиги на руках не трогаем, у них имя из локации (config_display_base)."""
+    device_id = int(call.data.rsplit(":", 1)[-1])
+    device = await repo.get_device(session, device_id)
+    user = await repo.get_user_by_tg_id(session, call.from_user.id)
+    if device is None or user is None or device.user_id != user.id:
+        await call.answer("Не найдено", show_alert=True)
+        return
+    await state.set_state(DeviceStates.rename)
+    await state.update_data(device_id=device_id, cancel_to="dev")
+    await call.message.edit_text(
+        "✏️ <b>Переименование устройства</b>\n\n"
+        f"Сейчас: <code>{device.label}</code>\n\n"
+        "Введи новое название (до 32 символов: буквы, цифры, пробелы, дефис "
+        "или подчёркивание):",
+        reply_markup=cancel_only(),
+    )
+    await call.answer()
+
+
+@router.message(DeviceStates.rename, F.text)
+async def step_device_rename(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    label = message.text.strip()
+    if not is_valid_label(label):
+        await message.answer(
+            "Такое название не подходит. До 32 символов: буквы, цифры, пробелы, "
+            "дефис или подчёркивание. Попробуй ещё раз:"
+        )
+        return
+    data = await state.get_data()
+    await state.clear()
+    device = await repo.get_device(session, data["device_id"])
+    user = await repo.get_user_by_tg_id(session, message.from_user.id)
+    if device is None or user is None or device.user_id != user.id:
+        await message.answer("Устройство не найдено.", reply_markup=back_to_menu())
+        return
+    old = device.label
+    device.label = label
+    # Метки пиров и wdtt-доступов копируют метку устройства при создании —
+    # тянем их за собой, чтобы админ-вью и wdtt-карточки не разъезжались.
+    for p in await repo.list_peers_for_device(session, device.id):
+        p.label = label
+    for a in await repo.list_wdtt_for_device(session, device.id):
+        a.label = label
+    await session.commit()
+    logger.info("User {} renamed device {}: {} -> {}", user.id, device.id, old, label)
+    from aiogram.utils.keyboard import InlineKeyboardBuilder as IKB
+    kb = IKB()
+    kb.button(text="« К устройству", callback_data=f"{CB_DEVICE}:open:{device.id}")
+    await message.answer(
+        f"✅ Устройство теперь называется <b>{label}</b>.\n"
+        "<i>Конфиги на твоих устройствах перенастраивать не нужно — название "
+        "меняется только в боте.</i>",
+        reply_markup=kb.as_markup(),
+    )
+
+
 @router.callback_query(F.data.startswith(f"{CB_DEVICE}:revoke:"))
 async def cb_dev_revoke(call: CallbackQuery, session: AsyncSession) -> None:
     device_id = int(call.data.rsplit(":", 1)[-1])
@@ -428,7 +502,6 @@ async def cb_sub_my(call: CallbackQuery, session: AsyncSession) -> None:
     await call.message.edit_text(
         text,
         reply_markup=subscription_kb(
-            _sub_active(user),
             can_pay=can_pay and not perpetual,
             autopay=user.autopay if (can_pay and not perpetual) else None,
         ),

@@ -102,6 +102,13 @@ async def charge_and_extend(
     отозванные по истечению устройства оживают (ревайв)."""
     devices = max_devices if max_devices is not None else user.sub_max_devices
     bypass = max_bypass if max_bypass is not None else user.sub_max_bypass
+    # Последний рубеж против пустого/кривого тарифа: сюда ходят конструктор,
+    # автопродление и будущие вызовы — доверять валидации хендлера нельзя.
+    if devices < 0 or bypass < 0 or devices + bypass < 1:
+        logger.warning(
+            "Charge rejected: user {} empty tariff {}/{}", user.id, devices, bypass
+        )
+        return ChargeResult(ok=False)
     price = term_price_kopeks(monthly_price_kopeks(devices, bypass), months)
     if user.balance_kopeks < price:
         return ChargeResult(
@@ -111,7 +118,7 @@ async def charge_and_extend(
 
     await repo.add_balance_tx(
         session, user.id, -price, "charge",
-        note=f"Подписка {months} мес ({devices} устр., {bypass} обход)",
+        note=f"Подписка {months} мес (устройств: {devices}, обходов: {bypass})",
     )
     now = datetime.now(timezone.utc)
     base = user.sub_expires_at
@@ -151,6 +158,10 @@ async def autopay_if_expired(
     Crypto Pay не требуется: списание идёт с баланса, а его могли пополнить
     и руками (kind=admin за перевод на карту)."""
     if not user.autopay or user.sub_expires_at is None:
+        return None
+    # Пустой тариф (админ выставил 0/0) не автопродлеваем: списывать деньги за
+    # подписку, в которой нельзя создать ни устройство, ни обход, — нечестно.
+    if user.sub_max_devices + user.sub_max_bypass < 1:
         return None
     exp = user.sub_expires_at
     if exp.tzinfo is None:

@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from loguru import logger
@@ -150,9 +151,14 @@ async def step_bal_custom_amount(
 @router.callback_query(F.data.startswith(f"{CB_BAL}:dep:"))
 async def cb_bal_deposit_amount(call: CallbackQuery, session: AsyncSession) -> None:
     # Сюда падают только "dep:<число>" — dep и dep:custom перехвачены выше.
-    rub = int(call.data.rsplit(":", 1)[-1])
+    raw = call.data.rsplit(":", 1)[-1]
+    # callback_data приходит от клиента и может быть подделана (кастомные
+    # клиенты Telegram) — держим сумму в тех же рамках, что и ручной ввод.
+    if not raw.isdigit() or not (_CUSTOM_MIN_RUB <= int(raw) <= _CUSTOM_MAX_RUB):
+        await call.answer("Некорректная сумма.", show_alert=True)
+        return
     user = await _get_user(session, call)
-    await _create_and_show_invoice(call.message.edit_text, session, user, rub * 100)
+    await _create_and_show_invoice(call.message.edit_text, session, user, int(raw) * 100)
     await call.answer()
 
 
@@ -354,23 +360,53 @@ def _term_price_rows(devices: int, bypass: int) -> list[tuple[int, str]]:
     return rows
 
 
+def _tariff_bounds(user) -> tuple[int, int]:
+    """Потолки конструктора. Обычно 10/10, но если админ выставил юзеру больше —
+    показываем честно, а не срезаем молча (иначе покупка тихо даунгрейдила бы
+    тариф до 10 и лишние устройства переставали бы оживать)."""
+    return (
+        max(_MAX_DEVICES, user.sub_max_devices),
+        max(_MAX_BYPASS, user.sub_max_bypass),
+    )
+
+
+def _clamp_tariff(user, devices: int, bypass: int) -> tuple[int, int]:
+    """0..потолок по каждому типу; тариф «совсем без всего» не существует —
+    пустую пару поднимаем до 1+1 (стартовый экран у юзера с лимитами 0/0)."""
+    max_dev, max_byp = _tariff_bounds(user)
+    devices = max(0, min(max_dev, devices))
+    bypass = max(0, min(max_byp, bypass))
+    if devices + bypass == 0:
+        devices = bypass = 1
+    return devices, bypass
+
+
 async def _render_extend(edit, user, devices: int, bypass: int) -> None:
-    devices = max(1, min(_MAX_DEVICES, devices))
-    bypass = max(1, min(_MAX_BYPASS, bypass))
+    devices, bypass = _clamp_tariff(user, devices, bypass)
+    max_dev, max_byp = _tariff_bounds(user)
     monthly = monthly_price_kopeks(devices, bypass)
+    first_rub = (
+        settings.price_base_rub
+        - settings.price_extra_device_rub  # цена тарифа из одной позиции (1+0/0+1)
+    )
     text = (
         "🔁 <b>Продление подписки</b>\n\n"
-        f"Считаем просто: <b>{settings.price_base_rub} ₽/мес</b> — это "
-        "1 устройство + 1 обход БС. Каждое дополнительное устройство или "
-        f"обход — <b>+{settings.price_extra_device_rub} ₽/мес</b>.\n\n"
-        f"Твой тариф: 📱 устройств — <b>{devices}</b>, 🛡 обходов БС — <b>{bypass}</b>\n"
+        f"Считаем просто: первая позиция (устройство или обход БС) — "
+        f"<b>{first_rub} ₽/мес</b>, каждая следующая — "
+        f"<b>+{settings.price_extra_device_rub} ₽/мес</b>. Не нужны устройства "
+        "или обходы — смело ставь 0.\n\n"
+        "Твой тариф:\n"
+        f"📱 Устройств: <b>{devices}</b>\n"
+        f"🛡 Обходов БС: <b>{bypass}</b>\n"
         f"Цена: <b>{fmt_rub(monthly)}/мес</b>\n"
         f"💰 На балансе: <b>{fmt_rub(user.balance_kopeks)}</b>\n\n"
         "Настрой количество кнопками − и +, потом выбери срок — чем дольше, "
         "тем дешевле. Оплаченные дни прибавятся к текущей подписке, новый "
         "тариф заработает сразу."
     )
-    await edit(text, reply_markup=extend_kb(devices, bypass, _term_price_rows(devices, bypass)))
+    await edit(text, reply_markup=extend_kb(
+        devices, bypass, _term_price_rows(devices, bypass), max_dev, max_byp
+    ))
 
 
 @router.callback_query(F.data == f"{CB_BAL}:extend")
@@ -385,24 +421,48 @@ async def cb_bal_extend(call: CallbackQuery, session: AsyncSession) -> None:
 
 @router.callback_query(F.data.startswith(f"{CB_BAL}:ext:"))
 async def cb_bal_extend_adjust(call: CallbackQuery, session: AsyncSession) -> None:
-    _, _, dev, byp = call.data.split(":")
+    parts = call.data.split(":")
+    if len(parts) != 4 or not parts[2].lstrip("-").isdigit() or not parts[3].lstrip("-").isdigit():
+        await call.answer()  # кривой callback (форжат только руками) — молча игнор
+        return
     user = await _get_user(session, call)
     try:
-        await _render_extend(call.message.edit_text, user, int(dev), int(byp))
-    except Exception:
-        pass  # «message is not modified» на упоре в границы 1..10 — не страшно
+        await _render_extend(call.message.edit_text, user, int(parts[2]), int(parts[3]))
+    except TelegramBadRequest as exc:
+        # На границах CB_NOP-заглушки перерисовку не дёргают, но старые
+        # сообщения с прежней клавиатурой могут прислать то же состояние.
+        if "message is not modified" not in str(exc):
+            raise
     await call.answer()
 
 
 @router.callback_query(F.data.startswith(f"{CB_BAL}:buy:"))
 async def cb_bal_buy(call: CallbackQuery, session: AsyncSession) -> None:
-    _, _, dev, byp, months = call.data.split(":")
-    devices, bypass, months = int(dev), int(byp), int(months)
-    if not (1 <= devices <= _MAX_DEVICES and 1 <= bypass <= _MAX_BYPASS
-            and months in TERM_DISCOUNTS):
+    try:
+        _, _, dev, byp, months = call.data.split(":")
+        devices, bypass, months = int(dev), int(byp), int(months)
+    except ValueError:  # форжённый callback (кастомный клиент) — не роняем хендлер
         await call.answer("Что-то не то с тарифом, начни заново.", show_alert=True)
         return
     user = await _get_user(session, call)
+    max_dev, max_byp = _tariff_bounds(user)
+    if not (0 <= devices <= max_dev and 0 <= bypass <= max_byp
+            and devices + bypass >= 1 and months in TERM_DISCOUNTS):
+        await call.answer("Что-то не то с тарифом, начни заново.", show_alert=True)
+        return
+    # Анти-эксплойт: тариф ниже текущего ПОТРЕБЛЕНИЯ не продаём — активные
+    # устройства сверх нового лимита продолжили бы работать весь срок (лимит
+    # проверяется только при добавлении), выходило бы дешёвое продление.
+    used_dev = await repo.count_active_devices(session, user.id)
+    used_byp = await repo.count_active_wdtt_for_user(session, user.id)
+    if devices < used_dev or bypass < used_byp:
+        await call.answer(
+            f"У тебя сейчас активно {used_dev} устр. и {used_byp} обход(а) — "
+            "тариф не может быть меньше. Сначала удали лишнее в «📱 Мои "
+            "устройства» / «🛡 Обход БС».",
+            show_alert=True,
+        )
+        return
     res = await billing.charge_and_extend(
         session, user, months, max_devices=devices, max_bypass=bypass
     )
@@ -447,7 +507,7 @@ async def cb_bal_autopay(call: CallbackQuery, session: AsyncSession) -> None:
     from bot.services import cryptopay as cp
     try:
         await call.message.edit_reply_markup(
-            reply_markup=subscription_kb(True, can_pay=cp.enabled(), autopay=user.autopay)
+            reply_markup=subscription_kb(can_pay=cp.enabled(), autopay=user.autopay)
         )
     except Exception:
         pass

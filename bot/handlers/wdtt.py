@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery
+from aiogram.types import CallbackQuery, Message
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -83,11 +83,15 @@ def _sub_active(user) -> bool:
     return user.sub_expires_at is None or _as_utc(user.sub_expires_at) > datetime.now(timezone.utc)
 
 
-async def _wdtt_location_groups(session: AsyncSession):
+async def _wdtt_location_groups(session: AsyncSession, user=None):
     """Локация → READY-сервера с включённым обходом и СВОБОДНОЙ ёмкостью
-    (wdtt_max_accesses; NULL — безлимит). Заполненные сервера юзеру не предлагаются.
+    (wdtt_max_accesses; NULL — безлимит). Заполненные сервера юзеру не предлагаются,
+    приватные — только админам/«друзьям» (гейт в list_ready_servers).
     Возвращает (группы, загрузка по серверам, есть_ли_wdtt_сервера_вообще)."""
-    servers = [s for s in await repo.list_ready_servers(session) if s.wdtt_enabled]
+    servers = [
+        s for s in await repo.list_ready_servers(session, for_user=user)
+        if s.wdtt_enabled
+    ]
     load = await repo.count_active_wdtt_by_server(session)
     free = [
         s for s in servers
@@ -150,6 +154,11 @@ async def cb_wdtt_my(call: CallbackQuery, state: FSMContext, session: AsyncSessi
             "\n<i>Подписка закончилась — добавить обход пока нельзя. Твои "
             "обходы сохраняются 30 дней и оживут при продлении сами.</i>"
         )
+    elif user.sub_max_bypass == 0 and not accesses:
+        text += (
+            "\nВ твоём тарифе сейчас нет обходов БС. Понадобится — добавь "
+            "в «🎫 Моя подписка» → «🔁 Продлить / купить»."
+        )
     elif not accesses:
         text += "\nПока пусто. Жми «➕ Добавить обход»."
 
@@ -203,7 +212,14 @@ async def cb_wdtt_my_link(call: CallbackQuery, session: AsyncSession) -> None:
     if access.status != PeerStatus.ACTIVE:
         await call.answer("Доступ отозван", show_alert=True)
         return
-    await call.message.answer(t.wdtt_link.format(link=decrypt(access.uri_enc)))
+    # Имя приложения — по платформе доступа; для старых доступов без платформы
+    # остаётся общее перечисление.
+    app = _PLATFORMS.get(access.platform, ("", "", None))[1] if access.platform else ""
+    app_line = (
+        f"Импортируй её в приложение обхода — <b>{app}</b>." if app
+        else "Импортируй её в приложение обхода (WDTT — Android, VK Turn Proxy — iOS, PWDTT — ПК)."
+    )
+    await call.message.answer(t.wdtt_link.format(link=decrypt(access.uri_enc), app_line=app_line))
     await call.answer("Отправил ссылку")
 
 
@@ -263,12 +279,19 @@ async def cb_wdtt_new(call: CallbackQuery, state: FSMContext, session: AsyncSess
         return
     used = await repo.count_active_wdtt_for_user(session, user.id)
     if used >= user.sub_max_bypass:
-        await call.answer(
-            f"Достигнут лимит доступов обхода ({used}/{user.sub_max_bypass}).",
-            show_alert=True,
-        )
+        if user.sub_max_bypass == 0:
+            await call.answer(
+                "В твоём тарифе нет обходов БС. Добавить их можно в «🎫 Моя "
+                "подписка» → «🔁 Продлить / купить».",
+                show_alert=True,
+            )
+        else:
+            await call.answer(
+                f"Достигнут лимит доступов обхода ({used}/{user.sub_max_bypass}).",
+                show_alert=True,
+            )
         return
-    groups, load, any_wdtt = await _wdtt_location_groups(session)
+    groups, load, any_wdtt = await _wdtt_location_groups(session, user)
     if not any_wdtt:
         await call.answer("Обход БС пока недоступен ни в одной локации — попробуй позже.", show_alert=True)
         return
@@ -301,13 +324,13 @@ async def cb_wdtt_pick_location(call: CallbackQuery, state: FSMContext, session:
     if idx >= len(keys):
         await call.answer("Список устарел, начни заново.", show_alert=True)
         return
+    user = await repo.get_user_by_tg_id(session, call.from_user.id)
     # Свежая выборка: пока юзер думал, ёмкость локации могла закончиться.
-    groups, load, _ = await _wdtt_location_groups(session)
+    groups, load, _ = await _wdtt_location_groups(session, user)
     group = groups.get(keys[idx])
     if not group:
         await call.answer("В этой локации не осталось свободных мест — выбери другую.", show_alert=True)
         return
-    user = await repo.get_user_by_tg_id(session, call.from_user.id)
     await state.update_data(server_id=_least_loaded(group, load).id)
     await _ask_device(call, state, session, user)
 
@@ -473,7 +496,7 @@ async def cb_wdtt_toggle(call: CallbackQuery, session: AsyncSession) -> None:
     if server.wdtt_enabled and not settings.wdtt_vk_hashes:
         note = " (не задан WDTT_VK_HASHES — выдача работать не будет)"
     await call.message.edit_reply_markup(
-        reply_markup=server_card(server_id, server.wdtt_enabled)
+        reply_markup=server_card(server_id, server.wdtt_enabled, server.is_private)
     )
     await call.answer(
         ("Обход БС включён" if server.wdtt_enabled else "Обход БС выключен") + note,

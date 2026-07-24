@@ -8,6 +8,7 @@ from aiogram import BaseMiddleware
 from aiogram.types import CallbackQuery, Message, TelegramObject
 
 from bot.db import repo
+from bot.texts import t
 
 
 class BlockMiddleware(BaseMiddleware):
@@ -29,9 +30,9 @@ class BlockMiddleware(BaseMiddleware):
             user = await repo.get_user_by_tg_id(session, from_user.id)
             if user and user.is_blocked:
                 if isinstance(event, CallbackQuery):
-                    await event.answer("⛔️ Доступ заблокирован.", show_alert=True)
+                    await event.answer(t.blocked, show_alert=True)
                 else:
-                    await event.answer("⛔️ Доступ заблокирован.")
+                    await event.answer(t.blocked)
                 return None
 
         return await handler(event, data)

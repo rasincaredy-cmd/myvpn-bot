@@ -14,7 +14,7 @@ from aiogram.types import BufferedInputFile
 from bot.loader import bot as tg_bot
 from bot.services.crypto import decrypt
 from bot.services.qrgen import conf_to_qr_png
-from aiogram.types import CallbackQuery
+from aiogram.types import CallbackQuery, Message
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -65,7 +65,13 @@ async def cb_servers_list(call: CallbackQuery, session: AsyncSession) -> None:
 # --- Карточка сервера --------------------------------------------------------
 
 @router.callback_query(F.data.startswith(f"{CB_SERVERS}:open:"))
-async def cb_server_open(call: CallbackQuery, session: AsyncSession) -> None:
+async def cb_server_open(
+    call: CallbackQuery, session: AsyncSession, state: FSMContext | None = None
+) -> None:
+    # Сюда ведут «Отмена» из редактирования имени/локации/DNS — сбрасываем FSM,
+    # иначе следующее текстовое сообщение админа улетело бы в step-хендлер.
+    if state is not None:
+        await state.clear()
     server_id = int(call.data.rsplit(":", 1)[-1])
     server = await repo.get_server(session, server_id)
     if server is None:
@@ -87,7 +93,11 @@ async def cb_server_open(call: CallbackQuery, session: AsyncSession) -> None:
     )
     text += f"\n🌍 Локация: {server.location or '—'}"
     text += f"\n🌐 DNS: <code>{server.dns or '1.1.1.1, 1.0.0.1'}</code>"
-    await call.message.edit_text(text, reply_markup=server_card(server.id, server.wdtt_enabled))
+    if server.is_private:
+        text += "\n🔒 <b>Приватный</b> — конфиги отсюда получают только админы и «друзья» (⭐ в карточке юзера)"
+    await call.message.edit_text(
+        text, reply_markup=server_card(server.id, server.wdtt_enabled, server.is_private)
+    )
     await call.answer()
 
 
@@ -176,6 +186,78 @@ async def cb_server_location_pick(
         location = names[idx]
     await _finish_server_location(call.message.edit_text, state, session, location)
     await call.answer()
+
+
+# --- Имя сервера (Блок «Ревизия») ---------------------------------------------
+
+@router.callback_query(F.data.startswith(f"{CB_SERVERS}:rename:"))
+async def cb_server_rename(
+    call: CallbackQuery, session: AsyncSession, state: FSMContext
+) -> None:
+    server_id = int(call.data.rsplit(":", 1)[-1])
+    server = await repo.get_server(session, server_id)
+    if server is None:
+        await call.answer("Не найдено", show_alert=True)
+        return
+    await state.set_state(ServerEditStates.name)
+    await state.update_data(server_id=server_id)
+    from aiogram.utils.keyboard import InlineKeyboardBuilder as IKB
+    kb = IKB()
+    kb.button(text="✖️ Отмена", callback_data=f"{CB_SERVERS}:open:{server_id}")
+    await call.message.edit_text(
+        "✏️ <b>Имя сервера</b>\n\n"
+        f"Текущее: <code>{server.name}</code>\n\n"
+        "Видно только админам (юзеры видят локацию). Введи новое имя "
+        "(буквы/цифры/пробел/<code>_-</code>, до 32 символов):",
+        reply_markup=kb.as_markup(),
+    )
+    await call.answer()
+
+
+@router.message(ServerEditStates.name, F.text, AdminFilter())
+async def step_server_rename(
+    message: Message, state: FSMContext, session: AsyncSession
+) -> None:
+    name = message.text.strip()
+    if not is_valid_label(name):
+        await message.answer(
+            "Имя: буквы/цифры/пробел/<code>_-</code>, до 32 символов. Ещё раз:"
+        )
+        return
+    data = await state.get_data()
+    await state.clear()
+    server = await repo.get_server(session, data["server_id"])
+    if server is None:
+        await message.answer("Сервер не найден.")
+        return
+    server.name = name
+    await session.commit()
+    from aiogram.utils.keyboard import InlineKeyboardBuilder as IKB
+    kb = IKB()
+    kb.button(text="« К серверу", callback_data=f"{CB_SERVERS}:open:{server.id}")
+    await message.answer(f"✅ Имя сервера: <code>{name}</code>", reply_markup=kb.as_markup())
+
+
+# --- Приватность сервера (Блок «Ревизия») --------------------------------------
+
+@router.callback_query(F.data.startswith(f"{CB_SERVERS}:priv:"))
+async def cb_server_private_toggle(call: CallbackQuery, session: AsyncSession) -> None:
+    server_id = int(call.data.rsplit(":", 1)[-1])
+    server = await repo.get_server(session, server_id)
+    if server is None:
+        await call.answer("Не найдено", show_alert=True)
+        return
+    server.is_private = not server.is_private
+    await session.commit()
+    await call.answer(
+        "🔒 Сервер теперь приватный: новые конфиги/обходы отсюда получат только "
+        "админы и «друзья» (⭐). Уже выданные конфиги продолжают работать."
+        if server.is_private
+        else "🔓 Сервер снова общий — доступен всем юзерам.",
+        show_alert=True,
+    )
+    # Перерисовываем карточку с новым состоянием тумблера.
+    await cb_server_open(call, session)
 
 
 # --- DNS сервера -------------------------------------------------------------
@@ -304,7 +386,7 @@ async def cb_server_peers(call: CallbackQuery, session: AsyncSession) -> None:
     if not peers:
         await call.message.edit_text(
             f"На <code>{server.name}</code> peer'ов пока нет.",
-            reply_markup=server_card(server.id, server.wdtt_enabled),
+            reply_markup=server_card(server.id, server.wdtt_enabled, server.is_private),
         )
         await call.answer()
         return
@@ -457,7 +539,7 @@ async def cb_server_traffic(call: CallbackQuery, session: AsyncSession) -> None:
     except SSHError as exc:
         await call.message.edit_text(
             f"❌ SSH-ошибка: <code>{exc}</code>",
-            reply_markup=server_card(server.id, server.wdtt_enabled),
+            reply_markup=server_card(server.id, server.wdtt_enabled, server.is_private),
         )
         return
 
@@ -541,7 +623,7 @@ async def cb_server_stats(call: CallbackQuery, session: AsyncSession) -> None:
     except SSHError as exc:
         await call.message.edit_text(
             f"❌ SSH-ошибка: <code>{exc}</code>",
-            reply_markup=server_card(server.id, server.wdtt_enabled),
+            reply_markup=server_card(server.id, server.wdtt_enabled, server.is_private),
         )
         return
 
@@ -714,7 +796,7 @@ async def cb_server_cleanup(call: CallbackQuery, session: AsyncSession) -> None:
     except SSHError as exc:
         await call.message.edit_text(
             f"❌ SSH-ошибка: <code>{exc}</code>",
-            reply_markup=server_card(server.id, server.wdtt_enabled),
+            reply_markup=server_card(server.id, server.wdtt_enabled, server.is_private),
         )
         return
 

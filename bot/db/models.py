@@ -96,6 +96,11 @@ class User(Base):
     autopay: Mapped[bool] = mapped_column(
         Boolean, default=True, server_default="1", nullable=False
     )
+    # «Друг» (Блок «Ревизия»): видит и получает конфиги с приватных серверов
+    # (Server.is_private). Ставит админ в карточке юзера.
+    is_vip: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="0", nullable=False
+    )
 
     peers: Mapped[list["Peer"]] = relationship(back_populates="user")
 
@@ -159,6 +164,13 @@ class Server(Base):
     # лимита, 0 — новая выдача закрыта (существующие доступы продолжают жить).
     # Заполненный сервер не предлагается юзерам при создании доступа.
     wdtt_max_accesses: Mapped[int | None] = mapped_column(Integer)
+
+    # Приватный сервер (Блок «Ревизия»): виден и выдаётся только админам и
+    # юзерам-«друзьям» (User.is_vip). Уже выданные конфиги обычных юзеров при
+    # включении приватности НЕ отзываются — закрывается только новая выдача.
+    is_private: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="0", nullable=False
+    )
 
     peers: Mapped[list["Peer"]] = relationship(
         back_populates="server", cascade="all, delete-orphan"

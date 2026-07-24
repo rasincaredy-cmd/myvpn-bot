@@ -11,6 +11,7 @@ from bot.db import repo
 from bot.keyboards.inline import (
     CB_CANCEL,
     CB_MENU,
+    CB_NOP,
     back_to_menu,
     main_menu,
     notify_settings_kb,
@@ -116,6 +117,13 @@ async def _send_main_menu(message: Message, is_admin: bool) -> None:
     await message.answer(text, reply_markup=main_menu(is_admin))
 
 
+# Кнопки-заглушки (числа в конструкторе тарифа, «−»/«+» на границах): без этого
+# хендлера Telegram крутил бы на них спиннер до таймаута.
+@router.callback_query(F.data == CB_NOP)
+async def cb_nop(call: CallbackQuery) -> None:
+    await call.answer()
+
+
 # --- /menu, /help ------------------------------------------------------------
 
 @router.message(Command("menu"))
@@ -146,7 +154,14 @@ async def cb_menu_open(call: CallbackQuery, session: AsyncSession, state: FSMCon
 @router.callback_query(F.data == f"{CB_MENU}:locations")
 async def cb_menu_locations(call: CallbackQuery, session: AsyncSession) -> None:
     # Реальные локации сервиса из БД (Блок 8): готовые серверы = доступные страны.
-    servers = await repo.list_ready_servers(session)
+    # Приватные серверы в витрине видят только админы и «друзья».
+    user = await repo.get_or_create_user(
+        session,
+        tg_id=call.from_user.id,
+        username=call.from_user.username,
+        full_name=call.from_user.full_name,
+    )
+    servers = await repo.list_ready_servers(session, for_user=user)
     lines = [t.locations_intro]
     if not servers:
         lines.append("\nПока идёт подготовка — заглядывай позже.")
@@ -290,7 +305,8 @@ async def cb_cancel(call: CallbackQuery, state: FSMContext, session: AsyncSessio
             )
             text += f"\n🌍 Локация: {server.location or '—'}"
             await call.message.edit_text(
-                text, reply_markup=server_card(server.id, server.wdtt_enabled)
+                text,
+                reply_markup=server_card(server.id, server.wdtt_enabled, server.is_private),
             )
             await call.answer("Отменено")
             return

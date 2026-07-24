@@ -11,8 +11,9 @@ from loguru import logger
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from bot.config import settings
 from bot.db import repo
-from bot.db.models import BalanceTx, Invite, Peer, PeerStatus, Server, ServerStatus, User
+from bot.db.models import BalanceTx, Device, Invite, Peer, PeerStatus, Server, ServerStatus, User, WdttAccess
 from bot.filters.admin import AdminFilter
 from bot.keyboards.inline import (
     CB_PANEL,
@@ -87,57 +88,78 @@ async def cb_panel_backup(call: CallbackQuery) -> None:
 
 @router.callback_query(F.data == f"{CB_PANEL}:stats")
 async def cb_panel_stats(call: CallbackQuery, session: AsyncSession) -> None:
-    users_total = (
-        await session.execute(select(func.count(User.id)))
-    ).scalar() or 0
-    users_blocked = (
-        await session.execute(
-            select(func.count(User.id)).where(User.is_blocked.is_(True))
-        )
-    ).scalar() or 0
-    servers_total = (
-        await session.execute(select(func.count(Server.id)))
-    ).scalar() or 0
-    servers_ready = (
-        await session.execute(
-            select(func.count(Server.id)).where(Server.status == ServerStatus.READY)
-        )
-    ).scalar() or 0
-    peers_total = (
-        await session.execute(select(func.count(Peer.id)))
-    ).scalar() or 0
-    peers_active = (
-        await session.execute(
-            select(func.count(Peer.id)).where(Peer.status == PeerStatus.ACTIVE)
-        )
-    ).scalar() or 0
-    invites_total = (
-        await session.execute(select(func.count(Invite.id)))
-    ).scalar() or 0
-    invites_pending = (
-        await session.execute(
-            select(func.count(Invite.id)).where(Invite.used_at.is_(None))
-        )
-    ).scalar() or 0
+    """Статистика под подписочную модель (Блок «Ревизия»): сегменты юзеров как
+    в списке (💎🎁💤🔴), устройства/обходы вместо голых пиров, деньги за 30 дней.
+    Таблицы маленькие — юзеров грузим целиком и сегментируем той же логикой,
+    что и список (repo.user_sub_tier), чтобы цифры не расходились с иконками."""
+    users = list((await session.execute(select(User))).scalars())
+    users_total = len(users)
+    seg = {"paid": 0, "trial": 0, "none": 0}
+    blocked = admins = 0
+    for u in users:
+        if u.is_blocked:
+            blocked += 1
+            continue
+        if u.is_admin:
+            admins += 1
+            continue
+        seg[repo.user_sub_tier(u)] += 1
+
+    async def _cnt(stmt) -> int:
+        return (await session.execute(stmt)).scalar() or 0
+
+    servers_total = await _cnt(select(func.count(Server.id)))
+    servers_ready = await _cnt(
+        select(func.count(Server.id)).where(Server.status == ServerStatus.READY)
+    )
+    dev_active = await _cnt(
+        select(func.count(Device.id)).where(Device.status == PeerStatus.ACTIVE)
+    )
+    dev_total = await _cnt(select(func.count(Device.id)))
+    byp_active = await _cnt(
+        select(func.count(WdttAccess.id)).where(WdttAccess.status == PeerStatus.ACTIVE)
+    )
+    peers_active = await _cnt(
+        select(func.count(Peer.id)).where(Peer.status == PeerStatus.ACTIVE)
+    )
+    invites_pending = await _cnt(
+        select(func.count(Invite.id)).where(Invite.used_at.is_(None))
+    )
     # Конверсия триал→оплата: сколько юзеров хоть раз ПЛАТИЛИ за подписку
-    # (kind='charge' в журнале баланса — покупка/автопродление; депозиты и ручные
-    # правки админа не в счёт). Показывает, доезжает ли онбординг до денег.
-    users_paid_ever = (
-        await session.execute(
-            select(func.count(func.distinct(BalanceTx.user_id)))
-            .where(BalanceTx.kind == "charge")
-        )
-    ).scalar() or 0
+    # (kind='charge' — покупка/автопродление; депозиты и правки админа не в счёт).
+    users_paid_ever = await _cnt(
+        select(func.count(func.distinct(BalanceTx.user_id)))
+        .where(BalanceTx.kind == "charge")
+    )
     conv_pct = round(users_paid_ever * 100 / users_total) if users_total else 0
+    # Деньги за 30 дней: живые пополнения (Crypto Pay) и списания за подписку.
+    month_ago = datetime.now(timezone.utc) - timedelta(days=30)
+    from bot.services.pricing import fmt_rub
+    dep_30d = (await session.execute(
+        select(func.coalesce(func.sum(BalanceTx.amount_kopeks), 0))
+        .where(BalanceTx.kind == "deposit")
+        .where(BalanceTx.created_at >= month_ago)
+    )).scalar_one()
+    charge_30d = -(await session.execute(
+        select(func.coalesce(func.sum(BalanceTx.amount_kopeks), 0))
+        .where(BalanceTx.kind == "charge")
+        .where(BalanceTx.created_at >= month_ago)
+    )).scalar_one()
 
     await call.message.edit_text(
         "📊 <b>Статистика</b>\n\n"
-        f"👤 Юзеров: <b>{users_total}</b>  (🔴 заблокировано: {users_blocked})\n"
-        f"💎 Конверсия: <b>{users_paid_ever}</b> из {users_total} покупали подписку "
-        f"({conv_pct}%)\n"
-        f"🖥 Серверов: <b>{servers_ready}</b> готовых / <b>{servers_total}</b> всего\n"
-        f"📄 Peers: <b>{peers_active}</b> активных / <b>{peers_total}</b> всего\n"
-        f"🎟 Инвайтов: <b>{invites_pending}</b> непогашенных / <b>{invites_total}</b> всего",
+        f"👤 Юзеров: <b>{users_total}</b> — "
+        f"💎 {seg['paid']} · 🎁 {seg['trial']} · 💤 {seg['none']} · "
+        f"🔴 {blocked} · 👑 {admins}\n"
+        f"📈 Конверсия: <b>{users_paid_ever}</b> из {users_total} покупали "
+        f"подписку ({conv_pct}%)\n"
+        f"💰 За 30 дней: пополнений <b>{fmt_rub(dep_30d)}</b>, "
+        f"оплат подписки <b>{fmt_rub(charge_30d)}</b>\n\n"
+        f"📱 Устройств: <b>{dev_active}</b> активных / {dev_total} всего\n"
+        f"🛡 Обходов БС: <b>{byp_active}</b> активных\n"
+        f"📄 Конфигов на серверах: <b>{peers_active}</b>\n"
+        f"🖥 Серверов: <b>{servers_ready}</b> готовых / {servers_total} всего\n"
+        f"🎟 Инвайтов не погашено: <b>{invites_pending}</b>",
         reply_markup=back_to_panel(),
     )
     await call.answer()
@@ -189,6 +211,8 @@ async def _user_card_text(session: AsyncSession, user) -> str:
         "🔴 Заблокирован" if user.is_blocked
         else ("👑 Админ" if user.is_admin else _TIER_LABEL[tier])
     )
+    if user.is_vip:
+        status += " · ⭐ друг"
     from bot.services.pricing import fmt_rub
     return (
         f"👤 <b>{user.full_name or '—'}</b>\n"
@@ -216,9 +240,100 @@ async def cb_panel_user_open(call: CallbackQuery, session: AsyncSession) -> None
 
     await call.message.edit_text(
         await _user_card_text(session, user),
-        reply_markup=user_card_kb(user.id, user.is_blocked, page),
+        reply_markup=user_card_kb(user.id, user.is_blocked, page, is_vip=user.is_vip),
     )
     await call.answer()
+
+
+# --- «Друг» (доступ к приватным серверам, Блок «Ревизия») ---------------------
+
+@router.callback_query(F.data.startswith(f"{CB_PANEL}:vip:"))
+async def cb_panel_toggle_vip(call: CallbackQuery, session: AsyncSession) -> None:
+    parts = call.data.split(":")
+    user_id, page = int(parts[2]), int(parts[3])
+    user = await repo.get_user_by_id(session, user_id)
+    if user is None:
+        await call.answer("Не найдено", show_alert=True)
+        return
+    user.is_vip = not user.is_vip
+    await session.commit()
+    await call.answer(
+        "⭐ Теперь «друг»: видит и получает конфиги с приватных серверов."
+        if user.is_vip else "Больше не «друг»: приватные серверы недоступны "
+        "(уже выданные конфиги продолжают работать).",
+        show_alert=True,
+    )
+    await call.message.edit_text(
+        await _user_card_text(session, user),
+        reply_markup=user_card_kb(user.id, user.is_blocked, page, is_vip=user.is_vip),
+    )
+
+
+# --- Уничтожение юзера (Блок «Ревизия») ---------------------------------------
+
+@router.callback_query(F.data.startswith(f"{CB_PANEL}:udel:"))
+async def cb_panel_user_delete_ask(call: CallbackQuery, session: AsyncSession) -> None:
+    from bot.keyboards.inline import user_wipe_confirm_kb
+
+    parts = call.data.split(":")
+    user_id, page = int(parts[2]), int(parts[3])
+    user = await repo.get_user_by_id(session, user_id)
+    if user is None:
+        await call.answer("Уже удалён", show_alert=True)
+        return
+    if user.is_admin or user.tg_id in settings.admin_ids:
+        await call.answer("Нельзя удалить админа.", show_alert=True)
+        return
+    devices = await repo.count_active_devices(session, user.id)
+    bypass = await repo.count_active_wdtt_for_user(session, user.id)
+    from bot.services.pricing import fmt_rub
+    await call.message.edit_text(
+        f"🗑 <b>Стереть юзера {user.full_name or user.tg_id} из БД?</b>\n\n"
+        "Будет удалено безвозвратно:\n"
+        f"• устройств: <b>{devices}</b>, обходов: <b>{bypass}</b> "
+        "(конфиги отзываются с серверов сразу)\n"
+        f"• баланс <b>{fmt_rub(user.balance_kopeks)}</b> и вся история операций\n"
+        "• история поддержки, неоплаченные счета\n\n"
+        "⚠️ Если он снова напишет боту — создастся заново как новый юзер "
+        "и ПОЛУЧИТ НОВЫЙ ТРИАЛ. Для наказания используй «🚫 Заблокировать», "
+        "удаление — для мусорных/тестовых аккаунтов и «сотрите мои данные».",
+        reply_markup=user_wipe_confirm_kb(user.id, page),
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith(f"{CB_PANEL}:udelc:"))
+async def cb_panel_user_delete_confirm(call: CallbackQuery, session: AsyncSession) -> None:
+    from bot.services import user_wipe
+
+    parts = call.data.split(":")
+    user_id, page = int(parts[2]), int(parts[3])
+    user = await repo.get_user_by_id(session, user_id)
+    if user is None:
+        await call.answer("Уже удалён", show_alert=True)
+        return
+    if user.is_admin or user.tg_id in settings.admin_ids:
+        await call.answer("Нельзя удалить админа.", show_alert=True)
+        return
+    await call.answer("⏳ Стираю...")
+    res = await user_wipe.wipe_user(session, user)
+    await session.commit()
+    lines = [
+        f"🗑 Юзер <code>{res.tg_id}</code> стёрт из БД.",
+        f"• Конфигов отозвано и снято с серверов: {res.revoked_items}",
+        f"• Удалено записей: платежи {res.purged.get('balance_txs', 0)}, "
+        f"счета {res.purged.get('invoices', 0)}, "
+        f"поддержка {res.purged.get('support_msgs', 0)}",
+    ]
+    if res.purged.get("referrals_unlinked"):
+        lines.append(f"• Отвязано рефералов: {res.purged['referrals_unlinked']}")
+    lines.append(
+        "<i>Строки конфигов помечены отозванными и доудалятся ретеншном за 30 "
+        "дней (SSH-снятие при этом повторится, если сейчас не прошло).</i>"
+    )
+    await call.message.edit_text(
+        "\n".join(lines), reply_markup=back_to_panel()
+    )
 
 
 # --- Админ: устройства и обходы конкретного юзера ----------------------------
@@ -384,7 +499,9 @@ async def cb_panel_toggle_block(call: CallbackQuery, session: AsyncSession) -> N
     if user is None:
         await call.answer("Не найдено", show_alert=True)
         return
-    if user.is_admin:
+    # user.is_admin в БД синкается только при /start-подобных хендлерах — свежий
+    # админ из .env мог ещё не написать боту, проверяем и по settings.
+    if user.is_admin or user.tg_id in settings.admin_ids:
         await call.answer("Нельзя заблокировать другого админа.", show_alert=True)
         return
 
@@ -394,7 +511,7 @@ async def cb_panel_toggle_block(call: CallbackQuery, session: AsyncSession) -> N
 
     await call.message.edit_text(
         await _user_card_text(session, user),
-        reply_markup=user_card_kb(user.id, block, page),
+        reply_markup=user_card_kb(user.id, block, page, is_vip=user.is_vip),
     )
     await call.answer("✅ Готово")
 

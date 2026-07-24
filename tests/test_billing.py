@@ -39,6 +39,19 @@ class TestPricing:
         assert monthly_price_kopeks(1, 3) == 150_00      # +30₽ за каждый обход
         assert monthly_price_kopeks(3, 2) == 180_00
 
+    def test_monthly_zero_positions(self) -> None:
+        # Блок «Ревизия»: отказ от позиции вычитает её доп. цену от базы —
+        # «первая позиция 60₽, каждая следующая +30₽».
+        assert monthly_price_kopeks(0, 1) == 60_00
+        assert monthly_price_kopeks(1, 0) == 60_00
+        assert monthly_price_kopeks(0, 2) == 90_00
+        assert monthly_price_kopeks(2, 0) == 90_00
+
+    def test_monthly_empty_tariff_rejected(self) -> None:
+        import pytest
+        with pytest.raises(ValueError):
+            monthly_price_kopeks(0, 0)
+
     def test_term_discounts_round_down_to_10(self) -> None:
         m = monthly_price_kopeks(1, 1)  # 90₽
         assert term_price_kopeks(m, 1) == 90_00
@@ -134,6 +147,34 @@ class TestCharge:
         left = res.new_expires_at - datetime.now(timezone.utc)
         assert timedelta(days=99) < left < timedelta(days=101)
 
+    async def test_charge_zero_device_tariff(self, session: AsyncSession) -> None:
+        """Блок «Ревизия»: тариф «0 устройств + 1 обход» продаётся за 60₽."""
+        user = await _make_user(
+            session, balance_kopeks=100_00,
+            sub_expires_at=datetime.now(timezone.utc),
+            sub_max_devices=1, sub_max_bypass=1,
+        )
+        res = await billing.charge_and_extend(
+            session, user, 1, max_devices=0, max_bypass=1
+        )
+        await session.commit()
+        assert res.ok and res.price_kopeks == 60_00
+        assert user.sub_max_devices == 0 and user.sub_max_bypass == 1
+
+    async def test_charge_rejects_empty_tariff(self, session: AsyncSession) -> None:
+        """0/0 отбивается гардом ДО прайсинга — деньги не двигаются."""
+        user = await _make_user(
+            session, balance_kopeks=500_00,
+            sub_expires_at=datetime.now(timezone.utc),
+            sub_max_devices=1, sub_max_bypass=1,
+        )
+        res = await billing.charge_and_extend(
+            session, user, 1, max_devices=0, max_bypass=0
+        )
+        assert not res.ok
+        assert user.balance_kopeks == 500_00
+        assert user.sub_max_devices == 1  # тариф не тронут
+
     async def test_charge_with_tariff_change(self, session: AsyncSession) -> None:
         user = await _make_user(
             session, balance_kopeks=200_00,
@@ -188,6 +229,17 @@ class TestInstantAutopay:
     async def test_noop_when_perpetual(self, session: AsyncSession) -> None:
         user = await _make_user(
             session, balance_kopeks=500_00, sub_expires_at=None, autopay=True,
+        )
+        assert await billing.autopay_if_expired(session, user) is None
+        assert user.balance_kopeks == 500_00
+
+    async def test_noop_when_empty_tariff(self, session: AsyncSession) -> None:
+        """Админ выставил 0/0 → автопродление НЕ списывает деньги за пустоту
+        (раньше списало бы 90₽ — тариф клампился к 1+1)."""
+        past = datetime.now(timezone.utc) - timedelta(days=2)
+        user = await _make_user(
+            session, balance_kopeks=500_00, sub_expires_at=past,
+            sub_max_devices=0, sub_max_bypass=0, autopay=True,
         )
         assert await billing.autopay_if_expired(session, user) is None
         assert user.balance_kopeks == 500_00

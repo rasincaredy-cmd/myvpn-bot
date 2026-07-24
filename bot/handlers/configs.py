@@ -4,7 +4,6 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 import asyncio
-import contextlib
 import re
 import secrets
 
@@ -20,33 +19,28 @@ from bot.db.models import Invite, Peer, PeerStatus, Server, ServerStatus, User
 from bot.filters.admin import AdminFilter
 from bot.keyboards.inline import (
     CB_INVITES,
-    CB_PEERS,
     back_to_menu,
     cancel_only,
-    invite_card_kb,    # ← новое
-    invites_list_kb,   # ← новое
-    peer_card,
-    peers_list,
+    invite_card_kb,
+    invites_list_kb,
     pick_server,
     to_server,
 )
 from bot.loader import bot
 from bot.services import amnezia, amnezia_native
-from bot.services.crypto import decrypt, encrypt
+from bot.services.crypto import encrypt
 from bot.services.qrgen import conf_to_qr_png
 from bot.services.ssh import SSHClient, SSHError
-from bot.states.install import InviteStates, PeerStates
+from bot.states.install import InviteStates
 from bot.texts import t
-from bot.utils.timefmt import fmt_msk
 from bot.utils.validators import is_valid_label
 
 router = Router(name="configs")
 
-_PEERS_PER_PAGE = 8
 _INVITES_PER_PAGE = 8
 
 # Блокировки на каждый сервер: сериализуют аллокацию IP, чтобы два параллельных
-# создания пира (админский /newpeer и redeem инвайта) не выбрали один и тот же IP.
+# создания пира (устройство юзера и redeem инвайта) не выбрали один и тот же IP.
 _server_ip_locks: dict[int, asyncio.Lock] = {}
 
 
@@ -124,8 +118,9 @@ async def provision_device_peers(
     несколько серверов — берём наименее загруженный по активным пирам (Блок
     «Распределение»); упавший сервер не хороним локацию — пробуем следующий.
     Существующие пиры не переезжают: конфиг на руках у клиента привязан к серверу.
-    Возвращает [(server, conf), ...] для отправки пользователю."""
-    servers = await repo.list_ready_servers(session)
+    Приватные серверы (Блок «Ревизия») обычным юзерам не выдаются — гейт в
+    list_ready_servers(for_user=...). Возвращает [(server, conf), ...]."""
+    servers = await repo.list_ready_servers(session, for_user=user)
     existing = {
         p.server_id
         for p in await repo.list_peers_for_device(session, device.id)
@@ -222,229 +217,11 @@ async def _send_peer_artifacts(
         await bot.send_message(chat_id, t.vpn_link_msg.format(link=vpn_link))
 
 
-# --- Список своих конфигов (любой юзер) -------------------------------------
-
-@router.callback_query(F.data.startswith(f"{CB_PEERS}:list"))
-async def cb_peer_list(call: CallbackQuery, session: AsyncSession) -> None:
-    # callback: "peer:list" (стр. 0) или "peer:list:<page>" (навигация)
-    parts = call.data.split(":")
-    page = int(parts[2]) if len(parts) > 2 else 0
-
-    user = await repo.get_or_create_user(
-        session,
-        tg_id=call.from_user.id,
-        username=call.from_user.username,
-        full_name=call.from_user.full_name,
-    )
-    peers = await repo.list_peers_for_user(session, user.id)
-    if not peers:
-        await call.message.edit_text(
-            "Пока пусто. Добавь устройство в разделе «📱 Мои устройства» — "
-            "конфиг придёт автоматически.",
-            reply_markup=back_to_menu(),
-        )
-        await call.answer()
-        return
-
-    # Активные сверху, затем по id; режем на страницы.
-    peers.sort(key=lambda p: (p.status != PeerStatus.ACTIVE, p.id))
-    total = len(peers)
-    start = page * _PEERS_PER_PAGE
-    page_peers = peers[start:start + _PEERS_PER_PAGE]
-
-    rows: list[tuple[int, str, str, str]] = []
-    for p in page_peers:
-        srv = await repo.get_server(session, p.server_id)
-        rows.append((p.id, p.label, srv.name if srv else "?", p.status))
-    await call.message.edit_text(
-        "📁 <b>Твои конфиги</b>",
-        reply_markup=peers_list(
-            rows,
-            page,
-            has_prev=page > 0,
-            has_next=start + _PEERS_PER_PAGE < total,
-        ),
-    )
-    await call.answer()
-
-
-@router.callback_query(F.data.startswith(f"{CB_PEERS}:open:"))
-async def cb_peer_open(call: CallbackQuery, session: AsyncSession) -> None:
-    peer_id = int(call.data.rsplit(":", 1)[-1])
-    peer = await repo.get_peer(session, peer_id)
-    user = await repo.get_user_by_tg_id(session, call.from_user.id)
-    if peer is None or user is None or peer.user_id != user.id:
-        await call.answer("Не найдено", show_alert=True)
-        return
-    srv = await repo.get_server(session, peer.server_id)
-    text = (
-        f"📄 <b>{peer.label}</b>\n"
-        f"• 🌍 Локация: {config_display_base(srv) if srv else '?'}\n"
-        f"• Статус: <b>{t.STATUS_RU.get(peer.status, peer.status)}</b>"
-    )
-    # IP и имя сервера — внутренние детали, юзеру не показываем (только админу).
-    if user.is_admin:
-        text += f"\n• IP: <code>{peer.ip}</code>"
-        if srv:
-            text += f"\n• Сервер: <code>{srv.name}</code>"
-    if peer.expires_at:
-        text += f"\n• ⏱ Действует до: {fmt_msk(peer.expires_at, with_time=False)}"
-    if peer.traffic_limit_bytes:
-        text += (
-            f"\n• 📊 Трафик: {amnezia.fmt_bytes(peer.traffic_used_bytes)}"
-            f" из {amnezia.fmt_bytes(peer.traffic_limit_bytes)}"
-        )
-    elif peer.traffic_used_bytes:
-        text += f"\n• 📊 Трафик: {amnezia.fmt_bytes(peer.traffic_used_bytes)}"
-    is_revoked = peer.status == PeerStatus.REVOKED
-    await call.message.edit_text(
-        text,
-        reply_markup=peer_card(
-            peer.id,
-            can_revoke=user.is_admin and not is_revoked,
-            can_send=not is_revoked,
-        ),
-    )
-    await call.answer()
-
-
-@router.callback_query(F.data.startswith(f"{CB_PEERS}:send:"))
-async def cb_peer_send(call: CallbackQuery, session: AsyncSession) -> None:
-    peer_id = int(call.data.rsplit(":", 1)[-1])
-    peer = await repo.get_peer(session, peer_id)
-    user = await repo.get_user_by_tg_id(session, call.from_user.id)
-    if peer is None or user is None or peer.user_id != user.id:
-        await call.answer("Не найдено", show_alert=True)
-        return
-    if peer.status != PeerStatus.ACTIVE:
-        await call.answer("Этот конфиг отключён", show_alert=True)
-        return
-    server = await repo.get_server(session, peer.server_id)
-    if server is None:
-        await call.answer("Сервер удалён", show_alert=True)
-        return
-
-    params = amnezia.AmneziaParams.from_json(server.awg_params_json)
-    priv = decrypt(peer.private_key_enc)
-    conf = amnezia.build_peer_conf(
-        peer_private_key=priv,
-        peer_ip=peer.ip,
-        server_public_key=server.server_public_key,
-        endpoint=server.server_endpoint,
-        params=params,
-        dns=server.dns,
-    )
-    await _send_peer_artifacts(call.message.chat.id, config_display_base(server), peer.label, conf)
-    await call.answer("Готово")
-
-
 # --- Создание peer админом --------------------------------------------------
 
 router_admin = Router(name="peer_admin")
 router_admin.message.filter(AdminFilter())
 router_admin.callback_query.filter(AdminFilter())
-
-
-@router_admin.message(Command("newpeer"))
-@router_admin.callback_query(F.data == f"{CB_PEERS}:new")
-async def cb_peer_new(
-    event: Message | CallbackQuery, state: FSMContext, session: AsyncSession
-) -> None:
-    msg = event.message if isinstance(event, CallbackQuery) else event
-    servers = await repo.list_all_servers(session)
-    ready = [s for s in servers if s.status == ServerStatus.READY]
-    if not ready:
-        await msg.answer("Нет готовых серверов. Сначала установи VPN.", reply_markup=back_to_menu())
-        if isinstance(event, CallbackQuery):
-            await event.answer()
-        return
-    await state.set_state(PeerStates.pick_server)
-    await state.update_data(cancel_to="panel")  # отмена на выборе сервера → админка
-    text = t.peer_pick_server
-    if isinstance(event, CallbackQuery):
-        await msg.edit_text(text, reply_markup=pick_server(ready, f"{CB_PEERS}:pick"))
-        await event.answer()
-    else:
-        await msg.answer(text, reply_markup=pick_server(ready, f"{CB_PEERS}:pick"))
-
-
-@router_admin.callback_query(F.data.startswith(f"{CB_PEERS}:new:"))
-async def cb_peer_new_for_server(
-    call: CallbackQuery, state: FSMContext, session: AsyncSession
-) -> None:
-    """Прямой переход «создать peer» с карточки конкретного сервера."""
-    server_id = int(call.data.rsplit(":", 1)[-1])
-    server = await repo.get_server(session, server_id)
-    if server is None or server.status != ServerStatus.READY:
-        await call.answer("Сервер недоступен", show_alert=True)
-        return
-    await state.set_state(PeerStates.label)
-    await state.update_data(server_id=server_id)
-    await call.message.edit_text(t.peer_ask_label, reply_markup=cancel_only())
-    await call.answer()
-
-
-@router_admin.callback_query(PeerStates.pick_server, F.data.startswith(f"{CB_PEERS}:pick:"))
-async def cb_peer_pick(
-    call: CallbackQuery, state: FSMContext, session: AsyncSession
-) -> None:
-    server_id = int(call.data.rsplit(":", 1)[-1])
-    server = await repo.get_server(session, server_id)
-    if server is None:
-        await call.answer("Не найдено", show_alert=True)
-        return
-    await state.update_data(server_id=server_id)
-    await state.set_state(PeerStates.label)
-    await call.message.edit_text(t.peer_ask_label, reply_markup=cancel_only())
-    await call.answer()
-
-
-@router_admin.message(PeerStates.label, F.text)
-async def step_peer_label(
-    message: Message, state: FSMContext, session: AsyncSession
-) -> None:
-    label = message.text.strip()
-    if not is_valid_label(label):
-        await message.answer(
-            "Метка: буквы/цифры/пробел/<code>_-</code>, до 32 символов. Ещё раз:"
-        )
-        return
-    data = await state.get_data()
-    server = await repo.get_server(session, data["server_id"])
-    user = await repo.get_or_create_user(
-        session,
-        tg_id=message.from_user.id,
-        username=message.from_user.username,
-        full_name=message.from_user.full_name,
-    )
-    await state.clear()
-
-    status_msg = await message.answer("⏳ Создаю peer на сервере...")
-    device = await repo.create_device(session, user_id=user.id, label=label)
-    try:
-        conf, ip, _ = await _create_peer_for_user(
-            session, server, user, label, device_id=device.id
-        )
-        await session.commit()
-    except SSHError as exc:
-        await session.rollback()
-        logger.warning("Peer create failed: {}", exc)
-        await status_msg.edit_text(f"❌ Не удалось создать peer: <code>{exc}</code>")
-        return
-    except Exception:
-        await session.rollback()
-        logger.exception("Unexpected peer create error")
-        await status_msg.edit_text(t.error_generic)
-        return
-
-    with contextlib.suppress(Exception):
-        await status_msg.delete()
-
-    await _send_peer_artifacts(message.chat.id, config_display_base(server), label, conf)
-    await message.answer(
-        t.peer_created.format(server=server.name, label=label, ip=ip),
-        reply_markup=to_server(server.id),
-    )
 
 
 # --- Инвайты (одноразовые ссылки для друзей) --------------------------------
@@ -675,12 +452,42 @@ async def redeem_invite(
     user: User,
     token: str,
 ) -> bool:
+    """Погашение инвайта (Блок «Ревизия» — переведён на подписочную модель).
+
+    Раньше инвайт создавал одиночный пир на ОДНОМ сервере в обход лимитов
+    подписки. Теперь это обычное устройство: все READY-локации (кроме приватных
+    серверов), лимит sub_max_devices уважается, конфиги приходят с QR и
+    vpn://-ссылкой — как при «➕ Добавить устройство». Server_id инвайта остался
+    учётным якорем (у какого сервера в админке лежит список инвайтов)."""
     invite = await repo.get_invite(session, token)
     if invite is None or invite.used_at is not None:
         return False
 
-    server = await repo.get_server(session, invite.server_id)
-    if server is None or server.status != ServerStatus.READY:
+    # Истёкшая подписка: устройство создалось бы и тут же было отозвано тиком
+    # планировщика. Не жжём инвайт — пусть сначала продлит.
+    exp = user.sub_expires_at
+    if exp is not None:
+        exp_aware = exp if exp.tzinfo else exp.replace(tzinfo=timezone.utc)
+        if exp_aware <= datetime.now(timezone.utc):
+            await message.answer(
+                "🎟 Инвайт принят, но твоя подписка закончилась — сначала продли "
+                "её в «🎫 Моя подписка», потом открой ссылку ещё раз.",
+                reply_markup=back_to_menu(),
+            )
+            return True
+
+    # Лимит подписки уважаем и здесь: инвайт — приглашение, а не обход лимитов.
+    used = await repo.count_active_devices(session, user.id)
+    if used >= user.sub_max_devices:
+        await message.answer(
+            "🎟 Инвайт принят, но у тебя уже занят весь лимит устройств "
+            f"({used}/{user.sub_max_devices}). Освободи слот в «📱 Мои "
+            "устройства» и открой ссылку ещё раз.",
+            reply_markup=back_to_menu(),
+        )
+        return True
+
+    if not await repo.list_ready_servers(session, for_user=user):
         return False
 
     await message.answer(
@@ -690,9 +497,9 @@ async def redeem_invite(
     label = invite.label or f"tg-{user.tg_id}"
     device = await repo.create_device(session, user_id=user.id, label=label)
     try:
-        conf, ip, _ = await _create_peer_for_user(
-            session, server, user, label, device_id=device.id
-        )
+        made = await provision_device_peers(session, user, device)
+        if not made:
+            raise SSHError("не удалось создать конфиг ни на одной локации")
         await repo.mark_invite_used(session, invite, user.tg_id)
         await session.commit()
     except SSHError as exc:
@@ -713,43 +520,16 @@ async def redeem_invite(
         await message.answer(t.error_generic, reply_markup=back_to_menu())
         return True
 
-    await _send_peer_artifacts(message.chat.id, config_display_base(server), label, conf)
-    # Юзерский финал инвайта: без peer/IP/имени сервера (это всё в t.peer_created
-    # для админского потока) — локация, устройство и инструкция по установке.
+    for server, conf in made:
+        await _send_peer_artifacts(
+            message.chat.id, config_display_base(server), label, conf,
+            vpn_link=await make_vpn_link(session, server, label, conf),
+        )
     await message.answer(
-        t.invite_config_created.format(server=config_display_base(server), label=label),
+        t.invite_config_created.format(label=label),
         reply_markup=back_to_menu(),
     )
     return True
-
-
-# --- Отзыв peer'а (админ) ----------------------------------------------------
-
-@router_admin.callback_query(F.data.startswith(f"{CB_PEERS}:revoke:"))
-async def cb_peer_revoke(call: CallbackQuery, session: AsyncSession) -> None:
-    peer_id = int(call.data.rsplit(":", 1)[-1])
-    peer = await repo.get_peer(session, peer_id)
-    if peer is None:
-        await call.answer("Не найдено", show_alert=True)
-        return
-    server = await repo.get_server(session, peer.server_id)
-    # Отзывать пир может только владелец сервера — как в остальных хендлерах.
-    if server is None:
-        await call.answer("Нет доступа", show_alert=True)
-        return
-    try:
-        async with SSHClient(repo.creds_from_server(server)) as ssh:
-            await amnezia.remove_peer_on_server(ssh, public_key=peer.public_key)
-    except SSHError as exc:
-        # SSH мог упасть, а статус peer'а в БД всё равно меняем — иначе бот
-        # продолжит выдавать его конфиг.
-        logger.warning("Peer revoke ssh error: {}", exc)
-    await repo.revoke_peer(session, peer.id)
-    await session.commit()
-    await call.message.edit_text(
-        t.peer_revoked.format(label=peer.label), reply_markup=back_to_menu()
-    )
-    await call.answer()
 
 
 router.include_router(router_admin)

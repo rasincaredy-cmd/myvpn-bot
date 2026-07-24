@@ -17,11 +17,6 @@ class InstallStates(StatesGroup):
     confirm = State()
 
 
-class PeerStates(StatesGroup):
-    pick_server = State()
-    label = State()
-
-
 class InviteStates(StatesGroup):
     pick_server = State()
     label = State()
@@ -42,11 +37,10 @@ class ServerEditStates(StatesGroup):
     location = State()
     dns = State()
     wdtt_limit = State()  # ёмкость обхода: Server.wdtt_max_accesses
+    name = State()        # переименование сервера (Блок «Ревизия»)
 
 
 class WdttStates(StatesGroup):
-    label = State()
-    days = State()
     platform = State()
     pick_server = State()
     pick_device = State()
@@ -56,6 +50,7 @@ class WdttStates(StatesGroup):
 
 class DeviceStates(StatesGroup):
     label = State()
+    rename = State()  # юзер переименовывает своё устройство (Блок «Ревизия»)
 
 
 class SubAdminStates(StatesGroup):

@@ -10,7 +10,6 @@ from bot.db.models import Peer, Server
 CB_MENU = "menu"
 CB_INSTALL = "install"
 CB_SERVERS = "srv"
-CB_PEERS = "peer"
 CB_INVITES = "inv"
 CB_ADMIN = "adm"          # admin-панель: управление пирами любого юзера
 CB_PANEL = "pnl"   # admin-панель
@@ -44,9 +43,10 @@ def main_menu(is_admin: bool) -> InlineKeyboardMarkup:
 
 
 def onboarding_hint_kb() -> InlineKeyboardMarkup:
-    """Одна кнопка под подсказкой новому юзеру: сразу к добавлению устройства."""
+    """Одна кнопка под подсказкой новому юзеру: сразу к добавлению устройства
+    (cb_dev_add сам проверит подписку/лимит/наличие локаций)."""
     kb = InlineKeyboardBuilder()
-    kb.button(text="📱 Мои устройства", callback_data=f"{CB_DEVICE}:list")
+    kb.button(text="➕ Добавить устройство", callback_data=f"{CB_DEVICE}:add")
     return kb.as_markup()
 
 
@@ -97,25 +97,34 @@ def servers_list(servers: list[Server]) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def server_card(server_id: int, wdtt_enabled: bool = False) -> InlineKeyboardMarkup:
+def server_card(
+    server_id: int, wdtt_enabled: bool = False, is_private: bool = False
+) -> InlineKeyboardMarkup:
+    # «➕ Создать peer» убран (Блок «Ревизия»): выдача идёт через подписку юзера
+    # («📱 Мои устройства» — по всем локациям), одиночные пиры — легаси.
     kb = InlineKeyboardBuilder()
-    kb.button(text="➕ Создать peer",  callback_data=f"{CB_PEERS}:new:{server_id}")
-    kb.button(text="🎟 Инвайт",        callback_data=f"{CB_INVITES}:new:{server_id}")
     kb.button(text="👥 Peers сервера", callback_data=f"{CB_SERVERS}:peers:{server_id}")
     kb.button(text="🛡 Обходы сервера", callback_data=f"{CB_SERVERS}:wdtt:{server_id}")
+    kb.button(text="🎟 Инвайт",        callback_data=f"{CB_INVITES}:new:{server_id}")
     kb.button(text="📋 Инвайты",       callback_data=f"{CB_INVITES}:list:{server_id}")
     kb.button(text="📊 Трафик",        callback_data=f"{CB_SERVERS}:traffic:{server_id}")
     kb.button(text="🖥 Состояние",     callback_data=f"{CB_SERVERS}:stats:{server_id}")
     kb.button(text="🌍 Локация",       callback_data=f"{CB_SERVERS}:loc:{server_id}")
+    kb.button(text="✏️ Имя",           callback_data=f"{CB_SERVERS}:rename:{server_id}")
     kb.button(text="🌐 DNS",           callback_data=f"{CB_SERVERS}:dns:{server_id}")
     # Тумблер доступности обхода БС на сервере (выдачу юзеры делают сами).
     kb.button(
         text="🛡 Обход БС: ВКЛ" if wdtt_enabled else "🛡 Обход БС: выкл",
         callback_data=f"{CB_WDTT}:toggle:{server_id}",
     )
+    # Приватность: сервер только для админов и «друзей» (User.is_vip).
+    kb.button(
+        text="🔒 Приватный: ВКЛ" if is_private else "🔓 Приватный: выкл",
+        callback_data=f"{CB_SERVERS}:priv:{server_id}",
+    )
     kb.button(text="🗑 Удалить", callback_data=f"{CB_SERVERS}:del:{server_id}")
     kb.button(text="« К списку", callback_data=f"{CB_SERVERS}:list")
-    kb.adjust(2, 2, 2, 2, 2, 1, 1)
+    kb.adjust(2, 2, 2, 2, 1, 1, 1, 1)
     return kb.as_markup()
 
 
@@ -237,44 +246,6 @@ def invite_card_kb(
     kb.button(text="« К инвайтам", callback_data=f"{CB_INVITES}:list:{server_id}")
     kb.adjust(1)
     return kb.as_markup()
-
-# --- Peers (пользовательский вид) --------------------------------------------
-
-def peers_list(
-    peers: list[tuple[int, str, str, str]],
-    page: int = 0,
-    has_prev: bool = False,
-    has_next: bool = False,
-) -> InlineKeyboardMarkup:
-    """peers: list of (peer_id, label, server_name, status) — уже срез страницы."""
-    kb = InlineKeyboardBuilder()
-    for pid, label, server_name, status in peers:
-        mark = "✅" if status == "active" else "🚫"
-        kb.button(
-            text=f"{mark} {label} @ {server_name}",
-            callback_data=f"{CB_PEERS}:open:{pid}",
-        )
-    if has_prev:
-        kb.button(text="← Назад",  callback_data=f"{CB_PEERS}:list:{page - 1}")
-    if has_next:
-        kb.button(text="Вперёд →", callback_data=f"{CB_PEERS}:list:{page + 1}")
-    kb.button(text="« В меню", callback_data=f"{CB_MENU}:open")
-    kb.adjust(1)
-    return kb.as_markup()
-
-
-def peer_card(peer_id: int, can_revoke: bool, can_send: bool) -> InlineKeyboardMarkup:
-    # Удаление пира из БД — только у админа (adm:delete). У пользователя его нет:
-    # отозванный пир «ждёт» возможного возобновления и чистится планировщиком.
-    kb = InlineKeyboardBuilder()
-    if can_send:
-        kb.button(text="📥 Получить конфиг", callback_data=f"{CB_PEERS}:send:{peer_id}")
-    if can_revoke:
-        kb.button(text="🗑 Отозвать", callback_data=f"{CB_PEERS}:revoke:{peer_id}")
-    kb.button(text="« К списку", callback_data=f"{CB_PEERS}:list")
-    kb.adjust(1)
-    return kb.as_markup()
-
 
 # --- Admin: управление пирами любого юзера -----------------------------------
 
@@ -448,17 +419,34 @@ def users_list_kb(
     return kb.as_markup()
 
 
-def user_card_kb(user_id: int, is_blocked: bool, page: int) -> InlineKeyboardMarkup:
+def user_card_kb(
+    user_id: int, is_blocked: bool, page: int, is_vip: bool = False
+) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="📱 Устройства", callback_data=f"{CB_PANEL}:udev:{user_id}:{page}")
     kb.button(text="🛡 Обходы БС",  callback_data=f"{CB_PANEL}:ubp:{user_id}:{page}")
     kb.button(text="🎫 Подписка",   callback_data=f"{CB_PANEL}:sub:{user_id}:{page}")
+    # «Друг» видит приватные серверы (Server.is_private).
+    kb.button(
+        text="⭐ Друг: ВКЛ" if is_vip else "⭐ Друг: выкл",
+        callback_data=f"{CB_PANEL}:vip:{user_id}:{page}",
+    )
     if is_blocked:
         kb.button(text="✅ Разблокировать", callback_data=f"{CB_PANEL}:unblock:{user_id}:{page}")
     else:
         kb.button(text="🚫 Заблокировать",  callback_data=f"{CB_PANEL}:block:{user_id}:{page}")
+    kb.button(text="🗑 Стереть из БД", callback_data=f"{CB_PANEL}:udel:{user_id}:{page}")
     kb.button(text="« К списку", callback_data=f"{CB_PANEL}:users:{page}")
-    kb.adjust(2, 1, 1, 1)
+    kb.adjust(2, 1, 2, 1, 1)
+    return kb.as_markup()
+
+
+def user_wipe_confirm_kb(user_id: int, page: int) -> InlineKeyboardMarkup:
+    """Двухшаговое подтверждение уничтожения юзера (Блок «Ревизия»)."""
+    kb = InlineKeyboardBuilder()
+    kb.button(text="❗️ Да, стереть безвозвратно", callback_data=f"{CB_PANEL}:udelc:{user_id}:{page}")
+    kb.button(text="✖️ Отмена", callback_data=f"{CB_PANEL}:user:{user_id}:{page}")
+    kb.adjust(1)
     return kb.as_markup()
 
 
@@ -513,7 +501,9 @@ def devices_list_kb(
         kb.button(text="← Назад",  callback_data=f"{CB_DEVICE}:list:{page - 1}")
     if has_next:
         kb.button(text="Вперёд →", callback_data=f"{CB_DEVICE}:list:{page + 1}")
-    kb.button(text="🎫 Подписка", callback_data=f"{CB_SUB}:my")
+    # Имя кнопки везде одно — «🎫 Моя подписка» (как в главном меню): юзер должен
+    # находить раздел по тому же названию, что видит в текстах.
+    kb.button(text="🎫 Моя подписка", callback_data=f"{CB_SUB}:my")
     kb.button(text="« В меню", callback_data=f"{CB_MENU}:open")
     kb.adjust(1)
     return kb.as_markup()
@@ -535,6 +525,8 @@ def device_card_kb(
             kb.button(text="📥 Получить все", callback_data=f"{CB_DEVICE}:send:{device_id}")
         else:
             kb.button(text="📥 Получить конфиг", callback_data=f"{CB_DEVICE}:send:{device_id}")
+    # Переименование — только метка в БД, конфиги не трогает (Блок «Ревизия»).
+    kb.button(text="✏️ Переименовать", callback_data=f"{CB_DEVICE}:ren:{device_id}")
     # Удаление доступно всегда: активное устройство удаляется (с отзывом), а
     # неактивное (истекшее) — убирается из списка, чтобы не висело мусором.
     kb.button(text="🗑 Удалить устройство", callback_data=f"{CB_DEVICE}:revoke:{device_id}")
@@ -544,7 +536,6 @@ def device_card_kb(
 
 
 def subscription_kb(
-    has_devices_slot: bool,
     *,
     can_pay: bool = False,       # показать «Продлить» (Crypto Pay включён)
     autopay: bool | None = None,  # None — тумблер не показывать (нет смысла без оплаты)
@@ -557,6 +548,17 @@ def subscription_kb(
             text="♻️ Автопродление: ВКЛ" if autopay else "♻️ Автопродление: выкл",
             callback_data=f"{CB_BAL}:autopay",
         )
+    kb.button(text="📱 Мои устройства", callback_data=f"{CB_DEVICE}:list")
+    kb.button(text="« В меню", callback_data=f"{CB_MENU}:open")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def device_created_kb() -> InlineKeyboardMarkup:
+    """После создания устройства: текст t.device_created отсылает к «🛡 Обход БС» —
+    даём кнопку прямо здесь, а не заставляем идти через меню."""
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🛡 Обход БС", callback_data=f"{CB_WDTT}:my")
     kb.button(text="📱 Мои устройства", callback_data=f"{CB_DEVICE}:list")
     kb.button(text="« В меню", callback_data=f"{CB_MENU}:open")
     kb.adjust(1)
@@ -597,16 +599,29 @@ def invoice_kb(pay_url: str, row_id: int) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def extend_kb(devices: int, bypass: int, term_prices: list[tuple[int, str]]) -> InlineKeyboardMarkup:
+def extend_kb(
+    devices: int, bypass: int, term_prices: list[tuple[int, str]],
+    max_devices: int, max_bypass: int,
+) -> InlineKeyboardMarkup:
     """Экран продления: тариф крутится ±, сроки с ценами. Всё состояние — в
-    callback data (без FSM): ext:<dev>:<byp> перерисовка, buy:<dev>:<byp>:<mes>."""
+    callback data (без FSM): ext:<dev>:<byp> перерисовка, buy:<dev>:<byp>:<mes>.
+
+    Подписи средних кнопок — только эмодзи+число («📱 2»): в ряду из трёх кнопок
+    длинный текст обрезается на телефоне и числа не видно; расшифровка типов —
+    в тексте сообщения. На границах (0, максимум, «последняя позиция») «−»/«+»
+    рисуем заглушкой CB_NOP — не гоняем пустые перерисовки."""
     kb = InlineKeyboardBuilder()
-    kb.button(text="−", callback_data=f"{CB_BAL}:ext:{devices - 1}:{bypass}")
-    kb.button(text=f"📱 Устройств: {devices}", callback_data=CB_NOP)
-    kb.button(text="+", callback_data=f"{CB_BAL}:ext:{devices + 1}:{bypass}")
-    kb.button(text="−", callback_data=f"{CB_BAL}:ext:{devices}:{bypass - 1}")
-    kb.button(text=f"🛡 Обходов: {bypass}", callback_data=CB_NOP)
-    kb.button(text="+", callback_data=f"{CB_BAL}:ext:{devices}:{bypass + 1}")
+
+    def _step(cur_d: int, cur_b: int, ok: bool) -> str:
+        return f"{CB_BAL}:ext:{cur_d}:{cur_b}" if ok else CB_NOP
+
+    # «−» недоступен на нуле и когда это последняя позиция тарифа (0+0 нельзя).
+    kb.button(text="−", callback_data=_step(devices - 1, bypass, devices > 0 and devices + bypass > 1))
+    kb.button(text=f"📱 {devices}", callback_data=CB_NOP)
+    kb.button(text="+", callback_data=_step(devices + 1, bypass, devices < max_devices))
+    kb.button(text="−", callback_data=_step(devices, bypass - 1, bypass > 0 and devices + bypass > 1))
+    kb.button(text=f"🛡 {bypass}", callback_data=CB_NOP)
+    kb.button(text="+", callback_data=_step(devices, bypass + 1, bypass < max_bypass))
     for months, label in term_prices:
         kb.button(text=label, callback_data=f"{CB_BAL}:buy:{devices}:{bypass}:{months}")
     # Выход на пополнение прямо отсюда: юзеру с пустым балансом не нужно
@@ -648,35 +663,6 @@ def wdtt_platform_kb() -> InlineKeyboardMarkup:
     kb.button(text="💻 ПК",      callback_data=f"{CB_WDTT}:plat:pc")
     kb.button(text="✖️ Отмена",  callback_data=CB_CANCEL)
     kb.adjust(3, 1)
-    return kb.as_markup()
-
-
-def wdtt_list_kb(
-    rows: list[tuple[int, str, str]],  # (access_id, mark, label) — срез страницы
-    server_id: int,
-    page: int = 0,
-    has_prev: bool = False,
-    has_next: bool = False,
-) -> InlineKeyboardMarkup:
-    kb = InlineKeyboardBuilder()
-    for access_id, mark, label in rows:
-        kb.button(text=f"{mark} {label}", callback_data=f"{CB_WDTT}:open:{access_id}")
-    if has_prev:
-        kb.button(text="← Назад",  callback_data=f"{CB_WDTT}:list:{server_id}:{page - 1}")
-    if has_next:
-        kb.button(text="Вперёд →", callback_data=f"{CB_WDTT}:list:{server_id}:{page + 1}")
-    kb.button(text="« К серверу", callback_data=f"{CB_SERVERS}:open:{server_id}")
-    kb.adjust(1)
-    return kb.as_markup()
-
-
-def wdtt_card_kb(access_id: int, server_id: int, can_revoke: bool) -> InlineKeyboardMarkup:
-    kb = InlineKeyboardBuilder()
-    kb.button(text="🔗 Показать ссылку", callback_data=f"{CB_WDTT}:link:{access_id}")
-    if can_revoke:
-        kb.button(text="🗑 Отозвать", callback_data=f"{CB_WDTT}:revoke:{access_id}")
-    kb.button(text="« К доступам", callback_data=f"{CB_WDTT}:list:{server_id}")
-    kb.adjust(1)
     return kb.as_markup()
 
 

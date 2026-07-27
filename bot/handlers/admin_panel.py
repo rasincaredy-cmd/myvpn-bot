@@ -26,10 +26,12 @@ from bot.keyboards.inline import (
     broadcast_confirm_kb,
     broadcast_select_kb,
     broadcast_target_kb,
+    cancel_to_sub_kb,
     user_card_kb,
     users_list_kb,
 )
 from bot.loader import bot as tg_bot
+from bot.texts import t
 from bot.services import amnezia
 from bot.services import revive as revive_svc
 from bot.states.install import BroadcastStates, SubAdminStates
@@ -119,6 +121,7 @@ async def cb_panel_stats(call: CallbackQuery, session: AsyncSession) -> None:
     byp_active = await _cnt(
         select(func.count(WdttAccess.id)).where(WdttAccess.status == PeerStatus.ACTIVE)
     )
+    byp_total = await _cnt(select(func.count(WdttAccess.id)))
     peers_active = await _cnt(
         select(func.count(Peer.id)).where(Peer.status == PeerStatus.ACTIVE)
     )
@@ -146,6 +149,12 @@ async def cb_panel_stats(call: CallbackQuery, session: AsyncSession) -> None:
         .where(BalanceTx.created_at >= month_ago)
     )).scalar_one()
 
+    # «4 активных / 5 всего» путало: в карточках юзеров суммарно видно 4 —
+    # пятое устройство отозвано. Теперь отозванные названы явно (Блок «Мелочи»).
+    def _split(active: int, total: int) -> str:
+        rev = total - active
+        return f"<b>{active}</b> активных" + (f" + {rev} отозвано = {total}" if rev else "")
+
     await call.message.edit_text(
         "📊 <b>Статистика</b>\n\n"
         f"👤 Юзеров: <b>{users_total}</b> — "
@@ -155,8 +164,8 @@ async def cb_panel_stats(call: CallbackQuery, session: AsyncSession) -> None:
         f"подписку ({conv_pct}%)\n"
         f"💰 За 30 дней: пополнений <b>{fmt_rub(dep_30d)}</b>, "
         f"оплат подписки <b>{fmt_rub(charge_30d)}</b>\n\n"
-        f"📱 Устройств: <b>{dev_active}</b> активных / {dev_total} всего\n"
-        f"🛡 Обходов БС: <b>{byp_active}</b> активных\n"
+        f"📱 Устройств: {_split(dev_active, dev_total)}\n"
+        f"🛡 Обходов БС: {_split(byp_active, byp_total)}\n"
         f"📄 Конфигов на серверах: <b>{peers_active}</b>\n"
         f"🖥 Серверов: <b>{servers_ready}</b> готовых / {servers_total} всего\n"
         f"🎟 Инвайтов не погашено: <b>{invites_pending}</b>",
@@ -353,9 +362,15 @@ async def _render_user_devices(call, session, user_id: int, page: int) -> None:
 
 async def _render_user_bypasses(call, session, user_id: int, page: int) -> None:
     labels = await repo.server_labels_map(session)
-    accesses = [a for a in await repo.list_wdtt_for_user(session, user_id)
-                if a.status == PeerStatus.ACTIVE]
-    rows = [(a.id, "🛡", f"{a.label} @ {labels.get(a.server_id, '?')}") for a in accesses]
+    # Симметрично устройствам (Блок «Мелочи»): показываем и отозванные (🚫),
+    # активные — сверху. Иначе счётчик в статистике не сходится с карточкой.
+    accesses = await repo.list_wdtt_for_user(session, user_id)
+    accesses.sort(key=lambda a: (a.status != PeerStatus.ACTIVE, a.id))
+    rows = [
+        (a.id, "🛡" if a.status == PeerStatus.ACTIVE else "🚫",
+         f"{a.label} @ {labels.get(a.server_id, '?')}")
+        for a in accesses
+    ]
     txt = "🛡 <b>Обходы юзера</b>" + ("" if accesses else "\n\nПусто.")
     await call.message.edit_text(
         txt, reply_markup=admin_user_items_kb(rows, "ubp", user_id, page)
@@ -467,9 +482,35 @@ async def cb_panel_user_bypass_open(call: CallbackQuery, session: AsyncSession) 
         f"• Сервер: <code>{labels.get(access.server_id, '?')}</code>\n"
         f"• Статус: <b>{access.status}</b>\n"
         f"• 📊 Трафик: {amnezia.fmt_bytes(access.traffic_used_bytes)}",
-        reply_markup=admin_user_bypass_card_kb(access.id, user_id, page),
+        reply_markup=admin_user_bypass_card_kb(
+            access.id, user_id, page, is_active=access.status == PeerStatus.ACTIVE
+        ),
     )
     await call.answer()
+
+
+@router.callback_query(F.data.startswith(f"{CB_PANEL}:ubpl:"))
+async def cb_panel_user_bypass_link(call: CallbackQuery, session: AsyncSession) -> None:
+    """Ссылка обхода БС юзера — админу (Блок «Мелочи»). Симметрично «📄 Конфиг»
+    у устройств: поддержке нужно видеть ровно то, что у юзера на руках."""
+    access = await repo.get_wdtt_access(session, int(call.data.split(":")[2]))
+    if access is None:
+        await call.answer("Не найдено", show_alert=True)
+        return
+    if access.status != PeerStatus.ACTIVE:
+        await call.answer("Доступ отозван — ссылка уже не работает", show_alert=True)
+        return
+    from bot.handlers.wdtt import _PLATFORMS
+    from bot.services.crypto import decrypt
+    app = _PLATFORMS.get(access.platform, ("", "", None))[1] if access.platform else ""
+    app_line = (
+        f"Приложение юзера — <b>{app}</b>." if app
+        else "Приложение обхода: WDTT — Android, VK Turn Proxy — iOS, PWDTT — ПК."
+    )
+    await call.message.answer(
+        t.wdtt_link.format(link=decrypt(access.uri_enc), app_line=app_line)
+    )
+    await call.answer("Отправил ссылку")
 
 
 @router.callback_query(F.data.startswith(f"{CB_PANEL}:ubpx:"))
@@ -546,7 +587,13 @@ async def _render_sub_card(call: CallbackQuery, session: AsyncSession, user, pag
 
 
 @router.callback_query(F.data.startswith(f"{CB_PANEL}:sub:"))
-async def cb_panel_sub(call: CallbackQuery, session: AsyncSession) -> None:
+async def cb_panel_sub(
+    call: CallbackQuery, session: AsyncSession, state: FSMContext | None = None
+) -> None:
+    # Сюда же ведёт «✖️ Отмена» из ввода лимитов/срока/трафика/баланса — чистим
+    # FSM, иначе следующее сообщение админа улетит в брошенный step-хендлер.
+    if state is not None:
+        await state.clear()
     parts = call.data.split(":")
     user_id, page = int(parts[2]), int(parts[3])
     user = await repo.get_user_by_id(session, user_id)
@@ -562,14 +609,21 @@ async def cb_panel_sub_lim(call: CallbackQuery, state: FSMContext) -> None:
     parts = call.data.split(":")
     await state.set_state(SubAdminStates.set_limit)
     await state.update_data(user_id=int(parts[2]), page=int(parts[3]))
-    await call.message.edit_text("📱 Введи новый лимит устройств (0–50):")
+    await call.message.edit_text(
+        "📱 Введи новый лимит устройств (0–50):",
+        reply_markup=cancel_to_sub_kb(int(parts[2]), int(parts[3])),
+    )
     await call.answer()
 
 
 @router.message(SubAdminStates.set_limit, F.text)
 async def step_sub_limit(message: Message, state: FSMContext, session: AsyncSession) -> None:
     if not message.text.strip().isdigit() or not (0 <= int(message.text.strip()) <= 50):
-        await message.answer("Нужно число 0–50. Ещё раз:")
+        d = await state.get_data()
+        await message.answer(
+            "Нужно число 0–50. Ещё раз:",
+            reply_markup=cancel_to_sub_kb(d["user_id"], d["page"]),
+        )
         return
     data = await state.get_data()
     await state.clear()
@@ -587,14 +641,21 @@ async def cb_panel_sub_bp(call: CallbackQuery, state: FSMContext) -> None:
     parts = call.data.split(":")
     await state.set_state(SubAdminStates.set_bypass)
     await state.update_data(user_id=int(parts[2]), page=int(parts[3]))
-    await call.message.edit_text("🛡 Введи лимит доступов обхода БС (0–50):")
+    await call.message.edit_text(
+        "🛡 Введи лимит доступов обхода БС (0–50):",
+        reply_markup=cancel_to_sub_kb(int(parts[2]), int(parts[3])),
+    )
     await call.answer()
 
 
 @router.message(SubAdminStates.set_bypass, F.text)
 async def step_sub_bypass(message: Message, state: FSMContext, session: AsyncSession) -> None:
     if not message.text.strip().isdigit() or not (0 <= int(message.text.strip()) <= 50):
-        await message.answer("Нужно число 0–50. Ещё раз:")
+        d = await state.get_data()
+        await message.answer(
+            "Нужно число 0–50. Ещё раз:",
+            reply_markup=cancel_to_sub_kb(d["user_id"], d["page"]),
+        )
         return
     data = await state.get_data()
     await state.clear()
@@ -621,6 +682,7 @@ async def cb_panel_sub_bal(call: CallbackQuery, state: FSMContext, session: Asyn
         f"💰 <b>Баланс юзера: {fmt_rub(user.balance_kopeks)}</b>\n\n"
         "Введи изменение в рублях со знаком: <code>+90</code> — начислить "
         "(например, за перевод на карту), <code>-50</code> — списать.",
+        reply_markup=cancel_to_sub_kb(user.id, int(parts[3])),
     )
     await call.answer()
 
@@ -630,7 +692,11 @@ async def step_sub_balance(message: Message, state: FSMContext, session: AsyncSe
     raw = message.text.strip().replace("₽", "").strip()
     sign = raw[:1]
     if sign not in "+-" or not raw[1:].isdigit() or int(raw[1:]) == 0 or int(raw[1:]) > 1_000_000:
-        await message.answer("Формат: <code>+90</code> или <code>-50</code> (рубли). Ещё раз:")
+        d = await state.get_data()
+        await message.answer(
+            "Формат: <code>+90</code> или <code>-50</code> (рубли). Ещё раз:",
+            reply_markup=cancel_to_sub_kb(d["user_id"], d["page"]),
+        )
         return
     data = await state.get_data()
     await state.clear()
@@ -680,7 +746,8 @@ async def cb_panel_sub_ext(call: CallbackQuery, state: FSMContext) -> None:
         "Введи дату <code>ДД.ММ.ГГГГ</code> или период <code>Nд</code> (напр. <code>30д</code>).\n"
         "Можно со временем: <code>30д 18:00</code>, <code>31.12.2025 09:30</code>.\n"
         "Без времени: период — от текущего момента, дата — на 23:59 UTC.\n"
-        "Отправь <code>-</code>, чтобы сделать бессрочной."
+        "Отправь <code>-</code>, чтобы сделать бессрочной.",
+        reply_markup=cancel_to_sub_kb(int(parts[2]), int(parts[3])),
     )
     await call.answer()
 
@@ -689,9 +756,11 @@ async def cb_panel_sub_ext(call: CallbackQuery, state: FSMContext) -> None:
 async def step_sub_extend(message: Message, state: FSMContext, session: AsyncSession) -> None:
     result = parse_expiry(message.text.strip())
     if result == "invalid":
+        d = await state.get_data()
         await message.answer(
             "Не понял формат. Примеры: <code>30д</code>, <code>30д 18:00</code>, "
-            "<code>31.12.2025</code>, <code>31.12.2025 09:30</code>, <code>-</code>"
+            "<code>31.12.2025</code>, <code>31.12.2025 09:30</code>, <code>-</code>",
+            reply_markup=cancel_to_sub_kb(d["user_id"], d["page"]),
         )
         return
     data = await state.get_data()
@@ -761,7 +830,8 @@ async def cb_panel_sub_trf(call: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(user_id=int(parts[2]), page=int(parts[3]))
     await call.message.edit_text(
         "📊 Введи лимит трафика на подписку: <code>50GB</code>, <code>500MB</code>, "
-        "<code>1TB</code>.\nОтправь <code>-</code>, чтобы снять лимит (безлимит)."
+        "<code>1TB</code>.\nОтправь <code>-</code>, чтобы снять лимит (безлимит).",
+        reply_markup=cancel_to_sub_kb(int(parts[2]), int(parts[3])),
     )
     await call.answer()
 
@@ -770,7 +840,12 @@ async def cb_panel_sub_trf(call: CallbackQuery, state: FSMContext) -> None:
 async def step_sub_traffic(message: Message, state: FSMContext, session: AsyncSession) -> None:
     result = parse_traffic_limit(message.text.strip())
     if result == "invalid":
-        await message.answer("Формат: <code>50GB</code> / <code>500MB</code> / <code>1TB</code> или <code>-</code>. Ещё раз:")
+        d = await state.get_data()
+        await message.answer(
+            "Формат: <code>50GB</code> / <code>500MB</code> / <code>1TB</code> "
+            "или <code>-</code>. Ещё раз:",
+            reply_markup=cancel_to_sub_kb(d["user_id"], d["page"]),
+        )
         return
     data = await state.get_data()
     await state.clear()

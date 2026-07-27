@@ -257,7 +257,11 @@ async def list_servers_for_owner(session: AsyncSession, owner_tg_id: int) -> lis
 async def list_all_servers(session: AsyncSession) -> list[Server]:
     """Все серверы сервиса (Блок 8: общий пул, не «личные»). Любой админ управляет
     всеми — owner_tg_id остаётся лишь пометкой «кем установлен»."""
-    result = await session.execute(select(Server).order_by(Server.id))
+    # Сортировка по локациям (Блок «Мелочи»): серверы одной страны идут подряд,
+    # безлокационные — в конец. Внутри локации — по id (порядок установки).
+    result = await session.execute(
+        select(Server).order_by(Server.location.is_(None), Server.location, Server.id)
+    )
     return list(result.scalars())
 
 

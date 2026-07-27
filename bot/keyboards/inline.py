@@ -89,9 +89,16 @@ def cancel_only() -> InlineKeyboardMarkup:
 # --- Серверы ------------------------------------------------------------------
 
 def servers_list(servers: list[Server]) -> InlineKeyboardMarkup:
+    """Список серверов, сгруппированный по локациям (Блок «Мелочи»): порядок
+    задаёт repo.list_all_servers, здесь локация выносится в начало кнопки, чтобы
+    серверы одной страны читались одним блоком. Без локации — «❔»."""
     kb = InlineKeyboardBuilder()
     for s in servers:
-        kb.button(text=f"🖥 {s.name} ({s.status})", callback_data=f"{CB_SERVERS}:open:{s.id}")
+        loc = s.location or "❔ без локации"
+        kb.button(
+            text=f"{loc} · {s.name} ({s.status})",
+            callback_data=f"{CB_SERVERS}:open:{s.id}",
+        )
     kb.button(text="« Админ-панель", callback_data=f"{CB_PANEL}:main")
     kb.adjust(1)
     return kb.as_markup()
@@ -379,9 +386,15 @@ def admin_user_device_card_kb(
     return kb.as_markup()
 
 
-def admin_user_bypass_card_kb(access_id: int, user_id: int, page: int) -> InlineKeyboardMarkup:
+def admin_user_bypass_card_kb(
+    access_id: int, user_id: int, page: int, is_active: bool = True
+) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-    kb.button(text="🗑 Отозвать доступ", callback_data=f"{CB_PANEL}:ubpx:{access_id}:{user_id}:{page}")
+    # Ссылка обхода админу (Блок «Мелочи»): симметрично «📄 Конфиг» у устройств —
+    # поддержке нужно видеть ровно то, что у юзера на руках.
+    if is_active:
+        kb.button(text="🔗 Ссылка обхода", callback_data=f"{CB_PANEL}:ubpl:{access_id}:{user_id}:{page}")
+        kb.button(text="🗑 Отозвать доступ", callback_data=f"{CB_PANEL}:ubpx:{access_id}:{user_id}:{page}")
     kb.button(text="« К обходам", callback_data=f"{CB_PANEL}:ubp:{user_id}:{page}")
     kb.adjust(1)
     return kb.as_markup()
@@ -629,6 +642,16 @@ def extend_kb(
     kb.button(text="➕ Пополнить баланс", callback_data=f"{CB_BAL}:dep")
     kb.button(text="« К подписке", callback_data=f"{CB_SUB}:my")
     kb.adjust(3, 3, 2, 2, 1, 1)
+    return kb.as_markup()
+
+
+def cancel_to_sub_kb(user_id: int, page: int) -> InlineKeyboardMarkup:
+    """«Отмена» из любого ввода в настройках подписки юзера (Блок «Мелочи»).
+    Ведёт обратно в карточку подписки; хендлер `panel:sub:` чистит FSM, иначе
+    следующее сообщение админа улетело бы в брошенный step-хендлер."""
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✖️ Отмена", callback_data=f"{CB_PANEL}:sub:{user_id}:{page}")
+    kb.adjust(1)
     return kb.as_markup()
 
 

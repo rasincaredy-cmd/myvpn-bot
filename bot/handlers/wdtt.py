@@ -22,6 +22,7 @@ from bot.db.models import PeerStatus
 from bot.filters.admin import AdminFilter
 from bot.keyboards.inline import (
     CB_WDTT,
+    back_to_bypasses_kb,
     back_to_menu,
     cancel_only,
     pick_location_kb,
@@ -182,10 +183,14 @@ async def cb_wdtt_my_open(call: CallbackQuery, session: AsyncSession) -> None:
     labels = await repo.server_labels_map(session)
     plat = _PLATFORMS.get(access.platform, ("—", ""))[0] if access.platform else "—"
     from bot.services import amnezia
+    # Чья VK-ссылка зашита в доступ (Блок «Мелочи 2»): со своей ссылкой обход
+    # перестаёт работать, если юзер создал новый звонок, — пусть видит сразу.
+    vk = {True: "своя", False: "сервиса"}.get(access.vk_own)
     text = (
         f"🛡 <b>{access.label}</b>\n"
         f"• Платформа: <b>{plat}</b>\n"
-        f"• 🌍 Локация: <b>{labels.get(access.server_id, '—')}</b>\n"
+        + (f"• Ссылка на звонок VK: <b>{vk}</b>\n" if vk else "")
+        + f"• 🌍 Локация: <b>{labels.get(access.server_id, '—')}</b>\n"
         f"• Статус: <b>{t.STATUS_RU.get(access.status, access.status)}</b>\n"
         f"• 📊 Трафик: {amnezia.fmt_bytes(access.traffic_used_bytes)}"
     )
@@ -235,8 +240,9 @@ async def cb_wdtt_my_revoke(call: CallbackQuery, session: AsyncSession) -> None:
     await session.commit()
     # Удаление необратимо (ревайв невозможен) — фиксируем в лог.
     logger.info("User {} deleted wdtt access {} ({})", user.id, access.id, access.label)
+    # Возврат в список обходов, а не в меню (Блок «Мелочи 2»).
     await call.message.edit_text(
-        t.wdtt_revoked.format(label=access.label), reply_markup=back_to_menu()
+        t.wdtt_revoked.format(label=access.label), reply_markup=back_to_bypasses_kb()
     )
     await call.answer()
 
@@ -461,6 +467,9 @@ async def cb_wdtt_platform(call: CallbackQuery, state: FSMContext, session: Asyn
         password_enc=encrypt(res["password"]),
         expires_at=None,  # срок гейтит подписка на уровне устройства
         platform=platform,
+        # Своя ссылка юзера или сервисная — поддержке это первый вопрос при
+        # разборе «у меня обход не работает».
+        vk_own=bool(data.get("vk_hash")),
     )
     await session.commit()
 

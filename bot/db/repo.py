@@ -388,6 +388,7 @@ async def create_wdtt_access(
     expires_at: datetime | None,
     device_id: int | None = None,
     platform: str | None = None,
+    vk_own: bool | None = None,
 ) -> WdttAccess:
     access = WdttAccess(
         server_id=server_id,
@@ -399,6 +400,7 @@ async def create_wdtt_access(
         status=PeerStatus.ACTIVE,
         expires_at=expires_at,
         platform=platform,
+        vk_own=vk_own,
     )
     session.add(access)
     await session.flush()
@@ -608,6 +610,7 @@ async def set_subscription(
     touch_traffic_limit: bool = False,
     reset_traffic_base: bool = False,
     mark_paid: bool = False,
+    mark_trial: bool = False,
 ) -> None:
     """Обновляет подписку юзера. expires_at/traffic_limit меняются только при
     соответствующем touch_* (иначе None трактовался бы как «снять»). При продлении
@@ -626,6 +629,9 @@ async def set_subscription(
         values["sub_traffic_base_bytes"] = await sum_user_traffic(session, user_id)
     if mark_paid:
         values["is_trial"] = False
+    if mark_trial:
+        # Обратная mark_paid: админ выдал триал заново (Блок «Мелочи 2»).
+        values["is_trial"] = True
     if values:
         await session.execute(
             update(User).where(User.id == user_id).values(**values)

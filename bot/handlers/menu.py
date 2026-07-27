@@ -26,6 +26,7 @@ from bot.keyboards.inline import (
     CB_SERVERS,
     admin_peer_card,
     back_to_menu,
+    back_to_servers_kb,
     confirm_delete_server,
     location_choice_kb,
     server_card,
@@ -365,7 +366,9 @@ async def cb_server_del_ok(call: CallbackQuery, session: AsyncSession) -> None:
     await session.delete(server)
     await session.flush()
 
-    await call.message.edit_text(cleanup_text, reply_markup=back_to_menu())
+    # Сервера больше нет — возвращаем в список серверов, откуда админ и пришёл
+    # (Блок «Мелочи 2»), а не в главное меню.
+    await call.message.edit_text(cleanup_text, reply_markup=back_to_servers_kb())
 
 
 # --- Peers сервера (admin-панель) --------------------------------------------

@@ -454,6 +454,47 @@ def user_card_kb(
     return kb.as_markup()
 
 
+def back_to_devices_kb() -> InlineKeyboardMarkup:
+    """Возврат после удаления своего устройства (Блок «Мелочи 2»): в список
+    устройств, а не в главное меню — юзер обычно удаляет и сразу смотрит, что
+    осталось."""
+    kb = InlineKeyboardBuilder()
+    kb.button(text="« Мои устройства", callback_data=f"{CB_DEVICE}:list")
+    kb.button(text="« В меню", callback_data=f"{CB_MENU}:open")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def back_to_bypasses_kb() -> InlineKeyboardMarkup:
+    """То же для своего доступа обхода БС (Блок «Мелочи 2»)."""
+    kb = InlineKeyboardBuilder()
+    kb.button(text="« Мои обходы", callback_data=f"{CB_WDTT}:my")
+    kb.button(text="« В меню", callback_data=f"{CB_MENU}:open")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def back_to_servers_kb() -> InlineKeyboardMarkup:
+    """Возврат после удаления сервера (Блок «Мелочи 2»): раньше кидало в главное
+    меню, хотя админ пришёл из списка серверов и обычно продолжает там же."""
+    kb = InlineKeyboardBuilder()
+    kb.button(text="« К серверам", callback_data=f"{CB_SERVERS}:list")
+    kb.button(text="👮 Админ-панель", callback_data=f"{CB_PANEL}:main")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def back_to_users_kb(page: int) -> InlineKeyboardMarkup:
+    """Возврат после удаления юзера (Блок «Мелочи 2»): карточки уже нет, а
+    выкидывать в корень админ-панели неудобно — админ чаще всего чистит список
+    дальше. Поэтому первым делом «К пользователям», панель — вторым."""
+    kb = InlineKeyboardBuilder()
+    kb.button(text="« К пользователям", callback_data=f"{CB_PANEL}:users:{page}")
+    kb.button(text="👮 Админ-панель", callback_data=f"{CB_PANEL}:main")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
 def user_wipe_confirm_kb(user_id: int, page: int) -> InlineKeyboardMarkup:
     """Двухшаговое подтверждение уничтожения юзера (Блок «Ревизия»)."""
     kb = InlineKeyboardBuilder()
@@ -655,13 +696,19 @@ def cancel_to_sub_kb(user_id: int, page: int) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def admin_sub_kb(user_id: int, page: int) -> InlineKeyboardMarkup:
+def admin_sub_kb(user_id: int, page: int, is_trial: bool = False) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="📱 Лимит устройств", callback_data=f"{CB_PANEL}:sub_lim:{user_id}:{page}")
     kb.button(text="🛡 Лимит обхода БС",  callback_data=f"{CB_PANEL}:sub_bp:{user_id}:{page}")
     kb.button(text="📅 Задать срок",     callback_data=f"{CB_PANEL}:sub_ext:{user_id}:{page}")
     kb.button(text="📊 Лимит трафика",   callback_data=f"{CB_PANEL}:sub_trf:{user_id}:{page}")
     kb.button(text="💰 Баланс ±",        callback_data=f"{CB_PANEL}:sub_bal:{user_id}:{page}")
+    # Триал раздаётся автоматически при регистрации и повторно не выдаётся —
+    # кнопка (Блок «Мелочи 2») нужна для тестов и «выдай ещё раз» вручную.
+    kb.button(
+        text="🎁 Триал заново" if is_trial else "🎁 Выдать триал",
+        callback_data=f"{CB_PANEL}:sub_trl:{user_id}:{page}",
+    )
     kb.button(text="🚫 Отключить (срок в 0)", callback_data=f"{CB_PANEL}:sub_off:{user_id}:{page}")
     kb.button(text="« К пользователю",   callback_data=f"{CB_PANEL}:user:{user_id}:{page}")
     kb.adjust(1)

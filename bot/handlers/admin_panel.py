@@ -23,6 +23,7 @@ from bot.keyboards.inline import (
     admin_user_device_card_kb,
     admin_user_items_kb,
     back_to_panel,
+    back_to_users_kb,
     broadcast_confirm_kb,
     broadcast_select_kb,
     broadcast_target_kb,
@@ -203,6 +204,20 @@ _TIER_LABEL = {
 }
 
 
+def _trial_line(user) -> str:
+    """Триал юзера словами (Блок «Мелочи 2»). Триал выдаётся автоматически при
+    регистрации, а флаг is_trial снимается, как только админ задаёт срок или
+    юзер платит, — поэтому is_trial=False читается как «триал уже позади»."""
+    if not user.is_trial:
+        return "использован (сейчас платная)"
+    if user.sub_expires_at is None:
+        return "🎁 идёт (бессрочный)"
+    exp = _sub_as_utc(user.sub_expires_at)
+    if exp > datetime.now(timezone.utc):
+        return f"🎁 идёт, до {user.sub_expires_at.strftime('%d.%m.%Y %H:%M')} UTC"
+    return f"использован, истёк {user.sub_expires_at.strftime('%d.%m.%Y')}"
+
+
 async def _user_card_text(session: AsyncSession, user) -> str:
     devices = await repo.count_active_devices(session, user.id)
     bypass = await repo.count_active_wdtt_for_user(session, user.id)
@@ -231,6 +246,7 @@ async def _user_card_text(session: AsyncSession, user) -> str:
         f"• Устройства: <b>{devices}/{user.sub_max_devices}</b>\n"
         f"• Обход БС: <b>{bypass}/{user.sub_max_bypass}</b>\n"
         f"• Срок: <b>{srok}</b>\n"
+        f"• Триал: <b>{_trial_line(user)}</b>\n"
         f"• Трафик: <b>{trf}</b>\n"
         f"• Баланс: <b>{fmt_rub(user.balance_kopeks)}</b>\n"
         f"• С нами с: {user.created_at.strftime('%d.%m.%Y')}"
@@ -341,7 +357,7 @@ async def cb_panel_user_delete_confirm(call: CallbackQuery, session: AsyncSessio
         "дней (SSH-снятие при этом повторится, если сейчас не прошло).</i>"
     )
     await call.message.edit_text(
-        "\n".join(lines), reply_markup=back_to_panel()
+        "\n".join(lines), reply_markup=back_to_users_kb(page)
     )
 
 
@@ -476,9 +492,15 @@ async def cb_panel_user_bypass_open(call: CallbackQuery, session: AsyncSession) 
         return
     labels = await repo.server_labels_map(session)
     plat = {"android": "Android", "ios": "iOS", "pc": "ПК"}.get(access.platform or "", "—")
+    # Чья VK-ссылка (Блок «Мелочи 2»): у своей ссылки юзера обход ломается, если
+    # он поменял звонок, — поддержке нужно различать эти случаи сразу.
+    vk = {True: "🔗 своя юзера", False: "🏢 сервиса"}.get(
+        access.vk_own, "—  (до появления флага)"
+    )
     await call.message.edit_text(
         f"🛡 <b>{access.label}</b>\n"
         f"• Платформа: <b>{plat}</b>\n"
+        f"• VK-ссылка: <b>{vk}</b>\n"
         f"• Сервер: <code>{labels.get(access.server_id, '?')}</code>\n"
         f"• Статус: <b>{access.status}</b>\n"
         f"• 📊 Трафик: {amnezia.fmt_bytes(access.traffic_used_bytes)}",
@@ -581,8 +603,9 @@ async def _render_sub_card(call: CallbackQuery, session: AsyncSession, user, pag
         f"• Устройства: <b>{used}/{user.sub_max_devices}</b>\n"
         f"• Обход БС: <b>{bypass}/{user.sub_max_bypass}</b>\n"
         f"• Срок: <b>{srok}</b>\n"
+        f"• Триал: <b>{_trial_line(user)}</b>\n"
         f"• Трафик: <b>{trf}</b>",
-        reply_markup=admin_sub_kb(user.id, page),
+        reply_markup=admin_sub_kb(user.id, page, is_trial=user.is_trial),
     )
 
 
@@ -632,7 +655,7 @@ async def step_sub_limit(message: Message, state: FSMContext, session: AsyncSess
     user = await repo.get_user_by_id(session, data["user_id"])
     await message.answer(
         f"✅ Лимит устройств: <b>{user.sub_max_devices}</b>",
-        reply_markup=admin_sub_kb(user.id, data["page"]),
+        reply_markup=admin_sub_kb(user.id, data["page"], is_trial=user.is_trial),
     )
 
 
@@ -664,7 +687,7 @@ async def step_sub_bypass(message: Message, state: FSMContext, session: AsyncSes
     user = await repo.get_user_by_id(session, data["user_id"])
     await message.answer(
         f"✅ Лимит обхода БС: <b>{user.sub_max_bypass}</b>",
-        reply_markup=admin_sub_kb(user.id, data["page"]),
+        reply_markup=admin_sub_kb(user.id, data["page"], is_trial=user.is_trial),
     )
 
 
@@ -732,7 +755,7 @@ async def step_sub_balance(message: Message, state: FSMContext, session: AsyncSe
             )
     await message.answer(
         f"✅ Баланс: <b>{fmt_rub(user.balance_kopeks)}</b>{extra}",
-        reply_markup=admin_sub_kb(user.id, data["page"]),
+        reply_markup=admin_sub_kb(user.id, data["page"], is_trial=user.is_trial),
     )
 
 
@@ -820,7 +843,67 @@ async def step_sub_extend(message: Message, state: FSMContext, session: AsyncSes
             except Exception:
                 pass
 
-    await message.answer(msg, reply_markup=admin_sub_kb(user.id, data["page"]))
+    await message.answer(
+        msg, reply_markup=admin_sub_kb(user.id, data["page"], is_trial=user.is_trial)
+    )
+
+
+@router.callback_query(F.data.startswith(f"{CB_PANEL}:sub_trl:"))
+async def cb_panel_sub_trial(call: CallbackQuery, session: AsyncSession) -> None:
+    """Выдать триал заново (Блок «Мелочи 2»): те же условия, что новому юзеру —
+    срок, лимит устройств и трафика из конфига, флаг is_trial обратно. Нужно для
+    тестов на своём аккаунте и для «дай ещё раз посмотреть» вручную; сам по себе
+    триал выдаётся только при регистрации и второй раз не приходит."""
+    parts = call.data.split(":")
+    user_id, page = int(parts[2]), int(parts[3])
+    user = await repo.get_user_by_id(session, user_id)
+    if user is None:
+        await call.answer("Не найдено", show_alert=True)
+        return
+    expires = datetime.now(timezone.utc) + timedelta(days=settings.trial_days)
+    await repo.set_subscription(
+        session, user.id,
+        max_devices=settings.trial_devices,
+        expires_at=expires, touch_expires=True,
+        traffic_limit_bytes=(
+            settings.trial_traffic_gb * 1024**3 if settings.trial_traffic_gb else None
+        ),
+        touch_traffic_limit=True,
+        reset_traffic_base=True,
+        mark_trial=True,
+    )
+    await session.commit()
+    user = await repo.get_user_by_id(session, user_id)
+    # Как при продлении срока: отозванные по истечению устройства оживают с
+    # прежними конфигами, а не выдаются заново.
+    msg = (
+        f"🎁 Триал выдан: <b>{settings.trial_days} дн.</b> "
+        f"(до {expires.strftime('%d.%m.%Y %H:%M')} UTC), устройств "
+        f"<b>{settings.trial_devices}</b>, трафик "
+        f"<b>{settings.trial_traffic_gb or '∞'} ГБ</b>."
+    )
+    rv = await revive_svc.revive_devices_for_user(session, user)
+    await session.commit()
+    if rv.touched:
+        msg += (
+            f"\n♻️ Восстановлено: устройств <b>{rv.devices_restored}</b>, "
+            f"обходов БС <b>{rv.bypass_restored}</b>."
+        )
+        if rv.errors:
+            msg += "\n❌ Не восстановлено: " + "; ".join(rv.errors)
+    logger.info("Admin granted trial to user {} until {}", user.id, expires)
+    try:
+        await tg_bot.send_message(
+            user.tg_id,
+            f"🎁 Тебе выдан пробный период на {settings.trial_days} дн. — "
+            "загляни в «📱 Мои устройства».",
+        )
+    except Exception:
+        pass
+    await call.message.edit_text(
+        msg, reply_markup=admin_sub_kb(user.id, page, is_trial=True)
+    )
+    await call.answer("Триал выдан")
 
 
 @router.callback_query(F.data.startswith(f"{CB_PANEL}:sub_trf:"))
@@ -859,7 +942,7 @@ async def step_sub_traffic(message: Message, state: FSMContext, session: AsyncSe
     trf = "безлимит" if result is None else amnezia.fmt_bytes(result)
     await message.answer(
         f"✅ Лимит трафика подписки: <b>{trf}</b>",
-        reply_markup=admin_sub_kb(user.id, data["page"]),
+        reply_markup=admin_sub_kb(user.id, data["page"], is_trial=user.is_trial),
     )
 
 

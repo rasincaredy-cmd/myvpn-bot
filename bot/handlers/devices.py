@@ -20,6 +20,7 @@ from bot.db.models import PeerStatus
 from bot.keyboards.inline import (
     CB_DEVICE,
     CB_SUB,
+    back_to_devices_kb,
     back_to_menu,
     cancel_only,
     device_card_kb,
@@ -426,8 +427,9 @@ async def cb_dev_revoke(call: CallbackQuery, session: AsyncSession) -> None:
     await session.commit()
     # Удаление необратимо (ревайв невозможен) — фиксируем в лог, кто и что снёс.
     logger.info("User {} deleted device {} ({})", user.id, device_id, label)
+    # Возврат в список устройств, а не в меню (Блок «Мелочи 2»).
     await call.message.edit_text(
-        t.device_revoked.format(label=label), reply_markup=back_to_menu()
+        t.device_revoked.format(label=label), reply_markup=back_to_devices_kb()
     )
     await call.answer()
 

@@ -274,11 +274,18 @@ async def cb_dev_open(call: CallbackQuery, session: AsyncSession) -> None:
         lines.append("• Конфиги по локациям:")
         for p in active_peers:
             loc = labels.get(p.server_id, "?")
-            lines.append(f"   • {loc}")
+            # Расход по каждому конфигу (Блок «Мелочи 2»): раньше в карточке был
+            # только список локаций, и юзер не видел, что куда потратил.
+            lines.append(f"   • {loc} — {amnezia.fmt_bytes(p.traffic_used_bytes)}")
             locations.append((p.id, loc))
-    lines.append(
-        f"• Доступов обхода: <b>{sum(1 for a in accesses if a.status == PeerStatus.ACTIVE)}</b>"
+    active_acc = [a for a in accesses if a.status == PeerStatus.ACTIVE]
+    lines.append(f"• Доступов обхода: <b>{len(active_acc)}</b>")
+    # Итог по устройству — конфиги плюс обходы, привязанные к нему. Отозванные
+    # тоже в сумме: трафик уже потрачен и в лимит подписки он вошёл.
+    dev_total = sum(p.traffic_used_bytes for p in peers) + sum(
+        a.traffic_used_bytes for a in accesses
     )
+    lines.append(f"• 📊 Всего трафика: <b>{amnezia.fmt_bytes(dev_total)}</b>")
     await call.message.edit_text(
         "\n".join(lines),
         reply_markup=device_card_kb(

@@ -8,6 +8,7 @@ from bot.handlers import (
     common,
     configs,
     devices,
+    errors,
     install,
     menu,
     support,
@@ -27,3 +28,7 @@ def register_handlers(dp: Dispatcher) -> None:
     # Сапорт-чат — СТРОГО последним: его реплай-хендлер без state-фильтра
     # ловит только сообщения, не забранные FSM-сценариями выше.
     dp.include_router(support.router)
+    # Ловушка необработанных ошибок. Порядок среди роутеров ей не важен
+    # (@router.errors() живёт отдельно от апдейтов), но держим её в конце,
+    # чтобы читалось как «последний рубеж».
+    dp.include_router(errors.router)

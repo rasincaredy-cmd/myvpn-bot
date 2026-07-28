@@ -653,6 +653,9 @@ async def step_sub_limit(message: Message, state: FSMContext, session: AsyncSess
     await repo.set_subscription(session, data["user_id"], max_devices=int(message.text.strip()))
     await session.commit()
     user = await repo.get_user_by_id(session, data["user_id"])
+    if user is None:
+        await message.answer("Юзер уже удалён.")
+        return
     await message.answer(
         f"✅ Лимит устройств: <b>{user.sub_max_devices}</b>",
         reply_markup=admin_sub_kb(user.id, data["page"], is_trial=user.is_trial),
@@ -685,6 +688,9 @@ async def step_sub_bypass(message: Message, state: FSMContext, session: AsyncSes
     await repo.set_subscription(session, data["user_id"], max_bypass=int(message.text.strip()))
     await session.commit()
     user = await repo.get_user_by_id(session, data["user_id"])
+    if user is None:
+        await message.answer("Юзер уже удалён.")
+        return
     await message.answer(
         f"✅ Лимит обхода БС: <b>{user.sub_max_bypass}</b>",
         reply_markup=admin_sub_kb(user.id, data["page"], is_trial=user.is_trial),
@@ -729,6 +735,9 @@ async def step_sub_balance(message: Message, state: FSMContext, session: AsyncSe
     )
     await session.commit()
     user = await repo.get_user_by_id(session, data["user_id"])
+    if user is None:
+        await message.answer("Юзер уже удалён — правка баланса отменена.")
+        return
     from bot.services.pricing import fmt_rub
     logger.info("Admin balance adjust: user {} {}{} kopeks", user.id, sign, abs(amount))
     try:
@@ -796,6 +805,9 @@ async def step_sub_extend(message: Message, state: FSMContext, session: AsyncSes
     )
     await session.commit()
     user = await repo.get_user_by_id(session, data["user_id"])
+    if user is None:
+        await message.answer("Юзер уже удалён.")
+        return
     msg = (
         f"✅ Срок установлен: <b>{result.strftime('%d.%m.%Y %H:%M')} UTC</b>"
         if result else "✅ Подписка сделана бессрочной."
@@ -874,6 +886,9 @@ async def cb_panel_sub_trial(call: CallbackQuery, session: AsyncSession) -> None
     )
     await session.commit()
     user = await repo.get_user_by_id(session, user_id)
+    if user is None:
+        await call.answer("Юзер уже удалён", show_alert=True)
+        return
     # Как при продлении срока: отозванные по истечению устройства оживают с
     # прежними конфигами, а не выдаются заново.
     msg = (
@@ -939,6 +954,9 @@ async def step_sub_traffic(message: Message, state: FSMContext, session: AsyncSe
     )
     await session.commit()
     user = await repo.get_user_by_id(session, data["user_id"])
+    if user is None:
+        await message.answer("Юзер уже удалён.")
+        return
     trf = "безлимит" if result is None else amnezia.fmt_bytes(result)
     await message.answer(
         f"✅ Лимит трафика подписки: <b>{trf}</b>",
@@ -957,6 +975,11 @@ async def cb_panel_sub_off(call: CallbackQuery, session: AsyncSession) -> None:
     revoked = await revive_svc.revoke_devices_for_user(session, user_id)
     await session.commit()
     user = await repo.get_user_by_id(session, user_id)
+    if user is None:
+        # Юзера стёрли, пока карточка висела открытой: отзыв выше уже отработал
+        # (он идёт по user_id и переживает владельца), уведомлять некого.
+        await call.answer("Юзер уже удалён", show_alert=True)
+        return
     if revoked:
         from bot.services.scheduler import REVOKED_RETENTION_DAYS
         try:

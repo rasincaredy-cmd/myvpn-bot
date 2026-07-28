@@ -130,288 +130,344 @@ async def _run_checks() -> None:
         # «Проверить» (закрыл экран). Зачисление идемпотентно, гонка с кнопкой
         # не задваивает депозит. Делаем ДО истечения — свежие деньги могут
         # спасти подписку автопродлением в секции 1.
-        await _poll_crypto_invoices(session)
+        # Секции изолированы try/except + rollback: сбой одной (например, 500 от
+        # Crypto Pay) не должен лишать тик истечений, ретеншна и учёта трафика.
+        try:
+            await _poll_crypto_invoices(session)
+        except Exception:
+            logger.exception("Scheduler section 0 (crypto poll) failed")
+            await session.rollback()
 
         # ── 1. Истечение подписки: отзыв ВСЕХ устройств юзера ────────────────
         # Единый гейт сервиса — срок подписки. У кого sub_expires_at <= now, отзываем
         # все активные устройства (WG-пиры + доступы обхода) и уведомляем один раз.
         # У кого устройств уже нет (отозвали на прошлом тике) — helper вернёт False,
         # повторно не уведомляем. Перед отзывом — попытка автопродления с баланса.
-        expired_users = list((await session.execute(
-            select(User)
-            .where(User.sub_expires_at.isnot(None))
-            .where(User.sub_expires_at <= now)
-        )).scalars())
+        try:
+            expired_users = list((await session.execute(
+                select(User)
+                .where(User.sub_expires_at.isnot(None))
+                .where(User.sub_expires_at <= now)
+            )).scalars())
 
-        touched = False
-        for user in expired_users:
-            if await _try_autopay(session, user):
-                touched = True
-                continue
-            if await _revoke_all_devices_for_user(session, user.id):
-                touched = True
-                await _notify(
-                    user.tg_id,
-                    "⏱ <b>Подписка закончилась</b> — VPN и обход БС встали на паузу.\n"
-                    f"Ничего не пропало: конфиги хранятся {REVOKED_RETENTION_DAYS} "
-                    "дней, продлишь — все устройства включатся сами, "
-                    "перенастраивать не нужно.\n"
-                    "Продлить: меню → «🎫 Моя подписка» → «🔁 Продлить / купить».",
-                )
-        if touched:
-            await session.commit()
+            touched = False
+            for user in expired_users:
+                if await _try_autopay(session, user):
+                    touched = True
+                    continue
+                if await _revoke_all_devices_for_user(session, user.id):
+                    touched = True
+                    await _notify(
+                        user.tg_id,
+                        "⏱ <b>Подписка закончилась</b> — VPN и обход БС встали на паузу.\n"
+                        f"Ничего не пропало: конфиги хранятся {REVOKED_RETENTION_DAYS} "
+                        "дней, продлишь — все устройства включатся сами, "
+                        "перенастраивать не нужно.\n"
+                        "Продлить: меню → «🎫 Моя подписка» → «🔁 Продлить / купить».",
+                    )
+            if touched:
+                await session.commit()
+        except Exception:
+            logger.exception("Scheduler section 1 (expiry) failed")
+            await session.rollback()
 
         # ── 1b. Предупреждения о скором истечении подписки ──────────────────
-        soon_users = list((await session.execute(
-            select(User)
-            .where(User.sub_expires_at.isnot(None))
-            .where(User.sub_expires_at > now)
-        )).scalars())
+        try:
+            soon_users = list((await session.execute(
+                select(User)
+                .where(User.sub_expires_at.isnot(None))
+                .where(User.sub_expires_at > now)
+            )).scalars())
 
-        warned = False
-        for user in soon_users:
-            try:
-                remaining = _as_utc(user.sub_expires_at) - now
-                fireable = [
-                    i for i, hours in enumerate(WARN_OFFSETS_HOURS)
-                    if not (user.sub_warn_flags & (1 << i))
-                    and remaining <= timedelta(hours=hours)
-                ]
-                if not fireable:
-                    continue
-                # Помечаем пороги всегда (чтобы не копить «долги» и не слать протухшее),
-                # само сообщение — только при включённых предупреждениях и если есть что
-                # терять (активные устройства). Одно сообщение за тик.
-                for i in fireable:
-                    user.sub_warn_flags |= (1 << i)
-                warned = True
-                if user.expiry_warn_enabled and await repo.count_active_devices(session, user.id):
-                    # Триальщику на суточном пороге — не сухое предупреждение,
-                    # а мягкий питч с ценой: это последний момент повлиять на
-                    # конверсию. Пороги общие (sub_warn_flags), дублей нет.
-                    if user.is_trial and 0 in fireable:
-                        from bot.services.pricing import fmt_rub, monthly_price_kopeks
+            warned = False
+            for user in soon_users:
+                try:
+                    remaining = _as_utc(user.sub_expires_at) - now
+                    fireable = [
+                        i for i, hours in enumerate(WARN_OFFSETS_HOURS)
+                        if not (user.sub_warn_flags & (1 << i))
+                        and remaining <= timedelta(hours=hours)
+                    ]
+                    if not fireable:
+                        continue
+                    # Помечаем пороги всегда (чтобы не копить «долги» и не слать
+                    # протухшее), само сообщение — только при включённых
+                    # предупреждениях и если есть что терять (активные
+                    # устройства). Одно сообщение за тик.
+                    for i in fireable:
+                        user.sub_warn_flags |= (1 << i)
+                    warned = True
+                    if user.expiry_warn_enabled and await repo.count_active_devices(session, user.id):
+                        # Триальщику на суточном пороге — не сухое предупреждение,
+                        # а мягкий питч с ценой: это последний момент повлиять на
+                        # конверсию. Пороги общие (sub_warn_flags), дублей нет.
+                        if user.is_trial and 0 in fireable:
+                            from bot.services.pricing import fmt_rub, monthly_price_kopeks
 
-                        text = (
-                            "🎁 <b>Пробный период заканчивается</b> примерно через "
-                            f"{_humanize_left(remaining)}.\n"
-                            "Понравилось? Подписка — от "
-                            f"{fmt_rub(monthly_price_kopeks(1, 1))}/мес, все твои "
-                            "устройства продолжат работать без перенастройки.\n"
-                            "Продлить: меню → «🎫 Моя подписка» → «🔁 Продлить / купить»."
-                        )
-                    else:
-                        text = (
-                            "⏳ Подписка истекает примерно через "
-                            f"{_humanize_left(remaining)}. "
-                            "Продли, чтобы устройства и обход БС не отключились."
-                        )
-                    await _notify(user.tg_id, text)
-            except Exception:
-                logger.exception("Sub expiry-warning failed for user {}", user.id)
-        if warned:
-            await session.commit()
+                            text = (
+                                "🎁 <b>Пробный период заканчивается</b> примерно через "
+                                f"{_humanize_left(remaining)}.\n"
+                                "Понравилось? Подписка — от "
+                                f"{fmt_rub(monthly_price_kopeks(1, 1))}/мес, все твои "
+                                "устройства продолжат работать без перенастройки.\n"
+                                "Продлить: меню → «🎫 Моя подписка» → «🔁 Продлить / купить»."
+                            )
+                        else:
+                            text = (
+                                "⏳ Подписка истекает примерно через "
+                                f"{_humanize_left(remaining)}. "
+                                "Продли, чтобы устройства и обход БС не отключились."
+                            )
+                        await _notify(user.tg_id, text)
+                except Exception:
+                    logger.exception("Sub expiry-warning failed for user {}", user.id)
+            if warned:
+                await session.commit()
+        except Exception:
+            logger.exception("Scheduler section 1b (expiry warnings) failed")
+            await session.rollback()
 
         # ── 2. Автоудаление давно отозванных пиров ──────────────────────────
         # Чистим строки со status=REVOKED, отозванные более REVOKED_RETENTION_DAYS
         # назад. Освобождает IP (revoked-пир держит его в БД до удаления) и не даёт
         # копиться мусору. Сравнение делаем в SQL, чтобы не спотыкаться о naive
         # datetime из SQLite (см. _as_utc): обе стороны биндятся одинаково.
-        cutoff = now - timedelta(days=REVOKED_RETENTION_DAYS)
-        stale = list((await session.execute(
-            select(Peer)
-            .where(Peer.status == PeerStatus.REVOKED)
-            .where(Peer.revoked_at.isnot(None))
-            .where(Peer.revoked_at < cutoff)
-        )).scalars())
+        try:
+            cutoff = now - timedelta(days=REVOKED_RETENTION_DAYS)
+            stale = list((await session.execute(
+                select(Peer)
+                .where(Peer.status == PeerStatus.REVOKED)
+                .where(Peer.revoked_at.isnot(None))
+                .where(Peer.revoked_at < cutoff)
+            )).scalars())
 
-        if stale:
-            # На случай, если отзыв на сервере когда-то не прошёл по SSH, — best-effort
-            # убираем пир с сервера, затем удаляем строку из БД. Группируем по серверу:
-            # один SSH-коннект на сервер.
-            by_srv: dict[int, list[Peer]] = {}
-            for p in stale:
-                by_srv.setdefault(p.server_id, []).append(p)
-            for server_id, plist in by_srv.items():
-                server = await repo.get_server(session, server_id)
-                if not server:
-                    continue
-                try:
-                    async with SSHClient(repo.creds_from_server(server)) as ssh:
-                        for p in plist:
-                            try:
-                                await amnezia.remove_peer_on_server(ssh, public_key=p.public_key)
-                            except SSHError as exc:
-                                logger.warning("Stale-peer remove SSH error peer {}: {}", p.id, exc)
-                except SSHError as exc:
-                    logger.warning("Stale-peer SSH connect error server {}: {}", server_id, exc)
+            if stale:
+                # На случай, если отзыв на сервере когда-то не прошёл по SSH, —
+                # best-effort убираем пир с сервера, затем удаляем строку из БД.
+                # Группируем по серверу: один SSH-коннект на сервер. Если коннект
+                # не поднялся, строку НЕ удаляем: в ней единственные ключи, чтобы
+                # снять пир, — повторим на следующем тике.
+                by_srv: dict[int, list[Peer]] = {}
+                for p in stale:
+                    by_srv.setdefault(p.server_id, []).append(p)
+                failed_srv: set[int] = set()
+                for server_id, plist in by_srv.items():
+                    server = await repo.get_server(session, server_id)
+                    if not server:
+                        continue
+                    try:
+                        async with SSHClient(repo.creds_from_server(server)) as ssh:
+                            for p in plist:
+                                try:
+                                    await amnezia.remove_peer_on_server(ssh, public_key=p.public_key)
+                                except SSHError as exc:
+                                    logger.warning("Stale-peer remove SSH error peer {}: {}", p.id, exc)
+                    except SSHError as exc:
+                        logger.warning("Stale-peer SSH connect error server {}: {}", server_id, exc)
+                        failed_srv.add(server_id)
 
-            for p in stale:
-                await repo.delete_peer(session, p.id)
-                logger.info("Auto-deleted stale revoked peer {} ({})", p.id, p.label)
-            # Фиксируем удаления сразу — как и отзывы выше, чтобы поздний сбой
-            # в секции трафика их не откатил.
-            await session.commit()
+                for p in stale:
+                    if p.server_id in failed_srv:
+                        logger.warning("Skipping DB delete peer {} — SSH connect failed, retry next tick", p.id)
+                        continue
+                    await repo.delete_peer(session, p.id)
+                    logger.info("Auto-deleted stale revoked peer {} ({})", p.id, p.label)
+                # Фиксируем удаления сразу — как и отзывы выше, чтобы поздний сбой
+                # в секции трафика их не откатил.
+                await session.commit()
+        except Exception:
+            logger.exception("Scheduler section 2 (stale peers) failed")
+            await session.rollback()
 
         # ── 2a. Автоудаление давно отозванных wdtt-доступов ─────────────────
         # Симметрично пирам: REVOKED-строки ждут ревайва retention-срок, затем
         # удаляются. Пароль с сервера снят ещё при отзыве; на случай, если тот
-        # SSH тогда не прошёл, — best-effort снимаем повторно (идемпотентно).
-        stale_wdtt = list((await session.execute(
-            select(WdttAccess)
-            .where(WdttAccess.status == PeerStatus.REVOKED)
-            .where(WdttAccess.revoked_at.isnot(None))
-            .where(WdttAccess.revoked_at < cutoff)
-        )).scalars())
+        # SSH тогда не прошёл, — best-effort снимаем повторно (идемпотентно),
+        # а при неудачном коннекте строку оставляем до следующего тика.
+        try:
+            stale_wdtt = list((await session.execute(
+                select(WdttAccess)
+                .where(WdttAccess.status == PeerStatus.REVOKED)
+                .where(WdttAccess.revoked_at.isnot(None))
+                .where(WdttAccess.revoked_at < cutoff)
+            )).scalars())
 
-        if stale_wdtt:
-            by_srv_sw: dict[int, list[WdttAccess]] = {}
-            for a in stale_wdtt:
-                by_srv_sw.setdefault(a.server_id, []).append(a)
-            for server_id, alist in by_srv_sw.items():
-                server = await repo.get_server(session, server_id)
-                if not server:
-                    continue
-                try:
-                    async with SSHClient(repo.creds_from_server(server)) as ssh:
-                        for a in alist:
-                            try:
-                                await wdtt_svc.remove_access(
-                                    ssh, password=decrypt(a.password_enc),
-                                    binary=settings.wdtt_binary_path,
-                                )
-                            except SSHError as exc:
-                                logger.warning("Stale-wdtt remove SSH error acc {}: {}", a.id, exc)
-                except SSHError as exc:
-                    logger.warning("Stale-wdtt SSH connect error server {}: {}", server_id, exc)
+            if stale_wdtt:
+                by_srv_sw: dict[int, list[WdttAccess]] = {}
+                for a in stale_wdtt:
+                    by_srv_sw.setdefault(a.server_id, []).append(a)
+                failed_srv_w: set[int] = set()
+                for server_id, alist in by_srv_sw.items():
+                    server = await repo.get_server(session, server_id)
+                    if not server:
+                        continue
+                    try:
+                        async with SSHClient(repo.creds_from_server(server)) as ssh:
+                            for a in alist:
+                                try:
+                                    await wdtt_svc.remove_access(
+                                        ssh, password=decrypt(a.password_enc),
+                                        binary=settings.wdtt_binary_path,
+                                    )
+                                except SSHError as exc:
+                                    logger.warning("Stale-wdtt remove SSH error acc {}: {}", a.id, exc)
+                    except SSHError as exc:
+                        logger.warning("Stale-wdtt SSH connect error server {}: {}", server_id, exc)
+                        failed_srv_w.add(server_id)
 
-            for a in stale_wdtt:
-                await repo.delete_wdtt_access(session, a.id)
-                logger.info("Auto-deleted stale revoked wdtt access {} ({})", a.id, a.label)
-            await session.commit()
+                for a in stale_wdtt:
+                    if a.server_id in failed_srv_w:
+                        logger.warning("Skipping DB delete wdtt {} — SSH connect failed, retry next tick", a.id)
+                        continue
+                    await repo.delete_wdtt_access(session, a.id)
+                    logger.info("Auto-deleted stale revoked wdtt access {} ({})", a.id, a.label)
+                await session.commit()
+        except Exception:
+            logger.exception("Scheduler section 2a (stale wdtt) failed")
+            await session.rollback()
 
         # ── 2b. Зомби-устройства ─────────────────────────────────────────────
         # REVOKED-устройство, у которого retention уже удалил все пиры и обходы,
         # восстанавливать нечем — убираем строку, чтобы не висела в списке 🚫.
-        zombies = list((await session.execute(
-            select(Device)
-            .where(Device.status == PeerStatus.REVOKED)
-            .where(~select(Peer.id).where(Peer.device_id == Device.id).exists())
-            .where(~select(WdttAccess.id).where(WdttAccess.device_id == Device.id).exists())
-        )).scalars())
-        if zombies:
-            for d in zombies:
-                await session.delete(d)
-                logger.info("Auto-deleted zombie revoked device {} ({})", d.id, d.label)
-            await session.commit()
+        try:
+            zombies = list((await session.execute(
+                select(Device)
+                .where(Device.status == PeerStatus.REVOKED)
+                .where(~select(Peer.id).where(Peer.device_id == Device.id).exists())
+                .where(~select(WdttAccess.id).where(WdttAccess.device_id == Device.id).exists())
+            )).scalars())
+            if zombies:
+                for d in zombies:
+                    await session.delete(d)
+                    logger.info("Auto-deleted zombie revoked device {} ({})", d.id, d.label)
+                await session.commit()
+        except Exception:
+            logger.exception("Scheduler section 2b (zombie devices) failed")
+            await session.rollback()
 
         # ── 2c. Чистка старых маршрутов сапорт-чата ─────────────────────────
         # Пары «сообщение юзера ↔ копия у админа» старше 30 дней: реплай на них
         # уже не доставится (support_route_lost), держать строки незачем.
-        purged = await repo.purge_old_support_routes(session, days=REVOKED_RETENTION_DAYS)
-        if purged:
-            await session.commit()
-            logger.info("Purged {} old support routes", purged)
+        try:
+            purged = await repo.purge_old_support_routes(session, days=REVOKED_RETENTION_DAYS)
+            if purged:
+                await session.commit()
+                logger.info("Purged {} old support routes", purged)
+        except Exception:
+            logger.exception("Scheduler section 2c (support routes) failed")
+            await session.rollback()
 
         # ── 3. Учёт трафика (накопление по пирам) ───────────────────────────
         # Копим трафик для ВСЕХ активных пиров, чтобы счётчик пережил ребут сервера.
         # Лимит теперь на ПОДПИСКУ (см. 3b), а не на отдельный пир.
-        active = list((await session.execute(
-            select(Peer).where(Peer.status == PeerStatus.ACTIVE)
-        )).scalars())
+        try:
+            active = list((await session.execute(
+                select(Peer).where(Peer.status == PeerStatus.ACTIVE)
+            )).scalars())
 
-        if active:
-            by_server: dict[int, list[Peer]] = {}
-            for p in active:
-                by_server.setdefault(p.server_id, []).append(p)
+            if active:
+                by_server: dict[int, list[Peer]] = {}
+                for p in active:
+                    by_server.setdefault(p.server_id, []).append(p)
 
-            for server_id, peers in by_server.items():
-                server = await repo.get_server(session, server_id)
-                if not server:
-                    continue
-                try:
-                    async with SSHClient(repo.creds_from_server(server)) as ssh:
-                        traffic_list = await amnezia.get_peer_traffic(ssh)
-                except SSHError as exc:
-                    logger.warning("Traffic check SSH error server {}: {}", server_id, exc)
-                    continue
-
-                traffic_map = {ti.public_key: ti for ti in traffic_list}
-                for peer in peers:
-                    ti = traffic_map.get(peer.public_key)
-                    if ti is None:
+                for server_id, peers in by_server.items():
+                    server = await repo.get_server(session, server_id)
+                    if not server:
                         continue
-                    raw = ti.rx_bytes + ti.tx_bytes
-                    peer.traffic_used_bytes, peer.traffic_last_raw_bytes = (
-                        amnezia.accumulate_traffic(
-                            peer.traffic_used_bytes, peer.traffic_last_raw_bytes, raw
+                    try:
+                        async with SSHClient(repo.creds_from_server(server)) as ssh:
+                            traffic_list = await amnezia.get_peer_traffic(ssh)
+                    except SSHError as exc:
+                        logger.warning("Traffic check SSH error server {}: {}", server_id, exc)
+                        continue
+
+                    traffic_map = {ti.public_key: ti for ti in traffic_list}
+                    for peer in peers:
+                        ti = traffic_map.get(peer.public_key)
+                        if ti is None:
+                            continue
+                        raw = ti.rx_bytes + ti.tx_bytes
+                        peer.traffic_used_bytes, peer.traffic_last_raw_bytes = (
+                            amnezia.accumulate_traffic(
+                                peer.traffic_used_bytes, peer.traffic_last_raw_bytes, raw
+                            )
                         )
-                    )
-            await session.commit()  # зафиксировать обновлённые счётчики
+                await session.commit()
+        except Exception:
+            logger.exception("Scheduler section 3 (peer traffic) failed")
+            await session.rollback()
 
         # ── 3a. Учёт трафика обхода БС (wdtt) ───────────────────────────────
         # wdtt-сервер сам считает Up/DownBytes по паролю; берём их через `ctl list`
         # и копим на WdttAccess (с защитой от сброса, как у пиров). Идёт в лимит
         # подписки. Группируем активные доступы по серверу — один SSH на сервер.
-        wdtt_active = list((await session.execute(
-            select(WdttAccess).where(WdttAccess.status == PeerStatus.ACTIVE)
-        )).scalars())
-        if wdtt_active:
-            by_srv_w: dict[int, list[WdttAccess]] = {}
-            for a in wdtt_active:
-                by_srv_w.setdefault(a.server_id, []).append(a)
-            for server_id, accs in by_srv_w.items():
-                server = await repo.get_server(session, server_id)
-                if not server:
-                    continue
-                try:
-                    async with SSHClient(repo.creds_from_server(server)) as ssh:
-                        rows = await wdtt_svc.list_accesses(
-                            ssh, binary=settings.wdtt_binary_path
-                        )
-                except SSHError as exc:
-                    logger.warning("Wdtt traffic list SSH error server {}: {}", server_id, exc)
-                    continue
-                by_pw = {r.get("password"): r for r in rows}
-                for acc in accs:
-                    r = by_pw.get(decrypt(acc.password_enc))
-                    if r is None:
+        try:
+            wdtt_active = list((await session.execute(
+                select(WdttAccess).where(WdttAccess.status == PeerStatus.ACTIVE)
+            )).scalars())
+            if wdtt_active:
+                by_srv_w: dict[int, list[WdttAccess]] = {}
+                for a in wdtt_active:
+                    by_srv_w.setdefault(a.server_id, []).append(a)
+                for server_id, accs in by_srv_w.items():
+                    server = await repo.get_server(session, server_id)
+                    if not server:
                         continue
-                    raw = int(r.get("down_bytes", 0)) + int(r.get("up_bytes", 0))
-                    acc.traffic_used_bytes, acc.traffic_last_raw_bytes = (
-                        amnezia.accumulate_traffic(
-                            acc.traffic_used_bytes, acc.traffic_last_raw_bytes, raw
+                    try:
+                        async with SSHClient(repo.creds_from_server(server)) as ssh:
+                            rows = await wdtt_svc.list_accesses(
+                                ssh, binary=settings.wdtt_binary_path
+                            )
+                    except SSHError as exc:
+                        logger.warning("Wdtt traffic list SSH error server {}: {}", server_id, exc)
+                        continue
+                    by_pw = {r.get("password"): r for r in rows}
+                    for acc in accs:
+                        r = by_pw.get(decrypt(acc.password_enc))
+                        if r is None:
+                            continue
+                        raw = int(r.get("down_bytes", 0)) + int(r.get("up_bytes", 0))
+                        acc.traffic_used_bytes, acc.traffic_last_raw_bytes = (
+                            amnezia.accumulate_traffic(
+                                acc.traffic_used_bytes, acc.traffic_last_raw_bytes, raw
+                            )
                         )
-                    )
-            await session.commit()
+                await session.commit()
+        except Exception:
+            logger.exception("Scheduler section 3a (wdtt traffic) failed")
+            await session.rollback()
 
         # ── 3b. Лимит трафика на ПОДПИСКУ ───────────────────────────────────
         # Расход считается суммарно по юзеру за период (Σ пиров − base). Превысил
         # заданный лимит → отзываем все устройства (как истечение срока) + уведомляем.
-        capped_users = list((await session.execute(
-            select(User).where(User.sub_traffic_limit_bytes.isnot(None))
-        )).scalars())
+        try:
+            capped_users = list((await session.execute(
+                select(User).where(User.sub_traffic_limit_bytes.isnot(None))
+            )).scalars())
 
-        limit_touched = False
-        for user in capped_users:
-            used = await repo.sub_traffic_used(session, user)
-            if used < (user.sub_traffic_limit_bytes or 0):
-                continue
-            if await _revoke_all_devices_for_user(session, user.id):
-                limit_touched = True
-                logger.info("Auto-revoked user {} devices (traffic limit)", user.id)
-                await _notify(
-                    user.tg_id,
-                    f"📊 <b>Трафик подписки закончился</b> "
-                    f"({amnezia.fmt_bytes(used)} из "
-                    f"{amnezia.fmt_bytes(user.sub_traffic_limit_bytes)}) — "
-                    "устройства встали на паузу.\n"
-                    "Счётчик обнулится при продлении на новый срок. Продлить: "
-                    "меню → «🎫 Моя подписка». Нужно больше трафика — напиши "
-                    "в поддержку.",
-                )
-        if limit_touched:
-            await session.commit()
+            limit_touched = False
+            for user in capped_users:
+                used = await repo.sub_traffic_used(session, user)
+                if used < (user.sub_traffic_limit_bytes or 0):
+                    continue
+                if await _revoke_all_devices_for_user(session, user.id):
+                    limit_touched = True
+                    logger.info("Auto-revoked user {} devices (traffic limit)", user.id)
+                    await _notify(
+                        user.tg_id,
+                        f"📊 <b>Трафик подписки закончился</b> "
+                        f"({amnezia.fmt_bytes(used)} из "
+                        f"{amnezia.fmt_bytes(user.sub_traffic_limit_bytes)}) — "
+                        "устройства встали на паузу.\n"
+                        "Счётчик обнулится при продлении на новый срок. Продлить: "
+                        "меню → «🎫 Моя подписка». Нужно больше трафика — напиши "
+                        "в поддержку.",
+                    )
+            if limit_touched:
+                await session.commit()
+        except Exception:
+            logger.exception("Scheduler section 3b (traffic limit) failed")
+            await session.rollback()
 
 
 async def run() -> None:

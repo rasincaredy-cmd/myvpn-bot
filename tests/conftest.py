@@ -31,7 +31,11 @@ from bot.db.base import Base
 
 @pytest_asyncio.fixture
 async def session() -> AsyncSession:
-    """Свежий in-memory engine на каждый тест — никакого общего state."""
+    """Свежий in-memory engine на каждый тест — никакого общего state.
+
+    FK здесь, как и в проде, НЕ enforce'атся (см. комментарий в bot/db/base.py):
+    стирание юзера намеренно оставляет REVOKED-строки для повторного SSH-снятия.
+    """
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
     async with engine.begin() as conn:
         # Импорт здесь, чтобы модели зарегистрировались в metadata.

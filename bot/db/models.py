@@ -193,6 +193,12 @@ class Peer(Base):
         ForeignKey("users.id", ondelete="CASCADE"), index=True
     )
     # Устройство, к которому относится пир (Блок 9). NULL — легаси-пиры до миграции.
+    # ВНИМАНИЕ, тройное расхождение (см. README, раздел про PRAGMA foreign_keys):
+    # 1) FK нигде не enforce'ится — PRAGMA foreign_keys выключен намеренно;
+    # 2) в проде этого FK нет и в DDL — колонку добавила миграция ALTER TABLE
+    #    ADD COLUMN, а она REFERENCES не переносит (в новых базах из create_all —
+    #    есть); 3) реальное поведение задаёт repo.delete_device: он пиры УДАЛЯЕТ,
+    # а не зануляет. Строка ниже — декларация ради полноты модели, не контракт.
     device_id: Mapped[int | None] = mapped_column(
         ForeignKey("devices.id", ondelete="SET NULL"), index=True
     )
@@ -292,6 +298,8 @@ class WdttAccess(Base):
         ForeignKey("users.id", ondelete="CASCADE"), index=True
     )
     # Устройство, к которому привязан доступ обхода (Блок 9). NULL — легаси.
+    # То же расхождение, что у Peer.device_id: FK не enforce'ится, в проде его
+    # нет в DDL, а удаление делает repo.delete_device явным DELETE.
     device_id: Mapped[int | None] = mapped_column(
         ForeignKey("devices.id", ondelete="SET NULL"), index=True
     )

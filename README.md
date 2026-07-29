@@ -254,7 +254,16 @@ bot/
 │   └── qrgen.py         # QR из .conf
 ├── states/install.py    # FSM-states
 ├── filters/admin.py     # AdminFilter (ADMIN_IDS)
-├── keyboards/inline.py  # все inline-клавиатуры
+├── keyboards/inline/    # inline-клавиатуры; __init__.py собирает всё в один импорт
+│   ├── prefixes.py      # префиксы callback_data (CB_*)
+│   ├── menu.py          # главное меню, оповещения, навигация
+│   ├── install.py       # мастер установки
+│   ├── servers.py       # серверы, локации, инвайты, пиры глазами админа
+│   ├── admin.py         # админ-панель: юзеры, рассылка, подписка
+│   ├── devices.py       # устройства и подписка юзера
+│   ├── balance.py       # баланс, пополнение, конструктор тарифа
+│   ├── wdtt.py          # обход БС
+│   └── support.py       # сапорт-чат
 ├── texts/ru.py          # все тексты в одном месте
 └── utils/
     ├── validators.py

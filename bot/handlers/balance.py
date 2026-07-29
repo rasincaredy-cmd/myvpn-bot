@@ -26,6 +26,7 @@ from bot.keyboards.inline import (
     deposit_amounts_kb,
     extend_kb,
     invoice_kb,
+    topup_kb,
 )
 from bot.loader import bot
 from bot.services import billing, cryptopay
@@ -268,16 +269,78 @@ async def notify_deposit(dep: billing.DepositResult) -> None:
             pass
 
 
-async def notify_autopay(user, res: billing.ChargeResult) -> None:
-    """Уведомление об автопродлении с баланса. Общая для планировщика и
-    мгновенного продления после пополнения; ошибки Telegram глотаем."""
-    text = (
-        f"♻️ Подписка автоматически продлена на месяц за "
-        f"{fmt_rub(res.price_kopeks)} с баланса "
-        f"(до {fmt_msk(res.new_expires_at)} МСК).\n"
-        f"Остаток: {fmt_rub(user.balance_kopeks)}. "
-        "Отключить автопродление можно в «🎫 Моя подписка»."
+def term_label(months: int) -> str:
+    """Срок словами — так же, как на кнопках покупки, чтобы юзер узнавал то,
+    что выбирал сам."""
+    return dict(_DEPOSIT_TERMS).get(months, f"{months} мес")
+
+
+def autopay_forecast_line(user) -> str | None:
+    """Строка для предупреждения «подписка скоро истечёт»: что именно спишется.
+
+    Юзер должен узнать сумму ДО списания, а не из факта. None — автопродление
+    выключено или подписка бессрочная: сказать нечего."""
+    if not user.autopay or user.sub_expires_at is None:
+        return None
+    plan = billing.plan_autopay(user)
+    if plan is None:
+        # Денег не хватает даже на месяц (либо тариф пустой) — предупреждаем,
+        # что пауза всё-таки будет, и называем минимальную сумму.
+        if user.sub_max_devices + user.sub_max_bypass < 1:
+            return None
+        month_price = term_price_kopeks(
+            monthly_price_kopeks(user.sub_max_devices, user.sub_max_bypass), 1
+        )
+        return (
+            "♻️ Автопродление включено, но на балансе не хватает даже на месяц "
+            f"(нужно {fmt_rub(month_price)}) — подписка встанет на паузу. "
+            "Пополни баланс, и она продлится сама."
+        )
+    months, price, wanted, wanted_price = plan
+    if months < wanted:
+        return (
+            f"♻️ Автопродление: баланса хватит на <b>{term_label(months)}</b> "
+            f"({fmt_rub(price)}), а покупал ты на <b>{term_label(wanted)}</b> "
+            f"({fmt_rub(wanted_price)}). Пополни ещё "
+            f"{fmt_rub(wanted_price - user.balance_kopeks)} — продлим на полный "
+            "срок и со скидкой за него."
+        )
+    return (
+        f"♻️ Автопродление: спишем {fmt_rub(price)} за "
+        f"<b>{term_label(months)}</b> с баланса, VPN не прервётся."
     )
+
+
+def autopay_notice(user, res: billing.ChargeResult) -> tuple[str, bool]:
+    """Текст уведомления об автопродлении и нужна ли кнопка пополнения.
+
+    Если денег хватило только на срок короче купленного, юзеру говорим об этом
+    прямым текстом: какой срок был, какой стал, сколько не хватило. Молча
+    выдать месяц вместо года — верный способ получить «а почему у меня
+    подписка кончилась через месяц?» в поддержке."""
+    shortened = res.months < res.wanted_months
+    until = f"до {fmt_msk(res.new_expires_at)} МСК"
+    if shortened:
+        text = (
+            "♻️ Подписка продлена, но <b>на меньший срок</b>, чем ты покупал.\n\n"
+            f"• Было куплено на <b>{term_label(res.wanted_months)}</b> — это "
+            f"{fmt_rub(res.wanted_price_kopeks)}, на балансе столько не набралось "
+            f"(не хватило <b>{fmt_rub(res.missing_kopeks)}</b>).\n"
+            f"• Продлили на <b>{term_label(res.months)}</b> за "
+            f"{fmt_rub(res.price_kopeks)} — {until}.\n\n"
+            "Пополни баланс — в следующий раз продлим на полный срок и со "
+            "скидкой за него.\n"
+            f"Остаток: {fmt_rub(user.balance_kopeks)}. "
+            "Отключить автопродление — в «🎫 Моя подписка»."
+        )
+    else:
+        text = (
+            f"♻️ Подписка автоматически продлена на "
+            f"<b>{term_label(res.months)}</b> за {fmt_rub(res.price_kopeks)} "
+            f"с баланса ({until}).\n"
+            f"Остаток: {fmt_rub(user.balance_kopeks)}. "
+            "Отключить автопродление можно в «🎫 Моя подписка»."
+        )
     rv = res.revive
     if rv is not None and (rv.devices_restored or rv.bypass_restored):
         text += (
@@ -286,8 +349,18 @@ async def notify_autopay(user, res: billing.ChargeResult) -> None:
         )
     if rv is not None and rv.errors:
         text += "\n⚠️ Часть устройств не восстановилась — напиши в поддержку, починим."
+    return text, shortened
+
+
+async def notify_autopay(user, res: billing.ChargeResult) -> None:
+    """Уведомление об автопродлении с баланса. Общая для планировщика и
+    мгновенного продления после пополнения; ошибки Telegram глотаем."""
+    text, need_topup = autopay_notice(user, res)
+    # Кнопку пополнения даём, только если пополнять есть чем: без Crypto Pay
+    # она приведёт к «временно недоступно».
+    kb = topup_kb() if (need_topup and cryptopay.enabled()) else None
     try:
-        await bot.send_message(user.tg_id, text)
+        await bot.send_message(user.tg_id, text, reply_markup=kb)
     except Exception:
         pass
 
@@ -511,7 +584,17 @@ async def cb_bal_autopay(call: CallbackQuery, session: AsyncSession) -> None:
         )
     except Exception:
         pass
-    await call.answer(
-        "Автопродление включено: при истечении спишем месяц с баланса."
-        if user.autopay else "Автопродление выключено."
-    )
+    if not user.autopay:
+        answer = "Автопродление выключено."
+    else:
+        # Называем срок и сумму сразу: «включено» без цифр юзер понимает
+        # как «спишут месяц», а спишем мы столько, сколько он покупал.
+        plan = billing.plan_autopay(user)
+        answer = (
+            f"Автопродление включено: при истечении спишем "
+            f"{fmt_rub(plan[1])} за {term_label(plan[0])} с баланса."
+            if plan is not None else
+            "Автопродление включено: при истечении продлим подписку с баланса, "
+            "если на нём хватит денег."
+        )
+    await call.answer(answer, show_alert=True)

@@ -44,6 +44,7 @@ async def set_subscription(
     reset_traffic_base: bool = False,
     mark_paid: bool = False,
     mark_trial: bool = False,
+    term_months: int | None = None,
 ) -> None:
     """Обновляет подписку юзера. expires_at/traffic_limit меняются только при
     соответствующем touch_* (иначе None трактовался бы как «снять»). При продлении
@@ -65,6 +66,11 @@ async def set_subscription(
     if mark_trial:
         # Обратная mark_paid: админ выдал триал заново (Блок «Мелочи 2»).
         values["is_trial"] = True
+    if term_months is not None:
+        # Купленный срок — ориентир для автопродления. Только при покупке:
+        # у выданного админом срока «сколько месяцев» не существует, и затирать
+        # им прежний выбор юзера нельзя.
+        values["sub_term_months"] = term_months
     if values:
         await session.execute(
             update(User).where(User.id == user_id).values(**values)

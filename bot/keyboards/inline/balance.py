@@ -18,6 +18,15 @@ def balance_kb(can_deposit: bool) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
+def topup_kb() -> InlineKeyboardMarkup:
+    """Одна кнопка пополнения — для уведомлений, где деньги закончились не
+    вовремя (например, автопродление срезало срок подписки): юзеру не нужно
+    искать раздел «Баланс» в меню."""
+    kb = InlineKeyboardBuilder()
+    kb.button(text="➕ Пополнить баланс", callback_data=f"{CB_BAL}:dep")
+    return kb.as_markup()
+
+
 def deposit_amounts_kb(amounts: list[tuple[int, str]]) -> InlineKeyboardMarkup:
     """amounts: (рубли, подпись кнопки) — подписи считаются из прайсинга
     («90 ₽ — месяц»), чтобы суммы не выглядели случайными числами."""

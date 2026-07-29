@@ -271,6 +271,92 @@ class TestInstantAutopay:
         assert [tx.kind for tx in txs] == ["charge", "deposit"]
 
 
+class TestAutopayTerm:
+    """Автопродление на ТОТ ЖЕ срок, что юзер покупал, с откатом на меньший при
+    нехватке баланса. Раньше продлевали всегда на месяц — купивший год со
+    скидкой 25% незаметно начинал платить помесячно по полной цене."""
+
+    async def test_purchase_remembers_term(self, session: AsyncSession) -> None:
+        user = await _make_user(
+            session, balance_kopeks=810_00, sub_max_devices=1, sub_max_bypass=1
+        )
+        await billing.charge_and_extend(session, user, 12)
+        await session.commit()
+        assert user.sub_term_months == 12
+
+    async def test_autopay_renews_for_bought_term(self, session: AsyncSession) -> None:
+        past = datetime.now(timezone.utc) - timedelta(days=1)
+        user = await _make_user(
+            session, balance_kopeks=810_00, sub_expires_at=past,
+            sub_max_devices=1, sub_max_bypass=1, autopay=True, sub_term_months=12,
+        )
+        res = await billing.autopay_if_expired(session, user)
+        await session.commit()
+        assert res is not None and res.ok
+        assert res.months == 12 and res.price_kopeks == 810_00  # со скидкой 25%
+        assert user.balance_kopeks == 0
+        left = res.new_expires_at - datetime.now(timezone.utc)
+        assert timedelta(days=359) < left < timedelta(days=361)
+
+    async def test_autopay_falls_back_to_affordable_term(self, session: AsyncSession) -> None:
+        """Купил год, на балансе 500₽: вместо паузы продлеваем на 6 мес (450₽) —
+        максимальный срок, на который хватает."""
+        past = datetime.now(timezone.utc) - timedelta(days=1)
+        user = await _make_user(
+            session, balance_kopeks=500_00, sub_expires_at=past,
+            sub_max_devices=1, sub_max_bypass=1, autopay=True, sub_term_months=12,
+        )
+        res = await billing.autopay_if_expired(session, user)
+        await session.commit()
+        assert res is not None and res.ok
+        assert res.months == 6 and res.price_kopeks == 450_00
+        assert res.wanted_months == 12 and res.wanted_price_kopeks == 810_00
+        assert res.missing_kopeks == 310_00       # сколько не хватило до года
+        assert user.balance_kopeks == 50_00
+
+    async def test_full_term_is_not_marked_shortened(self, session: AsyncSession) -> None:
+        past = datetime.now(timezone.utc) - timedelta(days=1)
+        user = await _make_user(
+            session, balance_kopeks=810_00, sub_expires_at=past,
+            sub_max_devices=1, sub_max_bypass=1, autopay=True, sub_term_months=12,
+        )
+        res = await billing.autopay_if_expired(session, user)
+        await session.commit()
+        assert res.months == res.wanted_months and res.missing_kopeks == 0
+
+    async def test_unknown_term_renews_monthly(self, session: AsyncSession) -> None:
+        """Старые юзеры (покупали до этой правки) — месяц, как и раньше."""
+        past = datetime.now(timezone.utc) - timedelta(days=1)
+        user = await _make_user(
+            session, balance_kopeks=810_00, sub_expires_at=past,
+            sub_max_devices=1, sub_max_bypass=1, autopay=True, sub_term_months=None,
+        )
+        res = await billing.autopay_if_expired(session, user)
+        await session.commit()
+        assert res.months == 1 and res.price_kopeks == 90_00
+        assert user.balance_kopeks == 720_00
+
+    async def test_never_renews_longer_than_bought(self, session: AsyncSession) -> None:
+        """Денег хватает на год, но покупали месяц — списываем месяц."""
+        past = datetime.now(timezone.utc) - timedelta(days=1)
+        user = await _make_user(
+            session, balance_kopeks=1000_00, sub_expires_at=past,
+            sub_max_devices=1, sub_max_bypass=1, autopay=True, sub_term_months=1,
+        )
+        res = await billing.autopay_if_expired(session, user)
+        await session.commit()
+        assert res.months == 1 and res.price_kopeks == 90_00
+
+    async def test_waits_when_not_enough_even_for_month(self, session: AsyncSession) -> None:
+        past = datetime.now(timezone.utc) - timedelta(days=1)
+        user = await _make_user(
+            session, balance_kopeks=10_00, sub_expires_at=past,
+            sub_max_devices=1, sub_max_bypass=1, autopay=True, sub_term_months=12,
+        )
+        assert await billing.autopay_if_expired(session, user) is None
+        assert user.balance_kopeks == 10_00  # ничего не списано
+
+
 class TestAdminAdjust:
     async def test_add_balance_tx_updates_and_journals(self, session: AsyncSession) -> None:
         user = await _make_user(session)

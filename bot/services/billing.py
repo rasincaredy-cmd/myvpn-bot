@@ -18,6 +18,7 @@ from bot.db.models import CryptoInvoice, User
 from bot.services import revive as revive_svc
 from bot.services.pricing import (
     DAYS_PER_MONTH,
+    TERM_DISCOUNTS,
     monthly_price_kopeks,
     term_price_kopeks,
 )
@@ -86,7 +87,14 @@ class ChargeResult:
     price_kopeks: int = 0
     new_expires_at: datetime | None = None
     revive: "revive_svc.ReviveResult | None" = None
-    missing_kopeks: int = 0        # сколько не хватило (при ok=False)
+    missing_kopeks: int = 0        # сколько не хватило (при ok=False; при
+                                   # срезанном автопродлении — до полного срока)
+    months: int = 0                # на сколько месяцев продлили фактически
+    # Автопродление: на сколько юзер рассчитывал (его прошлая покупка) и сколько
+    # это стоило бы. months < wanted_months ⇒ срок срезан из-за нехватки денег,
+    # об этом обязательно сказать юзеру.
+    wanted_months: int = 0
+    wanted_price_kopeks: int = 0
 
 
 async def charge_and_extend(
@@ -132,6 +140,7 @@ async def charge_and_extend(
         expires_at=new_expiry, touch_expires=True,
         reset_traffic_base=True, mark_paid=True,
         traffic_limit_bytes=None, touch_traffic_limit=True,
+        term_months=months,
     )
     await session.refresh(user)
     logger.info(
@@ -141,14 +150,45 @@ async def charge_and_extend(
 
     rv = await revive_svc.revive_devices_for_user(session, user)
     return ChargeResult(
-        ok=True, price_kopeks=price, new_expires_at=new_expiry, revive=rv
+        ok=True, price_kopeks=price, new_expires_at=new_expiry, revive=rv,
+        months=months, wanted_months=months, wanted_price_kopeks=price,
     )
+
+
+def plan_autopay(user: User) -> tuple[int, int, int, int] | None:
+    """Что спишет автопродление, БЕЗ списания: (срок, цена, хотели, цена полного).
+
+    Отдельно от самого продления, потому что этот же расчёт нужен предупреждению
+    «подписка скоро истечёт» — юзер должен заранее знать сумму. Срок истечения
+    здесь НЕ проверяется: предупреждение шлётся, пока подписка ещё жива.
+
+    None — автопродление не сработает: выключено, подписка бессрочная, тариф
+    пустой или денег не хватает даже на месяц."""
+    if not user.autopay or user.sub_expires_at is None:
+        return None
+    # Пустой тариф (админ выставил 0/0) не автопродлеваем: списывать деньги за
+    # подписку, в которой нельзя создать ни устройство, ни обход, — нечестно.
+    if user.sub_max_devices + user.sub_max_bypass < 1:
+        return None
+    wanted = user.sub_term_months or 1
+    monthly = monthly_price_kopeks(user.sub_max_devices, user.sub_max_bypass)
+    wanted_price = term_price_kopeks(monthly, wanted)
+    # Максимальный доступный срок, но не длиннее купленного: цена срока не
+    # линейна (скидки), поэтому перебираем варианты, а не делим сумму.
+    months = next(
+        (m for m in sorted(TERM_DISCOUNTS, reverse=True)
+         if m <= wanted and term_price_kopeks(monthly, m) <= user.balance_kopeks),
+        None,
+    )
+    if months is None:
+        return None
+    return months, term_price_kopeks(monthly, months), wanted, wanted_price
 
 
 async def autopay_if_expired(
     session: AsyncSession, user: User
 ) -> ChargeResult | None:
-    """Автопродление, если подписка УЖЕ истекла: месяц текущего тарифа с баланса.
+    """Автопродление, если подписка УЖЕ истекла: списываем текущий тариф с баланса.
 
     Общая точка для планировщика (тик по истечению) и мгновенного продления
     сразу после пополнения (кнопка «Проверить», ручное начисление админом) —
@@ -156,17 +196,35 @@ async def autopay_if_expired(
     не надо (подписка активна/бессрочная, autopay выключен) или не хватило
     баланса (charge_and_extend при нехватке ничего не пишет — отката не нужно).
     Crypto Pay не требуется: списание идёт с баланса, а его могли пополнить
-    и руками (kind=admin за перевод на карту)."""
-    if not user.autopay or user.sub_expires_at is None:
-        return None
-    # Пустой тариф (админ выставил 0/0) не автопродлеваем: списывать деньги за
-    # подписку, в которой нельзя создать ни устройство, ни обход, — нечестно.
-    if user.sub_max_devices + user.sub_max_bypass < 1:
+    и руками (kind=admin за перевод на карту).
+
+    Срок — тот же, что юзер покупал (sub_term_months), чтобы не терялась скидка
+    за длинный срок. Денег на полный срок не хватило — берём максимальный, на
+    который хватает: пусть подписка будет короче, чем ждали, но не оборвётся.
+    Вызывающий обязан сказать юзеру про срезанный срок (months < wanted_months).
+    """
+    if user.sub_expires_at is None:
         return None
     exp = user.sub_expires_at
     if exp.tzinfo is None:
         exp = exp.replace(tzinfo=timezone.utc)
     if exp > datetime.now(timezone.utc):
         return None
-    res = await charge_and_extend(session, user, 1)
-    return res if res.ok else None
+
+    plan = plan_autopay(user)
+    if plan is None:              # выключено / пустой тариф / денег не хватает
+        return None
+    months, _price, wanted, wanted_price = plan
+    balance_before = user.balance_kopeks
+
+    res = await charge_and_extend(session, user, months)
+    if not res.ok:
+        return None
+    res.wanted_months = wanted
+    res.wanted_price_kopeks = wanted_price
+    # Срок срезан: показываем, сколько не хватило на полный, — юзер поймёт,
+    # на сколько пополнить, чтобы в следующий раз продлилось как раньше.
+    res.missing_kopeks = (
+        max(0, wanted_price - balance_before) if months < wanted else 0
+    )
+    return res

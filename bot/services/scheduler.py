@@ -211,6 +211,15 @@ async def _run_checks() -> None:
                                 f"{_humanize_left(remaining)}. "
                                 "Продли, чтобы устройства и обход БС не отключились."
                             )
+                            # Сумма списания — заранее, а не постфактум: юзер
+                            # должен успеть пополнить или выключить автопродление.
+                            # Триальщику не пишем — он ещё ничего не покупал,
+                            # ему выше идёт питч с ценой.
+                            from bot.handlers.balance import autopay_forecast_line
+
+                            forecast = autopay_forecast_line(user)
+                            if forecast:
+                                text += f"\n\n{forecast}"
                         await _notify(user.tg_id, text)
                 except Exception:
                     logger.exception("Sub expiry-warning failed for user {}", user.id)

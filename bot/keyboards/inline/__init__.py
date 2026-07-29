@@ -27,6 +27,7 @@ from bot.keyboards.inline.balance import (
     deposit_amounts_kb,
     extend_kb,
     invoice_kb,
+    topup_kb,
 )
 from bot.keyboards.inline.devices import (
     back_to_devices_kb,
@@ -148,6 +149,7 @@ __all__ = [
     "support_dialog_kb",
     "support_intro_kb",
     "to_server",
+    "topup_kb",
     "traffic_nav",
     "user_card_kb",
     "user_wipe_confirm_kb",

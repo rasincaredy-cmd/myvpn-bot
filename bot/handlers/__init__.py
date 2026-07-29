@@ -10,7 +10,7 @@ from bot.handlers import (
     devices,
     errors,
     install,
-    menu,
+    servers,
     support,
     wdtt,
 )
@@ -18,7 +18,7 @@ from bot.handlers import (
 
 def register_handlers(dp: Dispatcher) -> None:
     dp.include_router(common.router)
-    dp.include_router(menu.router)
+    dp.include_router(servers.router)
     dp.include_router(configs.router)
     dp.include_router(devices.router)
     dp.include_router(install.router)

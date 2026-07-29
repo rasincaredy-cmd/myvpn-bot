@@ -198,7 +198,18 @@ bot/
 │   ├── models.py        # User / Server / Peer / Device / Invite / WdttAccess
 │   │                    # / SupportMsg / BalanceTx / CryptoInvoice
 │   ├── migrate.py       # авто-миграции (ALTER TABLE ADD COLUMN)
-│   └── repo.py          # репозиторий + creds_from_server
+│   └── repo/            # репозиторий; __init__.py собирает всё в `repo.*`
+│       ├── common.py        # локации, загрузка серверов, creds_from_server
+│       ├── users.py         # юзеры: авто-триал, выборки, блокировка
+│       ├── servers.py       # серверы: создание, выборки, статус
+│       ├── peers.py         # пиры: отзыв, возврат, удаление
+│       ├── invites.py       # инвайты
+│       ├── wdtt.py          # доступы обхода БС
+│       ├── devices.py       # устройства (пиры по локациям + обходы)
+│       ├── subscription.py  # подписка и учёт трафика периода
+│       ├── billing.py       # баланс, журнал, инвойсы, рефералка
+│       ├── support.py       # маршруты сапорт-чата
+│       └── wipe.py          # удаление «бумажных» следов юзера
 ├── handlers/
 │   ├── common.py        # /start /menu /help /exit, deep-link инвайтов и рефералов
 │   ├── servers/         # админское управление серверами

@@ -1,0 +1,160 @@
+"""Доступ к БД. Раньше был один repo.py на 788 строк — разложен по сущностям.
+
+Пакет специально собирает всё в свой namespace: остальной код зовёт функции
+как `repo.get_user_by_id(...)`, и после дробления ни один вызов не поменялся.
+Импорты — списком, а не `import *`, чтобы забытая функция ломалась здесь и
+сразу, а не в проде на редком экране.
+"""
+from __future__ import annotations
+
+from bot.db.repo.billing import (
+    add_balance_tx,
+    count_referrals,
+    create_crypto_invoice,
+    get_crypto_invoice,
+    list_balance_txs,
+    list_open_invoices,
+    sum_ref_earned,
+)
+from bot.db.repo.common import (
+    count_active_peers_by_server,
+    count_active_wdtt_by_server,
+    creds_from_server,
+    group_by_location,
+    list_known_locations,
+    server_labels_map,
+    user_sub_tier,
+)
+from bot.db.repo.devices import (
+    backfill_devices,
+    count_active_devices,
+    create_device,
+    delete_device,
+    get_device,
+    list_devices_for_user,
+    list_peers_for_device,
+    list_wdtt_for_device,
+    revoke_device,
+)
+from bot.db.repo.invites import (
+    delete_invite,
+    get_invite,
+    list_invites_for_server,
+    mark_invite_used,
+)
+from bot.db.repo.peers import (
+    delete_peer,
+    get_peer,
+    list_peers_for_server,
+    list_peers_for_user,
+    revive_peer,
+    revoke_peer,
+)
+from bot.db.repo.servers import (
+    create_server,
+    get_server,
+    list_all_servers,
+    list_ready_servers,
+    list_servers_for_owner,
+    set_server_status,
+)
+from bot.db.repo.subscription import (
+    set_subscription,
+    sub_traffic_used,
+    sum_user_traffic,
+)
+from bot.db.repo.support import (
+    add_support_route,
+    find_support_route_by_admin_msg,
+    is_support_reply_from_user,
+    purge_old_support_routes,
+)
+from bot.db.repo.users import (
+    count_users,
+    get_or_create_user,
+    get_user_by_id,
+    get_user_by_tg_id,
+    list_all_users,
+    list_all_users_for_broadcast,
+    list_broadcast_targets,
+    list_users_by_ids,
+    set_user_blocked,
+)
+from bot.db.repo.wdtt import (
+    count_active_wdtt_for_user,
+    create_wdtt_access,
+    delete_wdtt_access,
+    get_wdtt_access,
+    list_wdtt_for_server,
+    list_wdtt_for_user,
+    revive_wdtt_access,
+    revoke_wdtt_access,
+)
+from bot.db.repo.wipe import purge_user_records
+
+__all__ = [
+    "add_balance_tx",
+    "add_support_route",
+    "backfill_devices",
+    "count_active_devices",
+    "count_active_peers_by_server",
+    "count_active_wdtt_by_server",
+    "count_active_wdtt_for_user",
+    "count_referrals",
+    "count_users",
+    "create_crypto_invoice",
+    "create_device",
+    "create_server",
+    "create_wdtt_access",
+    "creds_from_server",
+    "delete_device",
+    "delete_invite",
+    "delete_peer",
+    "delete_wdtt_access",
+    "find_support_route_by_admin_msg",
+    "get_crypto_invoice",
+    "get_device",
+    "get_invite",
+    "get_or_create_user",
+    "get_peer",
+    "get_server",
+    "get_user_by_id",
+    "get_user_by_tg_id",
+    "get_wdtt_access",
+    "group_by_location",
+    "is_support_reply_from_user",
+    "list_all_servers",
+    "list_all_users",
+    "list_all_users_for_broadcast",
+    "list_balance_txs",
+    "list_broadcast_targets",
+    "list_devices_for_user",
+    "list_invites_for_server",
+    "list_known_locations",
+    "list_open_invoices",
+    "list_peers_for_device",
+    "list_peers_for_server",
+    "list_peers_for_user",
+    "list_ready_servers",
+    "list_servers_for_owner",
+    "list_users_by_ids",
+    "list_wdtt_for_device",
+    "list_wdtt_for_server",
+    "list_wdtt_for_user",
+    "mark_invite_used",
+    "purge_old_support_routes",
+    "purge_user_records",
+    "revive_peer",
+    "revive_wdtt_access",
+    "revoke_device",
+    "revoke_peer",
+    "revoke_wdtt_access",
+    "server_labels_map",
+    "set_server_status",
+    "set_subscription",
+    "set_user_blocked",
+    "sub_traffic_used",
+    "sum_ref_earned",
+    "sum_user_traffic",
+    "user_sub_tier",
+]

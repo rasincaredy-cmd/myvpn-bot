@@ -835,7 +835,7 @@ async def cb_server_cleanup(call: CallbackQuery, session: AsyncSession) -> None:
 
 
 # Индивидуальные лимиты пира (срок/трафик) убраны: единый гейт — подписка юзера
-# (срок + лимит трафика на подписку). См. handlers/admin_panel.py и scheduler.py.
+# (срок + лимит трафика на подписку). См. handlers/admin/subscription.py и scheduler.py.
 
 
 # --- Обходы БС сервера (admin: «обходы как пиры») ----------------------------

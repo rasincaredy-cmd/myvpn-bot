@@ -311,7 +311,7 @@ async def cb_cancel(call: CallbackQuery, state: FSMContext, session: AsyncSessio
             await call.answer("Отменено")
             return
     if dest == "panel":
-        from bot.handlers.admin_panel import cmd_admin
+        from bot.handlers.admin import cmd_admin
         await cmd_admin(call, state)
         return
 

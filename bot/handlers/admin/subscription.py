@@ -11,12 +11,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
 from bot.db import repo
-from bot.handlers.admin.common import sub_as_utc, trial_line
+from bot.handlers.admin.common import trial_line
 from bot.keyboards.inline import CB_PANEL, admin_sub_kb, cancel_to_sub_kb
 from bot.loader import bot as tg_bot
 from bot.services import amnezia
 from bot.services import revive as revive_svc
 from bot.states.install import SubAdminStates
+from bot.utils.timefmt import as_utc
 from bot.utils.validators import parse_expiry, parse_traffic_limit
 
 router = Router(name="admin_sub")
@@ -27,7 +28,7 @@ async def _render_sub_card(call: CallbackQuery, session: AsyncSession, user, pag
     bypass = await repo.count_active_wdtt_for_user(session, user.id)
     sub_expired = (
         user.sub_expires_at is not None
-        and sub_as_utc(user.sub_expires_at) <= datetime.now(timezone.utc)
+        and as_utc(user.sub_expires_at) <= datetime.now(timezone.utc)
     )
     if user.sub_expires_at is None:
         srok = "бессрочно"

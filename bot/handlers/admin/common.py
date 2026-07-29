@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.db import repo
 from bot.services import amnezia
+from bot.utils.timefmt import as_utc
 
 # Размер страницы в списке юзеров.
 PER_PAGE = 10
@@ -24,11 +25,6 @@ TIER_LABEL = {
 }
 
 
-def sub_as_utc(dt: datetime) -> datetime:
-    """SQLite отдаёт datetime без таймзоны — считаем такие значения UTC."""
-    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
-
-
 def trial_line(user) -> str:
     """Триал юзера словами (Блок «Мелочи 2»). Триал выдаётся автоматически при
     регистрации, а флаг is_trial снимается, как только админ задаёт срок или
@@ -37,7 +33,7 @@ def trial_line(user) -> str:
         return "использован (сейчас платная)"
     if user.sub_expires_at is None:
         return "🎁 идёт (бессрочный)"
-    exp = sub_as_utc(user.sub_expires_at)
+    exp = as_utc(user.sub_expires_at)
     if exp > datetime.now(timezone.utc):
         return f"🎁 идёт, до {user.sub_expires_at.strftime('%d.%m.%Y %H:%M')} UTC"
     return f"использован, истёк {user.sub_expires_at.strftime('%d.%m.%Y')}"
@@ -50,7 +46,7 @@ async def user_card_text(session: AsyncSession, user) -> str:
     if user.sub_expires_at is None:
         srok = "бессрочно"
     else:
-        exp = sub_as_utc(user.sub_expires_at)
+        exp = as_utc(user.sub_expires_at)
         srok = f"{'до' if exp > datetime.now(timezone.utc) else 'истекла'} {user.sub_expires_at.strftime('%d.%m.%Y %H:%M')} UTC"
     trf = amnezia.fmt_traffic_line(
         await repo.sub_traffic_used(session, user), user.sub_traffic_limit_bytes,

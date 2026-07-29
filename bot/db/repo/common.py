@@ -9,17 +9,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from bot.db.models import Peer, PeerStatus, Server, User, WdttAccess
 from bot.services.crypto import decrypt
 from bot.services.ssh import SSHCredentials
-
-
-def _as_utc(dt: datetime) -> datetime:
-    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+from bot.utils.timefmt import as_utc
 
 
 def user_sub_tier(user: "User") -> str:
     """Уровень юзера для сегментации: 'paid' | 'trial' | 'none'.
     Бессрочная (NULL) подписка считается платной/активной, триал — только с конечным сроком."""
     exp = user.sub_expires_at
-    active = exp is None or _as_utc(exp) > datetime.now(timezone.utc)
+    active = exp is None or as_utc(exp) > datetime.now(timezone.utc)
     if not active:
         return "none"
     if user.is_trial and exp is not None:

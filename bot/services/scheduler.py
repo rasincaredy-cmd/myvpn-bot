@@ -20,6 +20,7 @@ from bot.services import amnezia
 from bot.services import wdtt as wdtt_svc
 from bot.services.crypto import decrypt
 from bot.services.ssh import SSHClient, SSHError
+from bot.utils.timefmt import as_utc
 
 
 # Пороги предупреждений о скором истечении подписки (часов до отзыва). Порядок =
@@ -49,14 +50,6 @@ def _humanize_left(delta: timedelta) -> str:
     if minutes >= 60:
         return f"{minutes // 60} ч"
     return f"{max(minutes, 1)} мин"
-
-
-def _as_utc(dt: datetime) -> datetime:
-    """SQLite отдаёт datetime без таймзоны — считаем такие значения UTC.
-
-    Без этого арифметика `expires_at - now` (aware) падает с TypeError.
-    """
-    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
 
 
 async def _revoke_all_devices_for_user(session, user_id: int) -> bool:
@@ -182,7 +175,7 @@ async def _run_checks() -> None:
             warned = False
             for user in soon_users:
                 try:
-                    remaining = _as_utc(user.sub_expires_at) - now
+                    remaining = as_utc(user.sub_expires_at) - now
                     fireable = [
                         i for i, hours in enumerate(WARN_OFFSETS_HOURS)
                         if not (user.sub_warn_flags & (1 << i))
@@ -231,7 +224,7 @@ async def _run_checks() -> None:
         # Чистим строки со status=REVOKED, отозванные более REVOKED_RETENTION_DAYS
         # назад. Освобождает IP (revoked-пир держит его в БД до удаления) и не даёт
         # копиться мусору. Сравнение делаем в SQL, чтобы не спотыкаться о naive
-        # datetime из SQLite (см. _as_utc): обе стороны биндятся одинаково.
+        # datetime из SQLite (см. as_utc в utils/timefmt): обе стороны биндятся одинаково.
         try:
             cutoff = now - timedelta(days=REVOKED_RETENTION_DAYS)
             stale = list((await session.execute(

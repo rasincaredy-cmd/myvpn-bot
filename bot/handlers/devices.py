@@ -33,7 +33,7 @@ from bot.services.crypto import decrypt
 from bot.services.ssh import SSHClient, SSHError
 from bot.states.install import DeviceStates
 from bot.texts import t
-from bot.utils.timefmt import fmt_msk
+from bot.utils.timefmt import as_utc, fmt_msk
 from bot.utils.validators import is_valid_label
 
 # Переиспользуем машинерию создания/отправки пиров.
@@ -50,15 +50,11 @@ router = Router(name="devices")
 _DEVICES_PER_PAGE = 8
 
 
-def _as_utc(dt: datetime) -> datetime:
-    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
-
-
 def _sub_active(user) -> bool:
     """Подписка активна: срок не задан (бессрочно) или ещё не истёк."""
     if user.sub_expires_at is None:
         return True
-    return _as_utc(user.sub_expires_at) > datetime.now(timezone.utc)
+    return as_utc(user.sub_expires_at) > datetime.now(timezone.utc)
 
 
 def _sub_line(user) -> str:

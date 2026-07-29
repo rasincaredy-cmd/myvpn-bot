@@ -38,7 +38,7 @@ from bot.services.crypto import decrypt, encrypt
 from bot.services.ssh import SSHClient, SSHError
 from bot.states.install import WdttStates
 from bot.texts import t
-from bot.utils.timefmt import fmt_msk
+from bot.utils.timefmt import as_utc, fmt_msk
 
 router = Router(name="wdtt")
 
@@ -76,12 +76,8 @@ def _app_block(platform: str) -> str:
     )
 
 
-def _as_utc(dt: datetime) -> datetime:
-    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
-
-
 def _sub_active(user) -> bool:
-    return user.sub_expires_at is None or _as_utc(user.sub_expires_at) > datetime.now(timezone.utc)
+    return user.sub_expires_at is None or as_utc(user.sub_expires_at) > datetime.now(timezone.utc)
 
 
 async def _wdtt_location_groups(session: AsyncSession, user=None):
@@ -110,7 +106,7 @@ def _sub_days_left(user) -> int:
     """Дней до конца подписки для ctl -days; 0 = бессрочно."""
     if user.sub_expires_at is None:
         return 0
-    delta = _as_utc(user.sub_expires_at) - datetime.now(timezone.utc)
+    delta = as_utc(user.sub_expires_at) - datetime.now(timezone.utc)
     return max(1, math.ceil(delta.total_seconds() / 86400))
 
 

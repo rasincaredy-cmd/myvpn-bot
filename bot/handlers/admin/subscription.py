@@ -39,7 +39,10 @@ async def _render_sub_card(call: CallbackQuery, session: AsyncSession, user, pag
     if user.sub_expires_at is None:
         srok = "бессрочно"
     else:
-        srok = f"{'истекла' if sub_expired else 'до'} {user.sub_expires_at.strftime('%d.%m.%Y %H:%M')} UTC"
+        srok = (
+            f"{'истекла' if sub_expired else 'до'} "
+            f"{fmt_msk(user.sub_expires_at)} МСК"
+        )
     trf = amnezia.fmt_traffic_line(await repo.sub_traffic_used(session, user),
                                    user.sub_traffic_limit_bytes, sub_expired)
     await call.message.edit_text(
@@ -221,7 +224,8 @@ async def cb_panel_sub_ext(call: CallbackQuery, state: FSMContext) -> None:
         "📅 <b>Срок подписки</b>\n\n"
         "Введи дату <code>ДД.ММ.ГГГГ</code> или период <code>Nд</code> (напр. <code>30д</code>).\n"
         "Можно со временем: <code>30д 18:00</code>, <code>31.12.2025 09:30</code>.\n"
-        "Без времени: период — от текущего момента, дата — на 23:59 UTC.\n"
+        "Без времени: период — от текущего момента, дата — на 23:59 МСК.\n"
+        "<i>Время везде московское.</i>\n"
         "Отправь <code>-</code>, чтобы сделать бессрочной.",
         reply_markup=cancel_to_sub_kb(int(parts[2]), int(parts[3])),
     )
@@ -253,14 +257,14 @@ async def step_sub_extend(message: Message, state: FSMContext, session: AsyncSes
         await message.answer("Юзер уже удалён.")
         return
     msg = (
-        f"✅ Срок установлен: <b>{result.strftime('%d.%m.%Y %H:%M')} UTC</b>"
+        f"✅ Срок установлен: <b>{fmt_msk(result)} МСК</b>"
         if result else "✅ Подписка сделана бессрочной."
     )
 
     # Ревайв: если у юзера есть отозванные по истечению устройства — возвращаем
     # их к жизни (те же конфиги/ссылки). Новый срок активен ⇒ можно оживлять.
     sub_line = (
-        f"до {result.strftime('%d.%m.%Y %H:%M')} UTC" if result else "бессрочная"
+        f"до {fmt_msk(result)} МСК" if result else "бессрочная"
     )
     now = datetime.now(timezone.utc)
     if result is None or result > now:
@@ -364,7 +368,7 @@ async def cb_panel_sub_give_do(call: CallbackQuery, session: AsyncSession) -> No
     await session.commit()
     msg = (
         f"🎫 Выдана подписка на <b>{TERM_LABELS.get(months, f'{months} мес')}</b> "
-        f"— до <b>{res.new_expires_at.strftime('%d.%m.%Y %H:%M')} UTC</b>.\n"
+        f"— до <b>{fmt_msk(res.new_expires_at)} МСК</b>.\n"
         f"Списано: <b>{fmt_rub(0)}</b> (выдача админом)."
     )
     rv = res.revive
@@ -426,7 +430,7 @@ async def cb_panel_sub_trial(call: CallbackQuery, session: AsyncSession) -> None
     # прежними конфигами, а не выдаются заново.
     msg = (
         f"🎁 Триал выдан: <b>{settings.trial_days} дн.</b> "
-        f"(до {expires.strftime('%d.%m.%Y %H:%M')} UTC), устройств "
+        f"(до {fmt_msk(expires)} МСК), устройств "
         f"<b>{settings.trial_devices}</b>, трафик "
         f"<b>{settings.trial_traffic_gb or '∞'} ГБ</b>."
     )

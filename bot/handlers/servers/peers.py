@@ -24,6 +24,7 @@ from bot.services.qrgen import conf_to_qr_png
 from bot.services.ssh import SSHClient, SSHError
 from bot.states.install import PeerRenameStates
 from bot.texts import t
+from bot.utils.timefmt import fmt_msk
 from bot.utils.validators import is_valid_label
 
 router = Router(name="servers_peers")
@@ -104,7 +105,7 @@ async def cb_admin_peer_open(
         f"• Сервер: <code>{server.name}</code>"
     )
     if peer.expires_at:
-        text += f"\n• ⏱ Истекает: {peer.expires_at.strftime('%d.%m.%Y %H:%M')} UTC"
+        text += f"\n• ⏱ Истекает: {fmt_msk(peer.expires_at)} МСК"
     if peer.traffic_limit_bytes:
         text += (
             f"\n• 📊 Трафик: {amnezia.fmt_bytes(peer.traffic_used_bytes)}"

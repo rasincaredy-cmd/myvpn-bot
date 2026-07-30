@@ -56,12 +56,17 @@ def parse_expiry(text: str) -> datetime | None | str:
     """
     Возвращает datetime (UTC), None (сброс, если '-'), или 'invalid'.
 
+    Всё, что вводит админ, читается по МОСКВЕ — так же, как показывается ему и
+    юзеру; в базу уходит UTC. Иначе «до 23:00» на экране и в уведомлении юзеру
+    разъезжались бы на три часа.
+
     Форматы (время ЧЧ:ММ — необязательное, в конце):
       Nд | Nd                 → сейчас + N дней, текущее время
-      Nд ЧЧ:ММ                → сейчас + N дней, в указанное время
-      ДД.ММ.ГГГГ              → на 23:59 UTC
-      ДД.ММ.ГГГГ ЧЧ:ММ        → на указанное время UTC
+      Nд ЧЧ:ММ                → сейчас + N дней, в указанное время МСК
+      ДД.ММ.ГГГГ              → на 23:59 МСК
+      ДД.ММ.ГГГГ ЧЧ:ММ        → на указанное время МСК
     """
+    from bot.utils.timefmt import MSK, msk_to_utc
     text = text.strip()
     if text == "-":
         return None
@@ -81,7 +86,11 @@ def parse_expiry(text: str) -> datetime | None | str:
     if m:
         dt = datetime.now(timezone.utc) + timedelta(days=int(m.group(1)))
         if hh_mm:
-            dt = dt.replace(hour=hh_mm[0], minute=hh_mm[1], second=0, microsecond=0)
+            # Час ставим по Москве: «30д 18:00» — это 18:00 МСК, а не UTC.
+            local = dt.astimezone(MSK).replace(
+                hour=hh_mm[0], minute=hh_mm[1], second=0, microsecond=0
+            )
+            dt = local.astimezone(timezone.utc)
         return dt
 
     # Дата: ДД.ММ.ГГГГ
@@ -90,8 +99,8 @@ def parse_expiry(text: str) -> datetime | None | str:
     except ValueError:
         return "invalid"
     if hh_mm:
-        return dt.replace(hour=hh_mm[0], minute=hh_mm[1], second=0, tzinfo=timezone.utc)
-    return dt.replace(hour=23, minute=59, second=59, tzinfo=timezone.utc)
+        return msk_to_utc(dt.replace(hour=hh_mm[0], minute=hh_mm[1], second=0))
+    return msk_to_utc(dt.replace(hour=23, minute=59, second=59))
 
 
 def parse_traffic_limit(text: str) -> int | None | str:

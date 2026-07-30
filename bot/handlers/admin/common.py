@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.db import repo
 from bot.services import amnezia
-from bot.utils.timefmt import as_utc
+from bot.utils.timefmt import as_utc, fmt_msk
 
 # Размер страницы в списке юзеров.
 PER_PAGE = 10
@@ -35,8 +35,8 @@ def trial_line(user) -> str:
         return "🎁 идёт (бессрочный)"
     exp = as_utc(user.sub_expires_at)
     if exp > datetime.now(timezone.utc):
-        return f"🎁 идёт, до {user.sub_expires_at.strftime('%d.%m.%Y %H:%M')} UTC"
-    return f"использован, истёк {user.sub_expires_at.strftime('%d.%m.%Y')}"
+        return f"🎁 идёт, до {fmt_msk(user.sub_expires_at)} МСК"
+    return f"использован, истёк {fmt_msk(user.sub_expires_at, with_time=False)}"
 
 
 async def user_card_text(session: AsyncSession, user) -> str:
@@ -47,7 +47,10 @@ async def user_card_text(session: AsyncSession, user) -> str:
         srok = "бессрочно"
     else:
         exp = as_utc(user.sub_expires_at)
-        srok = f"{'до' if exp > datetime.now(timezone.utc) else 'истекла'} {user.sub_expires_at.strftime('%d.%m.%Y %H:%M')} UTC"
+        srok = (
+            f"{'до' if exp > datetime.now(timezone.utc) else 'истекла'} "
+            f"{fmt_msk(user.sub_expires_at)} МСК"
+        )
     trf = amnezia.fmt_traffic_line(
         await repo.sub_traffic_used(session, user), user.sub_traffic_limit_bytes,
         tier == "none",
@@ -70,5 +73,5 @@ async def user_card_text(session: AsyncSession, user) -> str:
         f"• Триал: <b>{trial_line(user)}</b>\n"
         f"• Трафик: <b>{trf}</b>\n"
         f"• Баланс: <b>{fmt_rub(user.balance_kopeks)}</b>\n"
-        f"• С нами с: {user.created_at.strftime('%d.%m.%Y')}"
+        f"• С нами с: {fmt_msk(user.created_at, with_time=False)}"
     )

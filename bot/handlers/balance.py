@@ -381,7 +381,7 @@ async def cb_bal_history(call: CallbackQuery, session: AsyncSession) -> None:
         lines = ["📜 <b>История операций</b> (последние 10)\n"]
         for tx in txs:
             icon = _KIND_ICONS.get(tx.kind, "•")
-            when = tx.created_at.strftime("%d.%m %H:%M") if tx.created_at else "—"
+            when = fmt_msk(tx.created_at, fmt="%d.%m %H:%M") if tx.created_at else "—"
             note = f" — {tx.note}" if tx.note else ""
             lines.append(f"{icon} {when}  <b>{fmt_rub(tx.amount_kopeks)}</b>{note}")
     from aiogram.utils.keyboard import InlineKeyboardBuilder as IKB

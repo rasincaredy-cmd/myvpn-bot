@@ -335,12 +335,12 @@ async def cb_invite_open(call: CallbackQuery, session: AsyncSession) -> None:
         status = "✅ Использован"
         extra = (
             f"\n• Кем: tg_id <code>{invite.used_by_tg_id}</code>"
-            f"\n• Когда: {invite.used_at.strftime('%d.%m.%Y %H:%M')}"
+            f"\n• Когда: {fmt_msk(invite.used_at)} МСК"
         )
         can_revoke = False
     elif invite.expires_at and invite.expires_at < now:
         status = "⌛ Истёк"
-        extra = f"\n• Истёк: {invite.expires_at.strftime('%d.%m.%Y %H:%M')}"
+        extra = f"\n• Истёк: {fmt_msk(invite.expires_at)} МСК"
         can_revoke = True
     else:
         status = "⏳ Активен"
@@ -351,7 +351,7 @@ async def cb_invite_open(call: CallbackQuery, session: AsyncSession) -> None:
         f"🎟 <b>{invite.label or 'Без метки'}</b>\n"
         f"• Статус: {status}{extra}\n"
         f"• Сервер: <code>{server.name}</code>\n"
-        f"• Создан: {invite.created_at.strftime('%d.%m.%Y %H:%M')}"
+        f"• Создан: {fmt_msk(invite.created_at)} МСК"
     )
     if not invite.used_at:
         me = await bot.get_me()

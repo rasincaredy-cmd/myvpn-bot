@@ -12,12 +12,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from bot.config import settings
 from bot.db import repo
 from bot.handlers.admin.common import trial_line
-from bot.keyboards.inline import CB_PANEL, admin_sub_kb, cancel_to_sub_kb
+from bot.keyboards.inline import (
+    CB_PANEL,
+    admin_sub_give_kb,
+    admin_sub_kb,
+    cancel_to_sub_kb,
+)
 from bot.loader import bot as tg_bot
 from bot.services import amnezia
 from bot.services import revive as revive_svc
+from bot.services.pricing import TERM_LABELS
 from bot.states.install import SubAdminStates
-from bot.utils.timefmt import as_utc
+from bot.utils.timefmt import as_utc, fmt_msk
 from bot.utils.validators import parse_expiry, parse_traffic_limit
 
 router = Router(name="admin_sub")
@@ -295,6 +301,95 @@ async def step_sub_extend(message: Message, state: FSMContext, session: AsyncSes
 
     await message.answer(
         msg, reply_markup=admin_sub_kb(user.id, data["page"], is_trial=user.is_trial)
+    )
+
+
+@router.callback_query(F.data.startswith(f"{CB_PANEL}:sub_give:"))
+async def cb_panel_sub_give(call: CallbackQuery, session: AsyncSession) -> None:
+    """Выдать подписку на один из тарифных сроков — то же, что юзер купил бы
+    сам, но бесплатно (компенсация, подарок, оплата мимо бота)."""
+    from bot.services.pricing import (
+        TERM_DISCOUNTS, fmt_rub, monthly_price_kopeks, term_price_kopeks,
+    )
+
+    parts = call.data.split(":")
+    user_id, page = int(parts[2]), int(parts[3])
+    user = await repo.get_user_by_id(session, user_id)
+    if user is None:
+        await call.answer("Не найдено", show_alert=True)
+        return
+    if user.sub_max_devices + user.sub_max_bypass < 1:
+        await call.answer(
+            "У юзера тариф 0 устройств и 0 обходов — сначала задай лимиты, "
+            "иначе подписка будет пустой.",
+            show_alert=True,
+        )
+        return
+    monthly = monthly_price_kopeks(user.sub_max_devices, user.sub_max_bypass)
+    terms = [
+        (m, f"{TERM_LABELS[m]} — {fmt_rub(term_price_kopeks(monthly, m))}")
+        for m in sorted(TERM_DISCOUNTS)
+    ]
+    await call.message.edit_text(
+        f"🎫 <b>Выдать подписку — {user.full_name or user.tg_id}</b>\n\n"
+        f"Тариф юзера: <b>{user.sub_max_devices}</b> устр. + "
+        f"<b>{user.sub_max_bypass}</b> обх. = <b>{fmt_rub(monthly)}/мес</b>.\n"
+        "Деньги <b>не списываются</b> — суммы на кнопках лишь показывают, "
+        "на сколько ты даришь.\n\n"
+        "Срок прибавится к остатку (текущая подписка не сгорит), лимит трафика "
+        "снимется, отозванные устройства оживут. Дальше автопродление будет "
+        "брать этот же срок.",
+        reply_markup=admin_sub_give_kb(user.id, page, terms),
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith(f"{CB_PANEL}:sub_gdo:"))
+async def cb_panel_sub_give_do(call: CallbackQuery, session: AsyncSession) -> None:
+    from bot.services import billing
+    from bot.services.pricing import fmt_rub
+
+    parts = call.data.split(":")
+    user_id, page, months = int(parts[2]), int(parts[3]), int(parts[4])
+    user = await repo.get_user_by_id(session, user_id)
+    if user is None:
+        await call.answer("Юзер уже удалён", show_alert=True)
+        return
+    await call.answer("⏳ Выдаю...")
+    try:
+        res = await billing.grant_term(session, user, months)
+    except ValueError:
+        await call.answer("Такой срок не продаётся", show_alert=True)
+        return
+    await session.commit()
+    msg = (
+        f"🎫 Выдана подписка на <b>{TERM_LABELS.get(months, f'{months} мес')}</b> "
+        f"— до <b>{res.new_expires_at.strftime('%d.%m.%Y %H:%M')} UTC</b>.\n"
+        f"Списано: <b>{fmt_rub(0)}</b> (выдача админом)."
+    )
+    rv = res.revive
+    if rv is not None and rv.touched:
+        msg += (
+            f"\n♻️ Восстановлено: устройств <b>{rv.devices_restored}</b>, "
+            f"обходов БС <b>{rv.bypass_restored}</b>."
+        )
+        if rv.errors:
+            msg += "\n❌ Не восстановлено: " + "; ".join(rv.errors)
+    logger.info("Admin granted {} mo to user {}", months, user.id)
+    try:
+        await tg_bot.send_message(
+            user.tg_id,
+            f"🎁 Тебе выдана подписка на <b>{TERM_LABELS.get(months, f'{months} мес')}</b> "
+            f"— до {fmt_msk(res.new_expires_at)} МСК.\n"
+            "Загляни в «📱 Мои устройства» — всё уже работает."
+            + ("\n♻️ Твои устройства восстановлены: прежние конфиги и ссылки "
+               "снова действуют." if rv is not None and
+               (rv.devices_restored or rv.bypass_restored) else ""),
+        )
+    except Exception:
+        pass
+    await call.message.edit_text(
+        msg, reply_markup=admin_sub_kb(user.id, page, is_trial=user.is_trial)
     )
 
 

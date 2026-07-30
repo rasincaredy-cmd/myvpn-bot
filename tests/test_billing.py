@@ -357,6 +357,60 @@ class TestAutopayTerm:
         assert user.balance_kopeks == 10_00  # ничего не списано
 
 
+class TestAdminGrantTerm:
+    """Админ выдаёт подписку на один из тех же сроков, что продаются юзеру
+    (1/3/6/12 мес) — без списания денег, но со всеми свойствами покупки."""
+
+    async def test_grant_extends_and_charges_nothing(self, session: AsyncSession) -> None:
+        user = await _make_user(
+            session, balance_kopeks=500_00, sub_max_devices=1, sub_max_bypass=1
+        )
+        res = await billing.grant_term(session, user, 3)
+        await session.commit()
+        assert res.ok and res.months == 3
+        assert res.price_kopeks == 0            # выдача бесплатна
+        assert user.balance_kopeks == 500_00    # баланс не тронут
+        txs = await repo.list_balance_txs(session, user.id)
+        assert txs == []                        # в журнале денег ничего нет
+
+    async def test_grant_sets_term_for_autopay(self, session: AsyncSession) -> None:
+        """Выдали год → автопродление дальше берёт год, а не месяц."""
+        user = await _make_user(session, sub_max_devices=1, sub_max_bypass=1)
+        await billing.grant_term(session, user, 12)
+        await session.commit()
+        assert user.sub_term_months == 12
+
+    async def test_grant_stacks_on_active_sub(self, session: AsyncSession) -> None:
+        future = datetime.now(timezone.utc) + timedelta(days=10)
+        user = await _make_user(session, sub_expires_at=future)
+        res = await billing.grant_term(session, user, 1)
+        await session.commit()
+        left = res.new_expires_at - datetime.now(timezone.utc)
+        assert timedelta(days=39) < left < timedelta(days=41)  # 10 дней не сгорели
+
+    async def test_grant_from_now_when_expired(self, session: AsyncSession) -> None:
+        past = datetime.now(timezone.utc) - timedelta(days=100)
+        user = await _make_user(session, sub_expires_at=past)
+        res = await billing.grant_term(session, user, 1)
+        await session.commit()
+        left = res.new_expires_at - datetime.now(timezone.utc)
+        assert timedelta(days=29) < left < timedelta(days=31)
+
+    async def test_grant_makes_subscription_paid(self, session: AsyncSession) -> None:
+        user = await _make_user(
+            session, is_trial=True, sub_traffic_limit_bytes=10 * 1024**3
+        )
+        await billing.grant_term(session, user, 1)
+        await session.commit()
+        assert user.is_trial is False
+        assert user.sub_traffic_limit_bytes is None  # как у покупки: безлимит
+
+    async def test_grant_rejects_unknown_term(self, session: AsyncSession) -> None:
+        user = await _make_user(session)
+        with pytest.raises(ValueError):
+            await billing.grant_term(session, user, 7)
+
+
 class TestAdminAdjust:
     async def test_add_balance_tx_updates_and_journals(self, session: AsyncSession) -> None:
         user = await _make_user(session)

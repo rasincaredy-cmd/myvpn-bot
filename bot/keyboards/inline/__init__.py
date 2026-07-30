@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from bot.keyboards.inline.admin import (
     admin_panel_menu,
+    admin_sub_give_kb,
     admin_sub_kb,
     admin_user_bypass_card_kb,
     admin_user_device_card_kb,
@@ -106,6 +107,7 @@ __all__ = [
     "CB_WDTT",
     "admin_panel_menu",
     "admin_peer_card",
+    "admin_sub_give_kb",
     "admin_sub_kb",
     "admin_user_bypass_card_kb",
     "admin_user_device_card_kb",

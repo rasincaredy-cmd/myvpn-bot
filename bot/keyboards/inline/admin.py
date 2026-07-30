@@ -164,6 +164,19 @@ def user_card_kb(
     return kb.as_markup()
 
 
+def admin_sub_give_kb(
+    user_id: int, page: int, terms: list[tuple[int, str]]
+) -> InlineKeyboardMarkup:
+    """Выбор срока выдаваемой подписки. terms: (месяцы, подпись со сроком и
+    ценой) — цену показываем, чтобы админ видел, на какую сумму дарит."""
+    kb = InlineKeyboardBuilder()
+    for months, label in terms:
+        kb.button(text=label, callback_data=f"{CB_PANEL}:sub_gdo:{user_id}:{page}:{months}")
+    kb.button(text="✖️ Отмена", callback_data=f"{CB_PANEL}:sub:{user_id}:{page}")
+    kb.adjust(2, 2, 1)
+    return kb.as_markup()
+
+
 def back_to_users_kb(page: int) -> InlineKeyboardMarkup:
     """Возврат после удаления юзера (Блок «Мелочи 2»): карточки уже нет, а
     выкидывать в корень админ-панели неудобно — админ чаще всего чистит список
@@ -199,6 +212,10 @@ def admin_sub_kb(user_id: int, page: int, is_trial: bool = False) -> InlineKeybo
     kb.button(text="📱 Лимит устройств", callback_data=f"{CB_PANEL}:sub_lim:{user_id}:{page}")
     kb.button(text="🛡 Лимит обхода БС",  callback_data=f"{CB_PANEL}:sub_bp:{user_id}:{page}")
     kb.button(text="📅 Задать срок",     callback_data=f"{CB_PANEL}:sub_ext:{user_id}:{page}")
+    # Выдача готового тарифного срока (1/3/6/12 мес) — в отличие от «Задать
+    # срок» с произвольной датой, юзер получает ровно то же, что купил бы сам,
+    # и автопродление дальше берёт этот же срок.
+    kb.button(text="🎫 Выдать подписку",  callback_data=f"{CB_PANEL}:sub_give:{user_id}:{page}")
     kb.button(text="📊 Лимит трафика",   callback_data=f"{CB_PANEL}:sub_trf:{user_id}:{page}")
     kb.button(text="💰 Баланс ±",        callback_data=f"{CB_PANEL}:sub_bal:{user_id}:{page}")
     # Триал раздаётся автоматически при регистрации и повторно не выдаётся —

@@ -97,6 +97,31 @@ class ChargeResult:
     wanted_price_kopeks: int = 0
 
 
+async def _extend(
+    session: AsyncSession, user: User, months: int, devices: int, bypass: int
+) -> tuple[datetime, "revive_svc.ReviveResult"]:
+    """Общая механика продления для покупки и админской выдачи: срок прибавляется
+    к остатку (активная подписка не сгорает), подписка становится платной, лимит
+    трафика снимается, отозванные по истечению устройства оживают."""
+    now = datetime.now(timezone.utc)
+    base = user.sub_expires_at
+    if base is not None and base.tzinfo is None:
+        base = base.replace(tzinfo=timezone.utc)
+    start = base if base is not None and base > now else now
+    new_expiry = start + timedelta(days=DAYS_PER_MONTH * months)
+    await repo.set_subscription(
+        session, user.id,
+        max_devices=devices, max_bypass=bypass,
+        expires_at=new_expiry, touch_expires=True,
+        reset_traffic_base=True, mark_paid=True,
+        traffic_limit_bytes=None, touch_traffic_limit=True,
+        term_months=months,
+    )
+    await session.refresh(user)
+    rv = await revive_svc.revive_devices_for_user(session, user)
+    return new_expiry, rv
+
+
 async def charge_and_extend(
     session: AsyncSession, user: User, months: int,
     *, max_devices: int | None = None, max_bypass: int | None = None,
@@ -128,30 +153,41 @@ async def charge_and_extend(
         session, user.id, -price, "charge",
         note=f"Подписка {months} мес (устройств: {devices}, обходов: {bypass})",
     )
-    now = datetime.now(timezone.utc)
-    base = user.sub_expires_at
-    if base is not None and base.tzinfo is None:
-        base = base.replace(tzinfo=timezone.utc)
-    start = base if base is not None and base > now else now
-    new_expiry = start + timedelta(days=DAYS_PER_MONTH * months)
-    await repo.set_subscription(
-        session, user.id,
-        max_devices=devices, max_bypass=bypass,
-        expires_at=new_expiry, touch_expires=True,
-        reset_traffic_base=True, mark_paid=True,
-        traffic_limit_bytes=None, touch_traffic_limit=True,
-        term_months=months,
-    )
-    await session.refresh(user)
+    new_expiry, rv = await _extend(session, user, months, devices, bypass)
     logger.info(
         "Sub charge: user {} -{} kopeks, {} mo, until {}",
         user.id, price, months, new_expiry.isoformat(),
     )
-
-    rv = await revive_svc.revive_devices_for_user(session, user)
     return ChargeResult(
         ok=True, price_kopeks=price, new_expires_at=new_expiry, revive=rv,
         months=months, wanted_months=months, wanted_price_kopeks=price,
+    )
+
+
+async def grant_term(
+    session: AsyncSession, user: User, months: int
+) -> ChargeResult:
+    """Админ ВЫДАЁТ подписку на один из продаваемых сроков — без денег.
+
+    Отличие от charge_and_extend ровно одно: ничего не списывается и в журнале
+    баланса не появляется строки (это подарок/компенсация, а не покупка). Всё
+    остальное как у покупки, включая запоминание срока: выдали год — дальше и
+    автопродление возьмёт год.
+
+    Срок обязан быть из прайса (TERM_DISCOUNTS): произвольные периоды остаются
+    за «📅 Задать срок», который живёт своей логикой (дата/период/бессрочно)."""
+    if months not in TERM_DISCOUNTS:
+        raise ValueError(f"срок {months} мес не продаётся")
+    new_expiry, rv = await _extend(
+        session, user, months, user.sub_max_devices, user.sub_max_bypass
+    )
+    logger.info(
+        "Sub granted by admin: user {}, {} mo, until {}",
+        user.id, months, new_expiry.isoformat(),
+    )
+    return ChargeResult(
+        ok=True, price_kopeks=0, new_expires_at=new_expiry, revive=rv,
+        months=months, wanted_months=months,
     )
 
 

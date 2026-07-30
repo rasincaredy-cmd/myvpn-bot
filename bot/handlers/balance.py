@@ -32,6 +32,7 @@ from bot.loader import bot
 from bot.services import billing, cryptopay
 from bot.services.pricing import (
     TERM_DISCOUNTS,
+    TERM_LABELS,
     fmt_rub,
     monthly_price_kopeks,
     term_price_kopeks,
@@ -45,7 +46,7 @@ router = Router(name="balance")
 # Сроки для кнопок быстрых сумм: цена базового тарифа за 1/3/6/12 мес.
 # Суммы считаются из прайсинга, а не хардкодятся — при смене цены кнопки
 # не разъедутся с реальной стоимостью.
-_DEPOSIT_TERMS = [(1, "месяц"), (3, "3 мес"), (6, "полгода"), (12, "год")]
+_DEPOSIT_TERMS = sorted(TERM_LABELS.items())
 _CUSTOM_MIN_RUB, _CUSTOM_MAX_RUB = 10, 100_000
 
 
@@ -272,7 +273,7 @@ async def notify_deposit(dep: billing.DepositResult) -> None:
 def term_label(months: int) -> str:
     """Срок словами — так же, как на кнопках покупки, чтобы юзер узнавал то,
     что выбирал сам."""
-    return dict(_DEPOSIT_TERMS).get(months, f"{months} мес")
+    return TERM_LABELS.get(months, f"{months} мес")
 
 
 def autopay_forecast_line(user) -> str | None:

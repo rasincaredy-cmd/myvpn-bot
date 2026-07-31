@@ -590,47 +590,19 @@ git commit -m "Журнал: денежные события (покупка, п
 - Изменить: `bot/handlers/devices.py` (удаление устройства юзером)
 - Изменить: `bot/services/revive.py` (оживление конфигов после оплаты)
 - Изменить: `bot/services/scheduler.py` (отзыв по истечению)
-- Тест: `tests/test_audit.py` (дополнить)
+- Тестов не добавляется — см. пояснение ниже
 
 **Интерфейсы:**
 - Использует: `repo.log_action`, `AuditAction`.
 - Отдаёт: ничего нового.
 
-- [ ] **Шаг 1: Написать падающий тест**
+**Новых тестов в этой задаче нет — и это осознанное решение.** Все врезки идут
+в код, который ходит на живой сервер по SSH: выдача пира, отзыв, оживление.
+Тест на форму записи здесь был бы повтором задачи 2 и создавал бы иллюзию
+покрытия, ничего не проверяя. Врезки проверяются вручную по чек-листу
+в шаге 3, регрессия — полным прогоном набора в шаге 4.
 
-Дописать в `tests/test_audit.py`:
-
-```python
-class TestAuditAccess:
-    async def test_revive_is_logged(self, session: AsyncSession) -> None:
-        """Оживление конфигов после оплаты — событие доступа без суммы."""
-        user = await repo.get_or_create_user(
-            session, tg_id=1003, username="revived", full_name="Revived"
-        )
-        await session.flush()
-
-        await repo.log_action(
-            session, AuditAction.CONFIG_REVIVED,
-            target_user_id=user.id, target_type="peer", target_id=42,
-            details="Конфиг оживлён после оплаты",
-        )
-
-        rows = await repo.list_audit_for_user(session, user.id)
-        assert rows[0].action == AuditAction.CONFIG_REVIVED
-        assert rows[0].amount_kopeks is None
-        assert rows[0].target_type == "peer"
-```
-
-Этот тест проверяет форму записи события доступа. Сами врезки в хендлеры
-проверяются вручную по чек-листу в шаге 5 — поднимать в тестах живой SSH
-нельзя, а мокать весь путь выдачи пира дороже, чем он стоит.
-
-- [ ] **Шаг 2: Запустить тест, убедиться что проходит**
-
-Запустить: `python -m pytest tests/test_audit.py::TestAuditAccess -v`
-Ожидается: PASS (репозиторий из задачи 2 уже умеет это писать).
-
-- [ ] **Шаг 3: Врезать выдачу конфига**
+- [ ] **Шаг 1: Врезать выдачу конфига**
 
 В `bot/handlers/configs.py`, в `_create_peer_for_user`, после
 `await amnezia.add_peer_on_server(...)` и выхода из блока `async with
@@ -647,7 +619,7 @@ _server_ip_lock(...)`, добавить:
     )
 ```
 
-- [ ] **Шаг 4: Врезать отзыв и оживление**
+- [ ] **Шаг 2: Врезать отзыв и оживление**
 
 В `bot/handlers/devices.py`, рядом с существующим
 `logger.info("User {} deleted device {} ({})", ...)`:
@@ -675,7 +647,7 @@ _server_ip_lock(...)`, добавить:
 Во всех четырёх файлах добавить `AuditAction` в импорт из `bot.db.models` и
 `repo` из `bot.db`, если их там ещё нет.
 
-- [ ] **Шаг 5: Проверить руками в живом боте**
+- [ ] **Шаг 3: Проверить руками в живом боте**
 
 Запустить бота и пройти сценарий: создать устройство → получить конфиг →
 удалить устройство. Затем в базе:
@@ -687,16 +659,16 @@ sqlite3 data/vpn_bot.sqlite3 \
 
 Ожидается: строки `config_issued` и `config_revoked` с осмысленными `details`.
 
-- [ ] **Шаг 6: Запустить весь набор тестов**
+- [ ] **Шаг 4: Запустить весь набор тестов**
 
 Запустить: `python -m pytest`
 Ожидается: PASS целиком — врезки не должны сломать существующие тесты.
 
-- [ ] **Шаг 7: Коммит**
+- [ ] **Шаг 5: Коммит**
 
 ```bash
 git add bot/handlers/configs.py bot/handlers/devices.py bot/services/revive.py \
-        bot/services/scheduler.py tests/test_audit.py
+        bot/services/scheduler.py
 git commit -m "Журнал: события доступа (выдача, отзыв, оживление)"
 ```
 

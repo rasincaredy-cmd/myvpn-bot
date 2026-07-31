@@ -420,3 +420,66 @@ class CryptoInvoice(Base):
         DateTime(timezone=True), server_default=func.now()
     )
     paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AuditAction(StrEnum):
+    """Коды событий журнала. Значение пишется в базу — не переименовывать
+    задним числом, иначе старые записи потеряют смысл."""
+
+    # Деньги
+    BALANCE_TOPUP = "balance_topup"        # пополнение (крипта/платёжка)
+    BALANCE_CHARGE = "balance_charge"      # списание за подписку
+    REFERRAL_REWARD = "referral_reward"    # начисление пригласившему
+    ADMIN_CREDIT = "admin_credit"          # ручное начисление админом
+
+    # Доступ
+    CONFIG_ISSUED = "config_issued"        # выдан конфиг
+    CONFIG_REVOKED = "config_revoked"      # конфиг отозван
+    CONFIG_REVIVED = "config_revived"      # конфиг ожил после оплаты
+    SUB_GRANTED = "sub_granted"            # подписка выдана админом
+    USER_BLOCKED = "user_blocked"
+    USER_UNBLOCKED = "user_unblocked"
+
+    # Админское
+    TARIFF_CHANGED = "tariff_changed"      # админ поменял тариф юзеру
+    USER_WIPED = "user_wiped"              # стирание юзера
+
+    # Серверное
+    SERVER_DOWN = "server_down"
+    SERVER_UP = "server_up"
+
+
+class AuditLog(Base):
+    """Журнал важных действий: деньги, доступ, админские операции, серверы.
+
+    Пишется в той же транзакции, что и само действие, — если действие
+    откатилось, записи о нём не остаётся. Читает только админ.
+    """
+
+    __tablename__ = "audit_logs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+
+    # Кто сделал. NULL — сделал бот сам (планировщик, автопродление).
+    actor_tg_id: Mapped[int | None] = mapped_column(BigInteger, index=True)
+    actor_is_admin: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="0", nullable=False
+    )
+
+    action: Mapped[AuditAction] = mapped_column(String(32), index=True)
+
+    # Над кем. Хранится User.id (не tg_id) — чтобы история собиралась одним
+    # запросом по карточке юзера в админке.
+    target_user_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    # Над чем: "peer" | "device" | "wdtt" | "server" | "user" | NULL.
+    target_type: Mapped[str | None] = mapped_column(String(16))
+    target_id: Mapped[int | None] = mapped_column(Integer)
+
+    # Заполняется только у денежных событий. В копейках, как и везде.
+    amount_kopeks: Mapped[int | None] = mapped_column(Integer)
+
+    # Человекочитаемое пояснение для админа («Подписка 3 мес», метка устройства).
+    details: Mapped[str | None] = mapped_column(Text)

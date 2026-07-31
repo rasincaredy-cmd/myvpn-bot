@@ -37,3 +37,21 @@ class TestAuditModel:
         assert row.actor_tg_id is None
         assert row.actor_is_admin is False
         assert row.amount_kopeks is None
+
+    async def test_survives_real_roundtrip(self, session: AsyncSession) -> None:
+        """Читаем из базы, а не из identity map: после commit+expunge_all
+        объект собирается заново из строк таблицы."""
+        session.add(AuditLog(
+            action=AuditAction.BALANCE_CHARGE,
+            target_user_id=5,
+            amount_kopeks=13000,
+            details="Подписка 3 мес",
+        ))
+        await session.commit()
+        session.expunge_all()
+
+        row = (await session.execute(select(AuditLog))).scalar_one()
+        assert row.action == AuditAction.BALANCE_CHARGE
+        assert row.amount_kopeks == 13000
+        assert row.target_user_id == 5
+        assert row.details == "Подписка 3 мес"

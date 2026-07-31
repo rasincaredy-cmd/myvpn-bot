@@ -479,7 +479,9 @@ class AuditLog(Base):
     target_id: Mapped[int | None] = mapped_column(Integer)
 
     # Заполняется только у денежных событий. В копейках, как и везде.
-    amount_kopeks: Mapped[int | None] = mapped_column(Integer)
+    # BigInteger — как у BalanceTx/CryptoInvoice: на Postgres обычный Integer
+    # упёрся бы в ~21 млн рублей на запись, и тип разъехался бы с соседями.
+    amount_kopeks: Mapped[int | None] = mapped_column(BigInteger)
 
     # Человекочитаемое пояснение для админа («Подписка 3 мес», метка устройства).
     details: Mapped[str | None] = mapped_column(Text)

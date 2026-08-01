@@ -6,8 +6,10 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from bot.config import settings
 from bot.db import repo
 from bot.db.models import AuditAction, AuditLog
+from bot.services import billing
 
 
 class TestAuditModel:
@@ -153,3 +155,147 @@ class TestAuditRepo:
 
         assert await repo.delete_audit_older_than(session, days=0) == 0
         assert len(await repo.list_audit(session)) == 1
+
+
+class TestAuditMoney:
+    """Денежные события попадают в журнал сами, из тех же функций, что двигают
+    деньги. Везде читаем после commit+expunge_all — иначе проверялась бы память
+    сессии, а не строки таблицы."""
+
+    async def test_purchase_is_logged(self, session: AsyncSession) -> None:
+        user = await repo.get_or_create_user(
+            session, tg_id=1001, username="buyer", full_name="Buyer"
+        )
+        user.balance_kopeks = 100_000
+        user.sub_max_devices = 2
+        user.sub_max_bypass = 1
+        await session.flush()
+        user_id, tg_id = user.id, user.tg_id
+
+        res = await billing.charge_and_extend(session, user, months=1)
+        assert res.ok
+        await session.commit()
+        session.expunge_all()
+
+        rows = await repo.list_audit_for_user(session, user_id)
+        charges = [r for r in rows if r.action == AuditAction.BALANCE_CHARGE]
+        assert len(charges) == 1
+        assert charges[0].amount_kopeks == res.price_kopeks
+        assert charges[0].actor_tg_id == tg_id
+        assert charges[0].actor_is_admin is False
+        assert charges[0].details == "Подписка 1 мес (устройств: 2, обходов: 1)"
+
+    async def test_failed_purchase_is_not_logged(self, session: AsyncSession) -> None:
+        """Не хватило денег — списания не было, значит и события быть не должно."""
+        user = await repo.get_or_create_user(
+            session, tg_id=1005, username="poor", full_name="Poor"
+        )
+        user.balance_kopeks = 10_00
+        user.sub_max_devices = 1
+        user.sub_max_bypass = 1
+        await session.flush()
+        user_id = user.id
+
+        res = await billing.charge_and_extend(session, user, months=1)
+        assert not res.ok
+        await session.commit()
+        session.expunge_all()
+
+        assert await repo.list_audit_for_user(session, user_id) == []
+
+    async def test_admin_grant_is_logged_as_admin_action(
+        self, session: AsyncSession
+    ) -> None:
+        user = await repo.get_or_create_user(
+            session, tg_id=1002, username="gifted", full_name="Gifted"
+        )
+        user.sub_max_devices = 1
+        user.sub_max_bypass = 1
+        await session.flush()
+        user_id = user.id
+
+        await billing.grant_term(session, user, months=3, actor_tg_id=111)
+        await session.commit()
+        session.expunge_all()
+
+        rows = await repo.list_audit_for_user(session, user_id)
+        grants = [r for r in rows if r.action == AuditAction.SUB_GRANTED]
+        assert len(grants) == 1
+        assert grants[0].actor_is_admin is True
+        assert grants[0].actor_tg_id == 111
+        # Подарок — не списание: денежной суммы у события нет.
+        assert grants[0].amount_kopeks is None
+
+    async def test_deposit_is_logged(self, session: AsyncSession) -> None:
+        user = await repo.get_or_create_user(
+            session, tg_id=1003, username="payer", full_name="Payer"
+        )
+        await session.flush()
+        user_id, tg_id = user.id, user.tg_id
+        inv = await repo.create_crypto_invoice(
+            session, user_id=user_id, invoice_id=9001,
+            amount_kopeks=300_00, url="https://t.me/CryptoBot?start=x",
+        )
+
+        await billing.apply_paid_invoice(session, inv)
+        await session.commit()
+        session.expunge_all()
+
+        rows = await repo.list_audit_for_user(session, user_id)
+        tops = [r for r in rows if r.action == AuditAction.BALANCE_TOPUP]
+        assert len(tops) == 1
+        assert tops[0].amount_kopeks == 300_00
+        assert tops[0].actor_tg_id == tg_id
+        assert tops[0].details == "Пополнение баланса"
+
+    async def test_repeated_deposit_is_logged_once(self, session: AsyncSession) -> None:
+        """Кнопка «Проверить» и поллинг наперегонки не задваивают ни деньги,
+        ни запись в журнале."""
+        user = await repo.get_or_create_user(
+            session, tg_id=1006, username="payer2", full_name="Payer2"
+        )
+        await session.flush()
+        user_id = user.id
+        inv = await repo.create_crypto_invoice(
+            session, user_id=user_id, invoice_id=9003,
+            amount_kopeks=100_00, url="https://t.me/CryptoBot?start=x",
+        )
+
+        await billing.apply_paid_invoice(session, inv)
+        await billing.apply_paid_invoice(session, inv)
+        await session.commit()
+        session.expunge_all()
+
+        rows = await repo.list_audit_for_user(session, user_id)
+        assert len([r for r in rows if r.action == AuditAction.BALANCE_TOPUP]) == 1
+
+    async def test_referral_reward_is_logged_on_referrer(
+        self, session: AsyncSession
+    ) -> None:
+        """Награда записывается пригласившему: спор разбирается по его карточке."""
+        referrer = await repo.get_or_create_user(
+            session, tg_id=1004, username="ref", full_name="Ref"
+        )
+        await session.flush()
+        user = await repo.get_or_create_user(
+            session, tg_id=1105, username="son", full_name="Son"
+        )
+        user.referrer_id = referrer.id
+        await session.flush()
+        referrer_id = referrer.id
+        inv = await repo.create_crypto_invoice(
+            session, user_id=user.id, invoice_id=9002,
+            amount_kopeks=200_00, url="https://t.me/CryptoBot?start=x",
+        )
+
+        await billing.apply_paid_invoice(session, inv)
+        await session.commit()
+        session.expunge_all()
+
+        rows = await repo.list_audit_for_user(session, referrer_id)
+        rewards = [r for r in rows if r.action == AuditAction.REFERRAL_REWARD]
+        assert len(rewards) == 1
+        assert rewards[0].amount_kopeks == 200_00 * settings.referral_percent // 100
+        # Награду начислил бот, а не человек — инициатора у события нет.
+        assert rewards[0].actor_tg_id is None
+        assert rewards[0].details == f"{settings.referral_percent}% с пополнения реферала"

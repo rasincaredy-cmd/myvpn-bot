@@ -361,7 +361,9 @@ async def cb_panel_sub_give_do(call: CallbackQuery, session: AsyncSession) -> No
         return
     await call.answer("⏳ Выдаю...")
     try:
-        res = await billing.grant_term(session, user, months)
+        res = await billing.grant_term(
+            session, user, months, actor_tg_id=call.from_user.id
+        )
     except ValueError:
         await call.answer("Такой срок не продаётся", show_alert=True)
         return

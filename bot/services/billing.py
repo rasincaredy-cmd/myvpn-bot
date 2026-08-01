@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
 from bot.db import repo
-from bot.db.models import CryptoInvoice, User
+from bot.db.models import AuditAction, CryptoInvoice, User
 from bot.services import revive as revive_svc
 from bot.services.pricing import (
     DAYS_PER_MONTH,
@@ -55,6 +55,16 @@ async def apply_paid_invoice(
         "Deposit: user {} +{} kopeks (invoice {})",
         inv.user_id, inv.amount_kopeks, inv.invoice_id,
     )
+    # Журнал пишем здесь, а не в хендлере: сюда же приходит поллинг планировщика,
+    # и оплата, увиденная им (а не кнопкой «Проверить»), обязана попасть в
+    # историю. Задвоения нет — выше стоит ранний выход по уже paid-инвойсу.
+    await repo.log_action(
+        session, AuditAction.BALANCE_TOPUP,
+        actor_tg_id=user.tg_id if user is not None else None,
+        target_user_id=inv.user_id,
+        amount_kopeks=inv.amount_kopeks,
+        details="Пополнение баланса",
+    )
 
     referrer = None
     reward = 0
@@ -69,6 +79,14 @@ async def apply_paid_invoice(
             logger.info(
                 "Ref reward: user {} +{} kopeks (referral {})",
                 referrer.id, reward, user.id,
+            )
+            # Событие вешаем на ПРИГЛАСИВШЕГО: спор про реф-проценты разбирается
+            # по его карточке. Инициатора нет — начислил бот, а не человек.
+            await repo.log_action(
+                session, AuditAction.REFERRAL_REWARD,
+                target_user_id=referrer.id,
+                amount_kopeks=reward,
+                details=f"{settings.referral_percent}% с пополнения реферала",
             )
         else:
             referrer, reward = None, 0
@@ -158,6 +176,13 @@ async def charge_and_extend(
         "Sub charge: user {} -{} kopeks, {} mo, until {}",
         user.id, price, months, new_expiry.isoformat(),
     )
+    await repo.log_action(
+        session, AuditAction.BALANCE_CHARGE,
+        actor_tg_id=user.tg_id,
+        target_user_id=user.id,
+        amount_kopeks=price,
+        details=f"Подписка {months} мес (устройств: {devices}, обходов: {bypass})",
+    )
     return ChargeResult(
         ok=True, price_kopeks=price, new_expires_at=new_expiry, revive=rv,
         months=months, wanted_months=months, wanted_price_kopeks=price,
@@ -165,7 +190,7 @@ async def charge_and_extend(
 
 
 async def grant_term(
-    session: AsyncSession, user: User, months: int
+    session: AsyncSession, user: User, months: int, *, actor_tg_id: int | None = None
 ) -> ChargeResult:
     """Админ ВЫДАЁТ подписку на один из продаваемых сроков — без денег.
 
@@ -175,7 +200,11 @@ async def grant_term(
     автопродление возьмёт год.
 
     Срок обязан быть из прайса (TERM_DISCOUNTS): произвольные периоды остаются
-    за «📅 Задать срок», который живёт своей логикой (дата/период/бессрочно)."""
+    за «📅 Задать срок», который живёт своей логикой (дата/период/бессрочно).
+
+    actor_tg_id — кто из админов выдал: в журнале подарок без имени выдавшего
+    бесполезен, а необязательным параметр оставлен, чтобы старые вызовы (и
+    будущие автоматические выдачи) не ломались."""
     if months not in TERM_DISCOUNTS:
         raise ValueError(f"срок {months} мес не продаётся")
     new_expiry, rv = await _extend(
@@ -184,6 +213,13 @@ async def grant_term(
     logger.info(
         "Sub granted by admin: user {}, {} mo, until {}",
         user.id, months, new_expiry.isoformat(),
+    )
+    await repo.log_action(
+        session, AuditAction.SUB_GRANTED,
+        actor_tg_id=actor_tg_id,
+        actor_is_admin=True,
+        target_user_id=user.id,
+        details=f"Подписка на {months} мес выдана админом",
     )
     return ChargeResult(
         ok=True, price_kopeks=0, new_expires_at=new_expiry, revive=rv,

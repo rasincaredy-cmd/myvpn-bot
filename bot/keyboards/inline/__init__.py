@@ -21,6 +21,7 @@ from bot.keyboards.inline.admin import (
     broadcast_target_kb,
     cancel_to_sub_kb,
     user_card_kb,
+    user_history_kb,
     user_wipe_confirm_kb,
     users_list_kb,
 )
@@ -156,6 +157,7 @@ __all__ = [
     "topup_kb",
     "traffic_nav",
     "user_card_kb",
+    "user_history_kb",
     "user_wipe_confirm_kb",
     "users_list_kb",
     "wdtt_pick_device_kb",

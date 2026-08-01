@@ -159,9 +159,13 @@ def user_card_kb(
     user_id: int, is_blocked: bool, page: int, is_vip: bool = False
 ) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
+    kb = InlineKeyboardBuilder()
     kb.button(text="📱 Устройства", callback_data=f"{CB_PANEL}:udev:{user_id}:{page}")
     kb.button(text="🛡 Обходы БС",  callback_data=f"{CB_PANEL}:ubp:{user_id}:{page}")
     kb.button(text="🎫 Подписка",   callback_data=f"{CB_PANEL}:sub:{user_id}:{page}")
+    # Страница списка едет третьим аргументом: из истории надо вернуться на ту
+    # же страницу списка юзеров, с которой админ провалился в карточку.
+    kb.button(text="🕘 История", callback_data=f"{CB_PANEL}:uhist:{user_id}:{page}:0")
     # «Друг» видит приватные серверы (Server.is_private).
     kb.button(
         text="⭐ Друг: ВКЛ" if is_vip else "⭐ Друг: выкл",
@@ -173,7 +177,21 @@ def user_card_kb(
         kb.button(text="🚫 Заблокировать",  callback_data=f"{CB_PANEL}:block:{user_id}:{page}")
     kb.button(text="🗑 Стереть из БД", callback_data=f"{CB_PANEL}:udel:{user_id}:{page}")
     kb.button(text="« К списку", callback_data=f"{CB_PANEL}:users:{page}")
-    kb.adjust(2, 1, 2, 1, 1)
+    kb.adjust(2, 2, 2, 1, 1)
+    return kb.as_markup()
+
+
+def user_history_kb(
+    user_id: int, page: int, hpage: int, has_prev: bool, has_next: bool
+) -> InlineKeyboardMarkup:
+    """История юзера: листалка + возврат в его карточку."""
+    kb = InlineKeyboardBuilder()
+    if has_prev:
+        kb.button(text="« Новее", callback_data=f"{CB_PANEL}:uhist:{user_id}:{page}:{hpage - 1}")
+    if has_next:
+        kb.button(text="Старее »", callback_data=f"{CB_PANEL}:uhist:{user_id}:{page}:{hpage + 1}")
+    kb.button(text="« К пользователю", callback_data=f"{CB_PANEL}:user:{user_id}:{page}")
+    kb.adjust(2, 1)
     return kb.as_markup()
 
 

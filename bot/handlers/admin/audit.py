@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.db import repo
 from bot.db.models import AuditAction, AuditLog
-from bot.keyboards.inline import CB_PANEL, audit_list_kb
+from bot.keyboards.inline import CB_PANEL, audit_list_kb, user_history_kb
 from bot.services.pricing import fmt_rub
 from bot.utils.timefmt import fmt_msk
 
@@ -108,6 +108,37 @@ async def cb_audit_list(call: CallbackQuery, session: AsyncSession) -> None:
             page,
             has_prev=page > 0,
             has_next=(page + 1) * PAGE_SIZE < total,
+        ),
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith(f"{CB_PANEL}:uhist:"))
+async def cb_user_history(call: CallbackQuery, session: AsyncSession) -> None:
+    """История одного юзера. Кроме страницы самой истории тащим страницу списка
+    юзеров: кнопка возврата ведёт в карточку, а из неё — на ту же страницу
+    списка, откуда админ пришёл."""
+    _, _, rest = call.data.partition(f"{CB_PANEL}:uhist:")
+    user_id_s, page_s, hpage_s = rest.split(":")
+    user_id, page, hpage = int(user_id_s), int(page_s), int(hpage_s)
+
+    total = await repo.count_audit_for_user(session, user_id)
+    rows = await repo.list_audit_for_user(
+        session, user_id, limit=PAGE_SIZE, offset=hpage * PAGE_SIZE
+    )
+
+    if not rows:
+        text = "🕘 <b>История юзера</b>\n\nСобытий пока нет."
+    else:
+        body = "\n\n".join(fmt_audit_row(r) for r in rows)
+        text = f"🕘 <b>История юзера</b> — всего {total}\n\n{body}"
+
+    await call.message.edit_text(
+        text,
+        reply_markup=user_history_kb(
+            user_id, page, hpage,
+            has_prev=hpage > 0,
+            has_next=(hpage + 1) * PAGE_SIZE < total,
         ),
     )
     await call.answer()

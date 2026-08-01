@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
 from bot.db import repo
+from bot.db.models import AuditAction
 from bot.handlers.admin.common import PER_PAGE, user_card_text
 from bot.keyboards.inline import (
     CB_PANEL,
@@ -100,6 +101,16 @@ async def cb_panel_toggle_block(call: CallbackQuery, session: AsyncSession) -> N
         return
 
     await repo.set_user_blocked(session, user.id, block)
+    await repo.log_action(
+        session,
+        AuditAction.USER_BLOCKED if block else AuditAction.USER_UNBLOCKED,
+        actor_tg_id=call.from_user.id,
+        actor_is_admin=True,
+        target_user_id=user.id,
+        target_type="user",
+        target_id=user.id,
+        details="Заблокирован админом" if block else "Разблокирован админом",
+    )
     await session.commit()
     await session.refresh(user)
 
@@ -157,6 +168,18 @@ async def cb_panel_user_delete_confirm(call: CallbackQuery, session: AsyncSessio
         await call.answer("Нельзя удалить админа.", show_alert=True)
         return
     await call.answer("⏳ Стираю...")
+    # Пишем ДО стирания: вместе с юзером уйдут и его строки, а событие должно
+    # остаться в общей ленте. target_user_id=None — ссылку на исчезающего юзера
+    # не держим, его историю всё равно уже никто не откроет.
+    await repo.log_action(
+        session, AuditAction.USER_WIPED,
+        actor_tg_id=call.from_user.id,
+        actor_is_admin=True,
+        target_user_id=None,
+        target_type="user",
+        target_id=user.id,
+        details=f"Стёрт юзер tg_id {user.tg_id} (@{user.username or '—'})",
+    )
     res = await user_wipe.wipe_user(session, user)
     await session.commit()
     lines = [

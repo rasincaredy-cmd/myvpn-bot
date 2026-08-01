@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
 from bot.db import repo
+from bot.db.models import AuditAction
 from bot.handlers.admin.common import trial_line
 from bot.keyboards.inline import (
     CB_PANEL,
@@ -103,6 +104,16 @@ async def step_sub_limit(message: Message, state: FSMContext, session: AsyncSess
     if user is None:
         await message.answer("Юзер уже удалён.")
         return
+    # Пишем после перечитывания юзера: в журнале должен стоять итоговый тариф —
+    # тот, что админ видит в карточке, а не только изменённая половина.
+    await repo.log_action(
+        session, AuditAction.TARIFF_CHANGED,
+        actor_tg_id=message.from_user.id,
+        actor_is_admin=True,
+        target_user_id=user.id,
+        details=f"Тариф: устройств {user.sub_max_devices}, обходов {user.sub_max_bypass}",
+    )
+    await session.commit()
     await message.answer(
         f"✅ Лимит устройств: <b>{user.sub_max_devices}</b>",
         reply_markup=admin_sub_kb(user.id, data["page"], is_trial=user.is_trial),
@@ -138,6 +149,16 @@ async def step_sub_bypass(message: Message, state: FSMContext, session: AsyncSes
     if user is None:
         await message.answer("Юзер уже удалён.")
         return
+    # Тот же итоговый тариф, что и при смене лимита устройств: одно событие
+    # на любую правку тарифа, чтобы в ленте читалось «стало столько-то».
+    await repo.log_action(
+        session, AuditAction.TARIFF_CHANGED,
+        actor_tg_id=message.from_user.id,
+        actor_is_admin=True,
+        target_user_id=user.id,
+        details=f"Тариф: устройств {user.sub_max_devices}, обходов {user.sub_max_bypass}",
+    )
+    await session.commit()
     await message.answer(
         f"✅ Лимит обхода БС: <b>{user.sub_max_bypass}</b>",
         reply_markup=admin_sub_kb(user.id, data["page"], is_trial=user.is_trial),
@@ -177,15 +198,28 @@ async def step_sub_balance(message: Message, state: FSMContext, session: AsyncSe
     data = await state.get_data()
     await state.clear()
     amount = int(raw[1:]) * 100 * (1 if sign == "+" else -1)
+    from bot.services.pricing import fmt_rub
     await repo.add_balance_tx(
         session, data["user_id"], amount, "admin", note="Ручная правка админом"
+    )
+    # Знак суммы сохраняем как есть: со взятым по модулю списание выглядело бы
+    # в ленте пополнением.
+    await repo.log_action(
+        session, AuditAction.ADMIN_CREDIT,
+        actor_tg_id=message.from_user.id,
+        actor_is_admin=True,
+        target_user_id=data["user_id"],
+        amount_kopeks=amount,
+        details=(
+            f"Админ вручную {'начислил' if amount > 0 else 'списал'} "
+            f"{fmt_rub(abs(amount))}"
+        ),
     )
     await session.commit()
     user = await repo.get_user_by_id(session, data["user_id"])
     if user is None:
         await message.answer("Юзер уже удалён — правка баланса отменена.")
         return
-    from bot.services.pricing import fmt_rub
     logger.info("Admin balance adjust: user {} {}{} kopeks", user.id, sign, abs(amount))
     try:
         await tg_bot.send_message(
@@ -250,6 +284,20 @@ async def step_sub_extend(message: Message, state: FSMContext, session: AsyncSes
     await repo.set_subscription(
         session, data["user_id"],
         expires_at=result, touch_expires=True, reset_traffic_base=True, mark_paid=True,
+    )
+    # Этот путь выдаёт подписку в обход billing.grant_term (там срок из прайса,
+    # здесь — произвольная дата), поэтому запись в журнал делается тут же, иначе
+    # такой выдачи в ленте не будет вовсе. Формулировка отличает ручной срок от
+    # обычной выдачи тарифа.
+    await repo.log_action(
+        session, AuditAction.SUB_GRANTED,
+        actor_tg_id=message.from_user.id,
+        actor_is_admin=True,
+        target_user_id=data["user_id"],
+        details=(
+            f"Админ вручную задал срок подписки: до {fmt_msk(result)} МСК"
+            if result else "Админ вручную сделал подписку бессрочной"
+        ),
     )
     await session.commit()
     user = await repo.get_user_by_id(session, data["user_id"])

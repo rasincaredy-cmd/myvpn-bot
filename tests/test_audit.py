@@ -226,6 +226,32 @@ class TestAuditMoney:
         # Подарок — не списание: денежной суммы у события нет.
         assert grants[0].amount_kopeks is None
 
+    async def test_grant_without_actor_is_not_signed_by_admin(
+        self, session: AsyncSession
+    ) -> None:
+        """Выдача без указания админа — это сделал бот (например, будущая
+        автоматическая компенсация). В ленте она не должна выглядеть как
+        «выдал админ, неизвестно какой»: без актора и признак админа снят."""
+        user = await repo.get_or_create_user(
+            session, tg_id=1009, username="noactor", full_name="NoActor"
+        )
+        user.sub_max_devices = 1
+        user.sub_max_bypass = 1
+        await session.flush()
+        user_id = user.id
+
+        await billing.grant_term(session, user, months=3)
+        await session.commit()
+        session.expunge_all()
+
+        grants = [
+            r for r in await repo.list_audit_for_user(session, user_id)
+            if r.action == AuditAction.SUB_GRANTED
+        ]
+        assert len(grants) == 1
+        assert grants[0].actor_tg_id is None
+        assert grants[0].actor_is_admin is False
+
     async def test_deposit_is_logged(self, session: AsyncSession) -> None:
         user = await repo.get_or_create_user(
             session, tg_id=1003, username="payer", full_name="Payer"
@@ -354,3 +380,22 @@ class TestAuditMoney:
         assert len(charges) == 1
         assert charges[0].actor_tg_id == tg_id
         assert "автопродление" not in charges[0].details.lower()
+
+
+class TestAuditAdmin:
+    async def test_admin_actions_are_marked(self, session: AsyncSession) -> None:
+        user = await repo.get_or_create_user(
+            session, tg_id=1004, username="target", full_name="Target"
+        )
+        await session.flush()
+
+        await repo.log_action(
+            session, AuditAction.USER_BLOCKED,
+            actor_tg_id=111, actor_is_admin=True,
+            target_user_id=user.id, target_type="user", target_id=user.id,
+            details="Заблокирован админом",
+        )
+
+        rows = await repo.list_audit_for_user(session, user.id)
+        assert rows[0].actor_is_admin is True
+        assert rows[0].actor_tg_id == 111

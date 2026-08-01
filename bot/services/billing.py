@@ -225,7 +225,9 @@ async def grant_term(
     await repo.log_action(
         session, AuditAction.SUB_GRANTED,
         actor_tg_id=actor_tg_id,
-        actor_is_admin=True,
+        # Без актора выдачу сделал бот: подписать её админом значило бы оставить
+        # в ленте «выдал админ, неизвестно какой».
+        actor_is_admin=actor_tg_id is not None,
         target_user_id=user.id,
         details=f"Подписка на {months} мес выдана админом",
     )

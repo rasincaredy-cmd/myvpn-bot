@@ -148,6 +148,9 @@ async def _run_checks() -> None:
                 if await _try_autopay(session, user):
                     touched = True
                     continue
+                # Считаем ДО отзыва: после него активных устройств не останется,
+                # а админу в ленте нужна цифра «сколько погасло у человека».
+                devices_hit = await repo.count_active_devices(session, user.id)
                 if await _revoke_all_devices_for_user(session, user.id):
                     touched = True
                     # Инициатор — планировщик, не человек: actor_tg_id=None.
@@ -160,7 +163,7 @@ async def _run_checks() -> None:
                         session, AuditAction.CONFIG_REVOKED,
                         actor_tg_id=None,
                         target_user_id=user.id,
-                        details="Отозван по истечению подписки",
+                        details=f"Отозван по истечению подписки (устройств: {devices_hit})",
                     )
                     await _notify(
                         user.tg_id,
@@ -467,6 +470,22 @@ async def _run_checks() -> None:
                 if await _revoke_all_devices_for_user(session, user.id):
                     limit_touched = True
                     logger.info("Auto-revoked user {} devices (traffic limit)", user.id)
+                    # Инициатор — планировщик, не человек: actor_tg_id=None.
+                    # Причина обязана отличаться от «истёк срок»: это два разных
+                    # разговора с юзером — там надо продлить срок, тут лимит
+                    # выбран ВНУТРИ уже оплаченного периода. Цифры те же, что
+                    # ушли юзеру в уведомлении ниже, — админ в журнале видит
+                    # ровно то, что видел человек.
+                    await repo.log_action(
+                        session, AuditAction.CONFIG_REVOKED,
+                        actor_tg_id=None,
+                        target_user_id=user.id,
+                        details=(
+                            "Отозван по лимиту трафика подписки "
+                            f"({amnezia.fmt_bytes(used)} из "
+                            f"{amnezia.fmt_bytes(user.sub_traffic_limit_bytes)})"
+                        ),
+                    )
                     await _notify(
                         user.tg_id,
                         f"📊 <b>Трафик подписки закончился</b> "

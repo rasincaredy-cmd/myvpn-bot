@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 
 from loguru import logger
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
 from bot.db import repo
@@ -111,6 +112,14 @@ async def _try_autopay(session, user: User) -> bool:
     )
     await notify_autopay(user, res)
     return True
+
+
+async def _cleanup_audit(session: AsyncSession) -> None:
+    """Чистка журнала по ретеншну. Идёт последней: если упадёт, важные секции
+    (отзыв, автопродление) уже отработали."""
+    removed = await repo.delete_audit_older_than(session, settings.audit_retention_days)
+    if removed:
+        logger.info("Ретеншн журнала: удалено записей {}", removed)
 
 
 async def _run_checks() -> None:
@@ -500,6 +509,18 @@ async def _run_checks() -> None:
                 await session.commit()
         except Exception:
             logger.exception("Scheduler section 3b (traffic limit) failed")
+            await session.rollback()
+
+        # ── 3c. Ретеншн журнала действий ─────────────────────────────────────
+        # Держим журнал не длиннее audit_retention_days (0 = хранить вечно).
+        # Идёт ПОСЛЕДНЕЙ: чистка — самое необязательное дело тика, её сбой не
+        # должен стоять на пути отзыва по истечению, автопродления и учёта
+        # трафика. Изоляция та же, что у соседей: try/except + rollback.
+        try:
+            await _cleanup_audit(session)
+            await session.commit()
+        except Exception:
+            logger.exception("Scheduler section 3c (audit retention) failed")
             await session.rollback()
 
 

@@ -12,11 +12,24 @@ def admin_panel_menu() -> InlineKeyboardMarkup:
     kb.button(text="🛠 Установить VPN на VPS", callback_data=f"{CB_INSTALL}:start")
     kb.button(text="🖥 Серверы",               callback_data=f"{CB_SERVERS}:list")
     kb.button(text="📊 Статистика",   callback_data=f"{CB_PANEL}:stats")
+    kb.button(text="📝 Журнал",       callback_data=f"{CB_PANEL}:audit:0")
     kb.button(text="👤 Пользователи", callback_data=f"{CB_PANEL}:users:0")
     kb.button(text="📢 Рассылка",     callback_data=f"{CB_PANEL}:broadcast")
     kb.button(text="📦 Бэкап сейчас", callback_data=f"{CB_PANEL}:backup_now")
     kb.button(text="« В меню",        callback_data=f"{CB_MENU}:open")
     kb.adjust(1)
+    return kb.as_markup()
+
+
+def audit_list_kb(page: int, has_prev: bool, has_next: bool) -> InlineKeyboardMarkup:
+    """Лента журнала: листалка + возврат в панель."""
+    kb = InlineKeyboardBuilder()
+    if has_prev:
+        kb.button(text="« Новее", callback_data=f"{CB_PANEL}:audit:{page - 1}")
+    if has_next:
+        kb.button(text="Старее »", callback_data=f"{CB_PANEL}:audit:{page + 1}")
+    kb.button(text="« Админ-панель", callback_data=f"{CB_PANEL}:main")
+    kb.adjust(2, 1)
     return kb.as_markup()
 
 

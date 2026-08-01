@@ -79,10 +79,20 @@ async def count_audit_for_user(session: AsyncSession, user_id: int) -> int:
 
 
 async def delete_audit_older_than(session: AsyncSession, days: int) -> int:
-    """Чистка старых записей. days <= 0 — ретеншн выключен, не трогаем ничего."""
+    """Чистка старых записей. days <= 0 — ретеншн выключен, не трогаем ничего.
+
+    synchronize_session=False обязателен: SQLite отдаёт created_at без
+    таймзоны, а cutoff — aware. Со стратегией по умолчанию SQLAlchemy сверял бы
+    их в Python на уже загруженных объектах и падал с TypeError (тот же капкан,
+    что описан в докстринге bot.utils.timefmt.as_utc). Сравнение остаётся в SQL.
+    """
     if days <= 0:
         return 0
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-    res = await session.execute(delete(AuditLog).where(AuditLog.created_at < cutoff))
+    res = await session.execute(
+        delete(AuditLog)
+        .where(AuditLog.created_at < cutoff)
+        .execution_options(synchronize_session=False)
+    )
     await session.flush()
     return int(res.rowcount or 0)

@@ -143,6 +143,7 @@ async def _extend(
 async def charge_and_extend(
     session: AsyncSession, user: User, months: int,
     *, max_devices: int | None = None, max_bypass: int | None = None,
+    by_autopay: bool = False,
 ) -> ChargeResult:
     """Покупка/продление подписки с баланса на `months` месяцев. Тариф — текущий
     у юзера или явный (max_devices/max_bypass): смена тарифа происходит ТОЛЬКО
@@ -150,7 +151,11 @@ async def charge_and_extend(
 
     Срок прибавляется к остатку (активная подписка не сгорает), у платной
     подписки лимит трафика снимается (продаём устройства, не гигабайты),
-    отозванные по истечению устройства оживают (ревайв)."""
+    отозванные по истечению устройства оживают (ревайв).
+
+    by_autopay — списал планировщик, а не человек: в журнале такое событие
+    остаётся без инициатора. Иначе на жалобу «я ничего не покупал» админ увидел
+    бы в истории самого юзера и решил бы, что тот покупку сделал сам."""
     devices = max_devices if max_devices is not None else user.sub_max_devices
     bypass = max_bypass if max_bypass is not None else user.sub_max_bypass
     # Последний рубеж против пустого/кривого тарифа: сюда ходят конструктор,
@@ -178,10 +183,13 @@ async def charge_and_extend(
     )
     await repo.log_action(
         session, AuditAction.BALANCE_CHARGE,
-        actor_tg_id=user.tg_id,
+        actor_tg_id=None if by_autopay else user.tg_id,
         target_user_id=user.id,
         amount_kopeks=price,
-        details=f"Подписка {months} мес (устройств: {devices}, обходов: {bypass})",
+        details=(
+            f"{'Автопродление' if by_autopay else 'Подписка'} {months} мес "
+            f"(устройств: {devices}, обходов: {bypass})"
+        ),
     )
     return ChargeResult(
         ok=True, price_kopeks=price, new_expires_at=new_expiry, revive=rv,
@@ -289,7 +297,7 @@ async def autopay_if_expired(
     months, _price, wanted, wanted_price = plan
     balance_before = user.balance_kopeks
 
-    res = await charge_and_extend(session, user, months)
+    res = await charge_and_extend(session, user, months, by_autopay=True)
     if not res.ok:
         return None
     res.wanted_months = wanted

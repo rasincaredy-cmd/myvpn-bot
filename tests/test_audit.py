@@ -299,3 +299,58 @@ class TestAuditMoney:
         # Награду начислил бот, а не человек — инициатора у события нет.
         assert rewards[0].actor_tg_id is None
         assert rewards[0].details == f"{settings.referral_percent}% с пополнения реферала"
+
+    async def test_autopay_charge_has_no_human_actor(
+        self, session: AsyncSession
+    ) -> None:
+        """Автосписание не должно выглядеть покупкой, которую сделал юзер: иначе
+        на жалобу «я ничего не покупал» админ увидит в истории самого юзера."""
+        user = await repo.get_or_create_user(
+            session, tg_id=1007, username="auto", full_name="Auto"
+        )
+        user.balance_kopeks = 100_00
+        user.sub_max_devices = 1
+        user.sub_max_bypass = 1
+        user.autopay = True
+        user.sub_expires_at = datetime.now(timezone.utc) - timedelta(days=2)
+        await session.flush()
+        user_id = user.id
+
+        res = await billing.autopay_if_expired(session, user)
+        assert res is not None and res.ok
+        await session.commit()
+        session.expunge_all()
+
+        rows = await repo.list_audit_for_user(session, user_id)
+        charges = [r for r in rows if r.action == AuditAction.BALANCE_CHARGE]
+        assert len(charges) == 1
+        assert charges[0].actor_tg_id is None       # списал бот, не человек
+        assert charges[0].amount_kopeks == res.price_kopeks
+        # Разница видна прямо в строке ленты, без сверки полей.
+        assert "автопродление" in charges[0].details.lower()
+
+    async def test_manual_purchase_keeps_human_actor(
+        self, session: AsyncSession
+    ) -> None:
+        """Парная проверка к автопродлению: обычную покупку по-прежнему
+        подписывает сам юзер, иначе различать было бы нечего."""
+        user = await repo.get_or_create_user(
+            session, tg_id=1008, username="manual", full_name="Manual"
+        )
+        user.balance_kopeks = 100_00
+        user.sub_max_devices = 1
+        user.sub_max_bypass = 1
+        await session.flush()
+        user_id, tg_id = user.id, user.tg_id
+
+        assert (await billing.charge_and_extend(session, user, months=1)).ok
+        await session.commit()
+        session.expunge_all()
+
+        charges = [
+            r for r in await repo.list_audit_for_user(session, user_id)
+            if r.action == AuditAction.BALANCE_CHARGE
+        ]
+        assert len(charges) == 1
+        assert charges[0].actor_tg_id == tg_id
+        assert "автопродление" not in charges[0].details.lower()

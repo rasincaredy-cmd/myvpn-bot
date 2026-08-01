@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
 from bot.db import repo
-from bot.db.models import PeerStatus, User
+from bot.db.models import AuditAction, PeerStatus, User
 from bot.services import amnezia
 from bot.services import wdtt as wdtt_svc
 from bot.services.crypto import decrypt
@@ -148,6 +148,16 @@ async def revive_devices_for_user(session: AsyncSession, user: User) -> ReviveRe
                 res.errors.append(f"пир {peer.label} ({server.name}): SSH-ошибка")
                 continue
             await repo.revive_peer(session, peer.id)
+            # Инициатора-человека нет: конфиг возвращает бот после оплаты,
+            # поэтому actor_tg_id=None (юзер лишь заплатил, оживление — наше).
+            await repo.log_action(
+                session, AuditAction.CONFIG_REVIVED,
+                actor_tg_id=None,
+                target_user_id=user.id,
+                target_type="peer",
+                target_id=peer.id,
+                details=f"{peer.label} на сервере «{server.name}» ожил после оплаты",
+            )
             res.peers_restored += 1
             revived_any = True
 

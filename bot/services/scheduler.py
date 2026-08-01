@@ -14,7 +14,7 @@ from sqlalchemy import select
 from bot.config import settings
 from bot.db import repo
 from bot.db.base import session_scope
-from bot.db.models import Device, Peer, PeerStatus, User, WdttAccess
+from bot.db.models import AuditAction, Device, Peer, PeerStatus, User, WdttAccess
 from bot.loader import bot
 from bot.services import amnezia
 from bot.services import wdtt as wdtt_svc
@@ -150,6 +150,18 @@ async def _run_checks() -> None:
                     continue
                 if await _revoke_all_devices_for_user(session, user.id):
                     touched = True
+                    # Инициатор — планировщик, не человек: actor_tg_id=None.
+                    # Поставить сюда tg_id владельца значило бы, что админ,
+                    # разбирая жалобу «я ничего не отключал», увидел бы
+                    # инициатором самого жалующегося.
+                    # Отзыв накрывает все устройства сразу, конкретной цели нет —
+                    # событие вешаем на юзера (как денежные в billing).
+                    await repo.log_action(
+                        session, AuditAction.CONFIG_REVOKED,
+                        actor_tg_id=None,
+                        target_user_id=user.id,
+                        details="Отозван по истечению подписки",
+                    )
                     await _notify(
                         user.tg_id,
                         "⏱ <b>Подписка закончилась</b> — VPN и обход БС встали на паузу.\n"

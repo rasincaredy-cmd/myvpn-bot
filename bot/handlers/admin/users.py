@@ -145,7 +145,9 @@ async def cb_panel_user_delete_ask(call: CallbackQuery, session: AsyncSession) -
         f"• устройств: <b>{devices}</b>, обходов: <b>{bypass}</b> "
         "(конфиги отзываются с серверов сразу)\n"
         f"• баланс <b>{fmt_rub(user.balance_kopeks)}</b> и вся история операций\n"
-        "• история поддержки, неоплаченные счета\n\n"
+        "• история поддержки, неоплаченные счета\n"
+        "• его записи в журнале действий (в общей ленте останется только "
+        "само стирание)\n\n"
         "⚠️ Если он снова напишет боту — создастся заново как новый юзер "
         "и ПОЛУЧИТ НОВЫЙ ТРИАЛ. Для наказания используй «🚫 Заблокировать», "
         "удаление — для мусорных/тестовых аккаунтов и «сотрите мои данные».",
@@ -169,8 +171,11 @@ async def cb_panel_user_delete_confirm(call: CallbackQuery, session: AsyncSessio
         return
     await call.answer("⏳ Стираю...")
     # Пишем ДО стирания: вместе с юзером уйдут и его строки, а событие должно
-    # остаться в общей ленте. target_user_id=None — ссылку на исчезающего юзера
-    # не держим, его историю всё равно уже никто не откроет.
+    # остаться в общей ленте. target_user_id=None здесь не косметика — стирание
+    # чистит журнал именно по target_user_id, и с проставленной ссылкой это
+    # событие снесло бы само себя. Держать ссылку и нельзя: id стёртого юзера
+    # SQLite отдаст следующему зарегистрировавшемуся (см. purge_user_records),
+    # и запись про чужое стирание всплыла бы в карточке новичка.
     await repo.log_action(
         session, AuditAction.USER_WIPED,
         actor_tg_id=call.from_user.id,
@@ -187,7 +192,8 @@ async def cb_panel_user_delete_confirm(call: CallbackQuery, session: AsyncSessio
         f"• Конфигов отозвано и снято с серверов: {res.revoked_items}",
         f"• Удалено записей: платежи {res.purged.get('balance_txs', 0)}, "
         f"счета {res.purged.get('invoices', 0)}, "
-        f"поддержка {res.purged.get('support_msgs', 0)}",
+        f"поддержка {res.purged.get('support_msgs', 0)}, "
+        f"журнал {res.purged.get('audit_logs', 0)}",
     ]
     if res.purged.get("referrals_unlinked"):
         lines.append(f"• Отвязано рефералов: {res.purged['referrals_unlinked']}")

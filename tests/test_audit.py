@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from bot.config import settings
 from bot.db import repo
 from bot.db.models import AuditAction, AuditLog, Peer, PeerStatus, ServerStatus
-from bot.services import billing, revive, teardown
+from bot.services import billing, revive, teardown, user_wipe
 from bot.services.crypto import encrypt
 
 
@@ -642,6 +642,86 @@ class TestAuditNoDoubleRow:
         assert len(rows) == 1, "врезка у вызывающего задваивает событие"
         assert rows[0].actor_tg_id == tg_id
         assert rows[0].details == "Устройство «Телефон» удалено юзером"
+
+
+class TestAuditWipe:
+    """Стирание юзера обязано уносить и его журнал.
+
+    Ловушка: `users.id` объявлен как `Integer primary key` БЕЗ `AUTOINCREMENT`,
+    поэтому SQLite переиспользует освободившийся максимальный rowid. Следующий
+    зарегистрировавшийся человек получает id стёртого — и вместе с ним чужую
+    историю в карточке, если строки журнала остались лежать."""
+
+    async def test_wipe_deletes_user_history(
+        self, session: AsyncSession, monkeypatch
+    ) -> None:
+        _mute_ssh(monkeypatch)
+        user, _, _, _ = await _user_with_device(session, tg_id=2101)
+        user_id = user.id
+        await repo.log_action(
+            session, AuditAction.BALANCE_TOPUP,
+            target_user_id=user_id, amount_kopeks=10000,
+            details="Пополнение 100 ₽",
+        )
+
+        res = await user_wipe.wipe_user(session, user)
+        await session.commit()
+        session.expunge_all()
+
+        assert await repo.count_audit_for_user(session, user_id) == 0
+        assert res.purged["audit_logs"] > 0
+
+    async def test_history_does_not_leak_to_next_user(
+        self, session: AsyncSession, monkeypatch
+    ) -> None:
+        """Тот же баг с той стороны, с какой его увидел бы админ: карточка
+        нового человека показывает операции предыдущего."""
+        _mute_ssh(monkeypatch)
+        user, _, _, _ = await _user_with_device(session, tg_id=2102)
+        old_id = user.id
+        await repo.log_action(
+            session, AuditAction.BALANCE_TOPUP,
+            target_user_id=old_id, amount_kopeks=50000,
+            details="Пополнение 500 ₽",
+        )
+
+        await user_wipe.wipe_user(session, user)
+        await session.commit()
+        session.expunge_all()
+
+        newcomer = await repo.get_or_create_user(
+            session, tg_id=2103, username="new", full_name="Новичок"
+        )
+        await session.commit()
+        new_id = newcomer.id
+        session.expunge_all()
+
+        assert new_id == old_id, (
+            "SQLite не переиспользовал id — тест перестал проверять то, "
+            "ради чего написан; проверь, не появился ли AUTOINCREMENT"
+        )
+        assert await repo.count_audit_for_user(session, new_id) == 0
+
+    async def test_general_feed_keeps_the_wipe_event(
+        self, session: AsyncSession, monkeypatch
+    ) -> None:
+        """USER_WIPED пишется с target_user_id=None и обязан пережить чистку —
+        иначе стирание юзера не оставит следа вообще нигде."""
+        _mute_ssh(monkeypatch)
+        user, _, _, _ = await _user_with_device(session, tg_id=2104)
+        await repo.log_action(
+            session, AuditAction.USER_WIPED,
+            actor_tg_id=777, actor_is_admin=True,
+            target_user_id=None, target_type="user", target_id=user.id,
+            details="Стёрт юзер tg_id 2104",
+        )
+
+        await user_wipe.wipe_user(session, user)
+        await session.commit()
+        session.expunge_all()
+
+        rows = await repo.list_audit(session, limit=50)
+        assert [r for r in rows if r.action == AuditAction.USER_WIPED]
 
 
 class _FakeMessage:

@@ -493,21 +493,21 @@ class TestAuditRevokeAll:
     async def test_scheduler_reason_survives(
         self, session: AsyncSession, monkeypatch
     ) -> None:
-        """Планировщик отдаёт готовый текст причины — он и попадает в ленту
-        дословно, вместе с числом погашенных устройств."""
+        """Причина от планировщика доезжает до ленты, но строку собирает сама
+        функция отзыва — из метки устройства и этой причины."""
         _mute_ssh(monkeypatch)
         user, _, _, _ = await _user_with_device(session, tg_id=2002)
         user_id = user.id
 
         await revive.revoke_devices_for_user(
-            session, user_id, reason="Отозван по истечению подписки (устройств: 1)",
+            session, user_id, reason="истекла подписка",
         )
         await session.commit()
         session.expunge_all()
 
         rows = await _revoked_rows(session, user_id)
         assert len(rows) == 1
-        assert rows[0].details == "Отозван по истечению подписки (устройств: 1)"
+        assert rows[0].details == "Устройство «Телефон» отозвано: истекла подписка"
         assert rows[0].actor_tg_id is None      # погасил бот, не человек
 
     async def test_row_per_device(
@@ -523,7 +523,9 @@ class TestAuditRevokeAll:
         await session.flush()
         second_id = second.id
 
-        await revive.revoke_devices_for_user(session, user_id, actor_tg_id=111)
+        await revive.revoke_devices_for_user(
+            session, user_id, actor_tg_id=111, reason="истекла подписка",
+        )
         await session.commit()
         session.expunge_all()
 
@@ -531,6 +533,14 @@ class TestAuditRevokeAll:
         assert len(rows) == 2
         assert {r.target_id for r in rows} == {first_id, second_id}
         assert {r.target_type for r in rows} == {"device"}
+        # Тексты строк обязаны отличаться: пока причина шла в details целиком,
+        # обе строки были дословно одинаковы и читались в ленте как задвоение —
+        # ровно тот баг, ради которого запись сюда и переезжала.
+        assert rows[0].details != rows[1].details
+        assert {r.details for r in rows} == {
+            "Устройство «Телефон» отозвано: истекла подписка",
+            "Устройство «Ноут» отозвано: истекла подписка",
+        }
 
     async def test_nothing_to_revoke_writes_nothing(
         self, session: AsyncSession

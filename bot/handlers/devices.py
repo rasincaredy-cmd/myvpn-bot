@@ -29,7 +29,7 @@ from bot.keyboards.inline import (
     subscription_kb,
 )
 from bot.services import amnezia
-from bot.services.ssh import SSHClient, SSHError
+from bot.services.ssh import SSHError
 from bot.states.install import DeviceStates
 from bot.texts import t
 from bot.utils.timefmt import as_utc, fmt_msk

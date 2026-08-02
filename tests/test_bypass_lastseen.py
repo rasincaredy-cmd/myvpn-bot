@@ -6,12 +6,12 @@
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.db import repo
-from bot.db.models import PeerStatus, ServerStatus, WdttAccess
+from bot.db.models import ServerStatus, WdttAccess
 from bot.services.crypto import encrypt
 
 

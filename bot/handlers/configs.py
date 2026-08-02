@@ -25,6 +25,7 @@ from bot.db.models import (
     User,
 )
 from bot.filters.admin import AdminFilter
+from bot.handlers.config_delivery import build_conf_for_peer
 from bot.keyboards.inline import (
     CB_INVITES,
     back_to_menu,
@@ -68,8 +69,12 @@ async def _create_peer_for_user(
     *,
     device_id: int | None = None,
     expires_at: "datetime | None" = None,
-) -> tuple[str, str, str]:
-    """Создаёт peer на сервере и в БД. Возвращает (conf, ip, label).
+) -> tuple[Peer, str]:
+    """Создаёт peer на сервере и в БД. Возвращает (peer, conf).
+
+    Пир возвращается целиком, а не его поля: вызывающему нужен `peer.id`, чтобы
+    предложить юзеру выбрать формат конфига — экран выбора пересобирает конфиг
+    по id уже в момент нажатия кнопки.
 
     Критическая секция под per-server Lock: пока держим лок, читаем занятые IP
     с сервера (`awg show`), выбираем свободный и добавляем peer. Так два
@@ -117,28 +122,22 @@ async def _create_peer_for_user(
         details=f"{label} на сервере «{server.name}»",
     )
 
-    params = amnezia.AmneziaParams.from_json(server.awg_params_json)
-    conf = amnezia.build_peer_conf(
-        peer_private_key=keys.private_key,
-        peer_ip=ip,
-        server_public_key=server.server_public_key,
-        endpoint=server.server_endpoint,
-        params=params,
-        dns=server.dns,
-    )
-    return conf, ip, label
+    # Сервер только что читали из БД в этой же функции — None тут невозможен,
+    # проверка на него была бы мёртвым кодом.
+    _server, conf = await build_conf_for_peer(session, peer)  # type: ignore[misc]
+    return peer, conf
 
 
 async def provision_device_peers(
     session: AsyncSession, user: User, device: "object"
-) -> list[tuple[Server, str]]:
+) -> list[tuple[Server, Peer]]:
     """Создаёт по одному WG-пиру на КАЖДОЙ READY-локации, где у устройства ещё нет
     активного пира (Блок 8: устройство = группа конфигов по странам). Если в локации
     несколько серверов — берём наименее загруженный по активным пирам (Блок
     «Распределение»); упавший сервер не хороним локацию — пробуем следующий.
     Существующие пиры не переезжают: конфиг на руках у клиента привязан к серверу.
     Приватные серверы (Блок «Ревизия») обычным юзерам не выдаются — гейт в
-    list_ready_servers(for_user=...). Возвращает [(server, conf), ...]."""
+    list_ready_servers(for_user=...). Возвращает [(server, peer), ...]."""
     servers = await repo.list_ready_servers(session, for_user=user)
     existing = {
         p.server_id
@@ -146,13 +145,13 @@ async def provision_device_peers(
         if p.status == PeerStatus.ACTIVE
     }
     load = await repo.count_active_peers_by_server(session)
-    made: list[tuple[Server, str]] = []
+    made: list[tuple[Server, Peer]] = []
     for group in repo.group_by_location(servers).values():
         if any(s.id in existing for s in group):
             continue  # в этой локации у устройства уже есть конфиг
         for server in sorted(group, key=lambda s: load.get(s.id, 0)):
             try:
-                conf, _ip, _ = await _create_peer_for_user(
+                peer, _conf = await _create_peer_for_user(
                     session, server, user, device.label,
                     device_id=device.id, expires_at=None,
                 )
@@ -163,7 +162,7 @@ async def provision_device_peers(
                 logger.exception("Device {} provision on server {} crashed", device.id, server.id)
                 continue
             load[server.id] = load.get(server.id, 0) + 1
-            made.append((server, conf))
+            made.append((server, peer))
             break
     return made
 

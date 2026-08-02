@@ -235,6 +235,17 @@ async def revive_devices_for_user(session: AsyncSession, user: User) -> ReviveRe
                     pass
                 continue
             await repo.revive_wdtt_access(session, acc.id)
+            # Симметрично оживлению пира выше: юзер платит один раз, а обратно
+            # у него включаются две разные вещи, и в истории должно быть видно
+            # обе. Актора-человека нет — возвращает бот после оплаты.
+            await repo.log_action(
+                session, AuditAction.CONFIG_REVIVED,
+                actor_tg_id=None,
+                target_user_id=user.id,
+                target_type="wdtt",
+                target_id=acc.id,
+                details=f"Обход БС «{acc.label}» на сервере «{server.name}» ожил после оплаты",
+            )
             bypass_budget -= 1
             res.bypass_restored += 1
             revived_any = True

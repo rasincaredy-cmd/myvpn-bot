@@ -99,13 +99,15 @@ async def step_sub_limit(message: Message, state: FSMContext, session: AsyncSess
     data = await state.get_data()
     await state.clear()
     await repo.set_subscription(session, data["user_id"], max_devices=int(message.text.strip()))
-    await session.commit()
     user = await repo.get_user_by_id(session, data["user_id"])
     if user is None:
         await message.answer("Юзер уже удалён.")
         return
-    # Пишем после перечитывания юзера: в журнале должен стоять итоговый тариф —
-    # тот, что админ видит в карточке, а не только изменённая половина.
+    # refresh, а не commit: в журнале должен стоять итоговый тариф — тот, что
+    # админ видит в карточке, а не только изменённая половина. Раньше свежие
+    # значения добывались коммитом, и запись уходила ОТДЕЛЬНОЙ транзакцией —
+    # сбой между двумя коммитами оставлял тариф изменённым без следа в истории.
+    await session.refresh(user)
     await repo.log_action(
         session, AuditAction.TARIFF_CHANGED,
         actor_tg_id=message.from_user.id,
@@ -144,13 +146,14 @@ async def step_sub_bypass(message: Message, state: FSMContext, session: AsyncSes
     data = await state.get_data()
     await state.clear()
     await repo.set_subscription(session, data["user_id"], max_bypass=int(message.text.strip()))
-    await session.commit()
     user = await repo.get_user_by_id(session, data["user_id"])
     if user is None:
         await message.answer("Юзер уже удалён.")
         return
-    # Тот же итоговый тариф, что и при смене лимита устройств: одно событие
-    # на любую правку тарифа, чтобы в ленте читалось «стало столько-то».
+    # Тот же итоговый тариф и та же одна транзакция, что при смене лимита
+    # устройств: одно событие на любую правку тарифа, чтобы в ленте читалось
+    # «стало столько-то».
+    await session.refresh(user)
     await repo.log_action(
         session, AuditAction.TARIFF_CHANGED,
         actor_tg_id=message.from_user.id,
@@ -490,6 +493,20 @@ async def cb_panel_sub_trial(call: CallbackQuery, session: AsyncSession) -> None
         touch_traffic_limit=True,
         reset_traffic_base=True,
         mark_trial=True,
+    )
+    # Триал вторым заходом — редкое ручное решение админа, и в ленте оно должно
+    # отличаться от обычной выдачи тарифа: юзер получает срок бесплатно.
+    # Одной транзакцией с самой выдачей, как и остальные админские события.
+    await repo.log_action(
+        session, AuditAction.SUB_GRANTED,
+        actor_tg_id=call.from_user.id,
+        actor_is_admin=True,
+        target_user_id=user_id,
+        details=(
+            f"Админ выдал триал заново: {settings.trial_days} дн. "
+            f"(до {fmt_msk(expires)} МСК), устройств {settings.trial_devices}, "
+            f"трафик {settings.trial_traffic_gb or '∞'} ГБ"
+        ),
     )
     await session.commit()
     user = await repo.get_user_by_id(session, user_id)

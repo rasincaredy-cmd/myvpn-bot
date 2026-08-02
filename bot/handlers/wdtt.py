@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
 from bot.db import repo
-from bot.db.models import PeerStatus
+from bot.db.models import AuditAction, PeerStatus
 from bot.filters.admin import AdminFilter
 from bot.keyboards.inline import (
     CB_WDTT,
@@ -457,7 +457,7 @@ async def cb_wdtt_platform(call: CallbackQuery, state: FSMContext, session: Asyn
     link = res["link"]
     if platform == "pc":
         link = f"{link}#{device.label}"
-    await repo.create_wdtt_access(
+    access = await repo.create_wdtt_access(
         session,
         server_id=server.id,
         user_id=user.id,
@@ -470,6 +470,18 @@ async def cb_wdtt_platform(call: CallbackQuery, state: FSMContext, session: Asyn
         # Своя ссылка юзера или сервисная — поддержке это первый вопрос при
         # разборе «у меня обход не работает».
         vk_own=bool(data.get("vk_hash")),
+    )
+    # Выдача обхода — такое же событие доступа, как выдача конфига VPN: без неё
+    # в истории юзера обход появляется из ниоткуда и исчезает при отзыве.
+    # Одной транзакцией с самой выдачей: пароль уже на сервере, и запись не
+    # должна потеряться, если ниже упадёт отправка сообщения.
+    await repo.log_action(
+        session, AuditAction.CONFIG_ISSUED,
+        actor_tg_id=user.tg_id,
+        target_user_id=user.id,
+        target_type="wdtt",
+        target_id=access.id,
+        details=f"Обход БС «{device.label}» на сервере «{server.name}» ({platform})",
     )
     await session.commit()
 

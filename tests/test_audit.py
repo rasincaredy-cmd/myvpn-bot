@@ -644,6 +644,41 @@ class TestAuditNoDoubleRow:
         assert rows[0].details == "Устройство «Телефон» удалено юзером"
 
 
+class TestAuditBypassRevive:
+    async def test_bypass_revive_is_logged(
+        self, session: AsyncSession, monkeypatch
+    ) -> None:
+        """Юзер платит один раз, а обратно у него включаются две разные вещи:
+        VPN-пир и обход БС. Оживление пира писалось, обхода — нет, и в истории
+        обход выглядел так, будто и не гас."""
+        _mute_ssh(monkeypatch)
+
+        async def fake_create(*args, password: str | None = None, **kwargs) -> dict:
+            # Сервер вернул ТОТ ЖЕ пароль — иначе revive считает, что бинарь
+            # не поддерживает restore, и оставляет доступ отозванным.
+            return {"password": password, "link": "wdtt://x"}
+
+        monkeypatch.setattr(revive.wdtt_svc, "create_access", fake_create)
+        monkeypatch.setattr(revive.amnezia, "add_peer_on_server", fake_create)
+        user, _, _, access = await _user_with_device(session, tg_id=2301)
+        user_id, access_id = user.id, access.id
+
+        await revive.revoke_devices_for_user(session, user_id)
+        rv = await revive.revive_devices_for_user(session, user)
+        await session.commit()
+        session.expunge_all()
+
+        assert rv.bypass_restored == 1
+        rows = [
+            r for r in await repo.list_audit_for_user(session, user_id)
+            if r.action == AuditAction.CONFIG_REVIVED
+        ]
+        assert {r.target_type for r in rows} == {"peer", "wdtt"}
+        wdtt_row = next(r for r in rows if r.target_type == "wdtt")
+        assert wdtt_row.target_id == access_id
+        assert wdtt_row.actor_tg_id is None      # оживил бот, юзер лишь заплатил
+
+
 class _FakeStateMessage:
     """Минимальный Message для FSM-шага: хендлеру нужны текст, автор и ответ."""
 
@@ -733,6 +768,64 @@ class TestAuditSubTerm:
 
         rows = await repo.list_audit_for_user(session, user_id)
         assert AuditAction.SUB_GRANTED in {r.action for r in rows}
+
+
+class TestAuditTrialAndTariff:
+    async def test_repeat_trial_is_logged(
+        self, session: AsyncSession, monkeypatch
+    ) -> None:
+        """Триал вторым заходом — ручное решение админа: юзер получает срок
+        бесплатно, и в ленте это должно быть видно."""
+        from bot.handlers.admin import subscription as sub_h
+
+        _mute_ssh(monkeypatch)
+        monkeypatch.setattr(sub_h, "tg_bot", _FakeBot())
+        user, _, _, _ = await _user_with_device(session, tg_id=2401)
+        user_id = user.id
+        call = _FakeCall(f"panel:sub_trl:{user_id}:0", 777)
+
+        await sub_h.cb_panel_sub_trial(call, session)
+        await session.commit()
+        session.expunge_all()
+
+        rows = [
+            r for r in await repo.list_audit_for_user(session, user_id)
+            if r.action == AuditAction.SUB_GRANTED
+        ]
+        assert len(rows) == 1
+        assert "триал" in rows[0].details.lower()
+        assert rows[0].actor_is_admin is True
+
+    async def test_tariff_change_rolls_back_with_its_record(
+        self, session: AsyncSession, monkeypatch
+    ) -> None:
+        """Контракт журнала: событие живёт в одной транзакции с действием.
+        Раньше тариф коммитился ДО записи, и сбой между двумя коммитами
+        оставлял изменённый тариф без следа в истории."""
+        from bot.handlers.admin import subscription as sub_h
+
+        user, _, _, _ = await _user_with_device(session, tg_id=2402)
+        # Фикстуру фиксируем: откат ниже иначе снёс бы и самого юзера, и тест
+        # проверял бы не транзакцию хендлера, а транзакцию собственной подготовки.
+        await session.commit()
+        user_id, before = user.id, user.sub_max_devices
+
+        async def boom(*args, **kwargs) -> None:
+            raise RuntimeError("журнал недоступен")
+
+        monkeypatch.setattr(sub_h.repo, "log_action", boom)
+        msg = _FakeStateMessage("7", 777)
+        try:
+            await sub_h.step_sub_limit(msg, await _fsm(user_id), session)
+        except RuntimeError:
+            pass
+        await session.rollback()      # то же сделает session_scope middleware
+        session.expunge_all()
+
+        user = await repo.get_user_by_id(session, user_id)
+        assert user.sub_max_devices == before, (
+            "тариф пережил сбой записи в журнал — значит коммитов было два"
+        )
 
 
 class TestAuditWipe:

@@ -156,7 +156,8 @@ async def cb_panel_user_bypass_open(call: CallbackQuery, session: AsyncSession) 
         f"• 📊 Трафик: {amnezia.fmt_bytes(access.traffic_used_bytes)}\n"
         f"• 🕐 Последний трафик: {fmt_ago(access.last_seen_at)}",
         reply_markup=admin_user_bypass_card_kb(
-            access.id, user_id, page, is_active=access.status == PeerStatus.ACTIVE
+            access.id, user_id, page, is_active=access.status == PeerStatus.ACTIVE,
+            server_id=access.server_id,
         ),
     )
     await call.answer()

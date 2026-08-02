@@ -4,7 +4,13 @@ from __future__ import annotations
 from aiogram.types import InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from bot.keyboards.inline.prefixes import CB_INSTALL, CB_MENU, CB_PANEL, CB_SERVERS
+from bot.keyboards.inline.prefixes import (
+    CB_ADMIN,
+    CB_INSTALL,
+    CB_MENU,
+    CB_PANEL,
+    CB_SERVERS,
+)
 
 
 def admin_panel_menu() -> InlineKeyboardMarkup:
@@ -103,6 +109,10 @@ def admin_user_device_card_kb(
     kb = InlineKeyboardBuilder()
     for peer_id, loc in (configs or []):
         kb.button(text=f"📥 {loc}", callback_data=f"{CB_PANEL}:ucfg:{peer_id}:{user_id}:{page}:{device_id}")
+    # Провал в серверную карточку пира: там трафик, последний хендшейк и отзыв.
+    # Кнопка отдельная от «📥 <локация>» — та шлёт конфиг, эта показывает пир.
+    for peer_id, loc in (configs or []):
+        kb.button(text=f"🔍 К пиру · {loc}", callback_data=f"{CB_ADMIN}:peer:{peer_id}")
     kb.button(text="🗑 Удалить устройство", callback_data=f"{CB_PANEL}:udevx:{device_id}:{user_id}:{page}")
     kb.button(text="« К устройствам", callback_data=f"{CB_PANEL}:udev:{user_id}:{page}")
     kb.adjust(1)
@@ -110,7 +120,11 @@ def admin_user_device_card_kb(
 
 
 def admin_user_bypass_card_kb(
-    access_id: int, user_id: int, page: int, is_active: bool = True
+    access_id: int,
+    user_id: int,
+    page: int,
+    is_active: bool = True,
+    server_id: int | None = None,
 ) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     # Ссылка обхода админу (Блок «Мелочи»): симметрично «📄 Конфиг» у устройств —
@@ -118,6 +132,12 @@ def admin_user_bypass_card_kb(
     if is_active:
         kb.button(text="🔗 Ссылка обхода", callback_data=f"{CB_PANEL}:ubpl:{access_id}:{user_id}:{page}")
         kb.button(text="🗑 Отозвать доступ", callback_data=f"{CB_PANEL}:ubpx:{access_id}:{user_id}:{page}")
+    # Провал в серверную карточку обхода — там управление доступом на сервере.
+    # Показываем и у отозванного: разбор жалобы начинается как раз с погасшего
+    # доступа. server_id необязателен, чтобы вызывающий, который его ещё не
+    # передаёт, не падал — просто не увидит кнопку.
+    if server_id is not None:
+        kb.button(text="🔍 К обходу на сервере", callback_data=f"{CB_SERVERS}:wopen:{access_id}")
     kb.button(text="« К обходам", callback_data=f"{CB_PANEL}:ubp:{user_id}:{page}")
     kb.adjust(1)
     return kb.as_markup()

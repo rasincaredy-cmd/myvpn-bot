@@ -4,13 +4,12 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 import asyncio
-import re
 import secrets
 
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import BufferedInputFile, CallbackQuery, Message
+from aiogram.types import CallbackQuery, Message
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,7 +24,7 @@ from bot.db.models import (
     User,
 )
 from bot.filters.admin import AdminFilter
-from bot.handlers.config_delivery import build_conf_for_peer
+from bot.handlers.config_delivery import ask_config_format, build_conf_for_peer
 from bot.keyboards.inline import (
     CB_INVITES,
     back_to_menu,
@@ -38,7 +37,6 @@ from bot.keyboards.inline import (
 from bot.loader import bot
 from bot.services import amnezia, amnezia_native
 from bot.services.crypto import encrypt
-from bot.services.qrgen import conf_to_qr_png
 from bot.services.ssh import SSHClient, SSHError
 from bot.states.install import InviteStates
 from bot.texts import t
@@ -187,52 +185,6 @@ async def make_vpn_link(session: AsyncSession, server: Server, label: str, conf:
     return amnezia_native.build_vpn_link(
         conf=conf, name=name, host=server.host, port=server.wg_port, dns1=d1, dns2=d2,
     )
-
-
-def _safe_filename_base(name: str) -> str:
-    """Имя файла без эмодзи/флагов: «🇳🇱 Нидерланды» → «Нидерланды». Amnezia при
-    импорте .conf называет конфиг по имени файла, поэтому файл — тоже витрина."""
-    cleaned = re.sub(r"[^\w\s.-]", "", name).strip()
-    return cleaned or "config"
-
-
-async def _send_peer_artifacts(
-    chat_id: int,
-    server_name: str,
-    label: str,
-    conf: str,
-    vpn_link: str | None = None,
-) -> None:
-    """Шлёт .conf файлом, QR картинкой и (опц.) `vpn://`-ссылку для one-tap импорта."""
-    conf_bytes = conf.encode("utf-8")
-    filename = f"{_safe_filename_base(server_name)}-{label}.conf".replace(" ", "_")
-    await bot.send_document(
-        chat_id,
-        document=BufferedInputFile(conf_bytes, filename=filename),
-        caption=(
-            f"📄 <code>{filename}</code> — файл с настройками VPN. Пригодится "
-            "для компьютера: открой AmneziaVPN → «＋» → выбери этот файл."
-        ),
-    )
-    qr = conf_to_qr_png(conf)
-    # Типичный кейс — юзер настраивает ТОТ ЖЕ телефон, где открыт Telegram:
-    # отсканировать QR с экрана собственного телефона нельзя, объясняем.
-    qr_caption = (
-        "📱 QR-код — если настраиваешь <b>другое</b> устройство: открой на нём "
-        "AmneziaVPN → «＋» → «Сканировать QR-код» и наведи камеру на этот экран."
-    )
-    if vpn_link:
-        qr_caption += (
-            "\n<i>Настраиваешь этот телефон? Используй ссылку из следующего "
-            "сообщения.</i>"
-        )
-    await bot.send_photo(
-        chat_id,
-        photo=BufferedInputFile(qr, filename=f"{filename}.png"),
-        caption=qr_caption,
-    )
-    if vpn_link:
-        await bot.send_message(chat_id, t.vpn_link_msg.format(link=vpn_link))
 
 
 # --- Создание peer админом --------------------------------------------------
@@ -538,11 +490,8 @@ async def redeem_invite(
         await message.answer(t.error_generic, reply_markup=back_to_menu())
         return True
 
-    for server, conf in made:
-        await _send_peer_artifacts(
-            message.chat.id, config_display_base(server), label, conf,
-            vpn_link=await make_vpn_link(session, server, label, conf),
-        )
+    for _server, peer in made:
+        await ask_config_format(message.chat.id, session, peer)
     await message.answer(
         t.invite_config_created.format(label=label),
         reply_markup=back_to_menu(),

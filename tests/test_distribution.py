@@ -214,9 +214,12 @@ class TestConfigNames:
         assert configs.config_display_base(self._srv(None, name="kl-1")) == "kl-1"
 
     def test_filename_strips_emoji(self) -> None:
-        assert configs._safe_filename_base("🇳🇱 Нидерланды") == "Нидерланды"
-        assert configs._safe_filename_base("🇩🇪 Германия") == "Германия"
-        assert configs._safe_filename_base("🏴‍☠️💀") == "config"  # всё вырезали — фолбэк
+        # Имя файла собирает модуль доставки — туда же переехал и хелпер.
+        from bot.handlers.config_delivery import _safe_filename_base
+
+        assert _safe_filename_base("🇳🇱 Нидерланды") == "Нидерланды"
+        assert _safe_filename_base("🇩🇪 Германия") == "Германия"
+        assert _safe_filename_base("🏴‍☠️💀") == "vpn"  # всё вырезали — фолбэк
 
 
 class TestKnownLocations:

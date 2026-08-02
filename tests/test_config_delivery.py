@@ -208,3 +208,33 @@ class TestConfigFormats:
 
         assert fake.documents == []
         assert call.alerts
+
+
+class TestNoMoreTripleSend:
+    async def test_device_config_button_asks_instead_of_dumping(
+        self, session: AsyncSession, monkeypatch
+    ) -> None:
+        """Кнопка «конфиг» у устройства больше не вываливает три сообщения:
+        приходит один вопрос с кнопками."""
+        from bot.handlers import config_delivery as cd
+        from bot.handlers import devices as devices_h
+
+        fake = _FakeBot()
+        monkeypatch.setattr(cd, "bot", fake)
+        user, _, _, peer = await _user_with_peer(session, tg_id=3020)
+
+        # Реальный хендлер кнопки «📥 <локация>» — dev:send1:<peer_id>.
+        call = _FakeCall(f"dev:send1:{peer.id}", user.tg_id)
+        await devices_h.cb_dev_send_one(call, session)
+
+        assert fake.documents == []
+        assert fake.photos == []
+        assert len(fake.messages) == 1
+        assert "Как тебе его прислать?" in fake.messages[0][1]
+
+    async def test_artifacts_helper_is_gone(self) -> None:
+        """_send_peer_artifacts удалён: пока он существует, к нему легко
+        вернуться мимо экрана выбора."""
+        from bot.handlers import configs as configs_h
+
+        assert not hasattr(configs_h, "_send_peer_artifacts")

@@ -86,33 +86,19 @@ async def cb_panel_user_device_open(call: CallbackQuery, session: AsyncSession) 
 
 @router.callback_query(F.data.startswith(f"{CB_PANEL}:ucfg:"))
 async def cb_panel_user_config_send(call: CallbackQuery, session: AsyncSession) -> None:
-    """Админ получает конфиг конкретной локации устройства юзера (.conf+QR+vpn://)."""
+    """Админ получает конфиг конкретной локации устройства юзера — тем же
+    экраном выбора формата, что и юзер: разбирая жалобу, полезно видеть ровно
+    то, что видит человек."""
     parts = call.data.split(":")
     peer_id, user_id, page, device_id = (int(parts[2]), int(parts[3]), int(parts[4]), int(parts[5]))
     peer = await repo.get_peer(session, peer_id)
     if peer is None or peer.status != PeerStatus.ACTIVE:
         await call.answer("Конфиг недоступен", show_alert=True)
         return
-    server = await repo.get_server(session, peer.server_id)
-    if server is None:
-        await call.answer("Сервер недоступен", show_alert=True)
-        return
-    from bot.handlers.configs import _send_peer_artifacts, make_vpn_link, config_display_base
-    from bot.services.crypto import decrypt
-    params = amnezia.AmneziaParams.from_json(server.awg_params_json)
-    conf = amnezia.build_peer_conf(
-        peer_private_key=decrypt(peer.private_key_enc),
-        peer_ip=peer.ip,
-        server_public_key=server.server_public_key,
-        endpoint=server.server_endpoint,
-        params=params,
-        dns=server.dns,
-    )
-    await _send_peer_artifacts(
-        call.message.chat.id, config_display_base(server), peer.label, conf,
-        vpn_link=await make_vpn_link(session, server, peer.label, conf),
-    )
-    await call.answer("Конфиг отправлен")
+    from bot.handlers.config_delivery import ask_config_format
+
+    await ask_config_format(call.message.chat.id, session, peer)
+    await call.answer("Спросил формат")
 
 
 @router.callback_query(F.data.startswith(f"{CB_PANEL}:udevx:"))

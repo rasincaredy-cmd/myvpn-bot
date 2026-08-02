@@ -238,3 +238,25 @@ class TestNoMoreTripleSend:
         from bot.handlers import configs as configs_h
 
         assert not hasattr(configs_h, "_send_peer_artifacts")
+
+    async def test_server_peer_card_also_asks(
+        self, session: AsyncSession, monkeypatch
+    ) -> None:
+        """Седьмой путь выдачи — «📥 Получить конфиг» в серверной карточке пира.
+        Он собирал конфиг сам и не звался _send_peer_artifacts, поэтому в плане
+        его не было; после перехода «🔍 К пиру» админ попадает именно сюда, и
+        разнобой в поведении был бы виден сразу."""
+        from bot.handlers import config_delivery as cd
+        from bot.handlers.servers import peers as peers_h
+
+        fake = _FakeBot()
+        monkeypatch.setattr(cd, "bot", fake)
+        _, _, _, peer = await _user_with_peer(session, tg_id=3021)
+
+        call = _FakeCall(f"adm:conf:{peer.id}", 111)  # 111 — админ из conftest
+        await peers_h.cb_admin_peer_conf(call, session)
+
+        assert fake.documents == []
+        assert fake.photos == []
+        assert len(fake.messages) == 1
+        assert "Как тебе его прислать?" in fake.messages[0][1]

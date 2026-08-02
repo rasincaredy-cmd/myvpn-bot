@@ -159,7 +159,6 @@ def user_card_kb(
     user_id: int, is_blocked: bool, page: int, is_vip: bool = False
 ) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-    kb = InlineKeyboardBuilder()
     kb.button(text="📱 Устройства", callback_data=f"{CB_PANEL}:udev:{user_id}:{page}")
     kb.button(text="🛡 Обходы БС",  callback_data=f"{CB_PANEL}:ubp:{user_id}:{page}")
     kb.button(text="🎫 Подписка",   callback_data=f"{CB_PANEL}:sub:{user_id}:{page}")

@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from bot.config import settings
 from bot.db import repo
 from bot.db.models import AuditAction, AuditLog, Peer, PeerStatus, ServerStatus
+from bot.handlers.admin.audit import fmt_audit_row
 from bot.services import billing, revive, teardown, user_wipe
 from bot.services.crypto import encrypt
 
@@ -385,19 +386,24 @@ class TestAuditMoney:
 
 class TestAuditAdmin:
     async def test_admin_actions_are_marked(self, session: AsyncSession) -> None:
+        """Флаг «это сделал админ» обязан доезжать до таблицы: по нему в ленте
+        отличают действие человека от действия бота."""
         user = await repo.get_or_create_user(
             session, tg_id=1004, username="target", full_name="Target"
         )
         await session.flush()
+        user_id = user.id
 
         await repo.log_action(
             session, AuditAction.USER_BLOCKED,
             actor_tg_id=111, actor_is_admin=True,
-            target_user_id=user.id, target_type="user", target_id=user.id,
+            target_user_id=user_id, target_type="user", target_id=user_id,
             details="Заблокирован админом",
         )
+        await session.commit()
+        session.expunge_all()
 
-        rows = await repo.list_audit_for_user(session, user.id)
+        rows = await repo.list_audit_for_user(session, user_id)
         assert rows[0].actor_is_admin is True
         assert rows[0].actor_tg_id == 111
 
@@ -642,6 +648,80 @@ class TestAuditNoDoubleRow:
         assert len(rows) == 1, "врезка у вызывающего задваивает событие"
         assert rows[0].actor_tg_id == tg_id
         assert rows[0].details == "Устройство «Телефон» удалено юзером"
+
+
+class TestAuditRowFormat:
+    """Конвенция знака держалась на одних комментариях: направление денег
+    задаётся КОДОМ события, а не знаком суммы, и перепутать их — значит
+    показать админу приход вместо расхода."""
+
+    @staticmethod
+    def _row(**kw) -> AuditLog:
+        base = dict(
+            action=AuditAction.BALANCE_TOPUP,
+            created_at=datetime(2026, 7, 31, 12, 0, tzinfo=timezone.utc),
+            actor_tg_id=None, actor_is_admin=False,
+            target_user_id=1, target_type=None, target_id=None,
+            amount_kopeks=None, details=None,
+        )
+        base.update(kw)
+        return AuditLog(**base)
+
+    def test_topup_reads_as_incoming(self) -> None:
+        out = fmt_audit_row(self._row(
+            action=AuditAction.BALANCE_TOPUP, amount_kopeks=10000
+        ))
+        assert "+100" in out and "зачислено юзеру" in out
+
+    def test_charge_reads_as_outgoing_despite_positive_amount(self) -> None:
+        """Списание пишется в журнал ПОЛОЖИТЕЛЬНЫМ числом — направление
+        обязано браться из кода события, иначе расход покажется приходом."""
+        out = fmt_audit_row(self._row(
+            action=AuditAction.BALANCE_CHARGE, amount_kopeks=13000
+        ))
+        assert "−130" in out and "списано с юзера" in out
+
+    def test_admin_credit_direction_comes_from_sign(self) -> None:
+        """Единственное событие со значащим знаком: одним кодом админ и
+        начисляет, и списывает."""
+        plus = fmt_audit_row(self._row(
+            action=AuditAction.ADMIN_CREDIT, amount_kopeks=5000
+        ))
+        minus = fmt_audit_row(self._row(
+            action=AuditAction.ADMIN_CREDIT, amount_kopeks=-5000
+        ))
+        assert "зачислено юзеру" in plus
+        assert "списано с юзера" in minus
+        assert "−50" in minus
+
+    def test_actor_is_named(self) -> None:
+        bot_row = fmt_audit_row(self._row(action=AuditAction.CONFIG_REVIVED))
+        admin_row = fmt_audit_row(self._row(
+            action=AuditAction.USER_BLOCKED, actor_tg_id=777, actor_is_admin=True
+        ))
+        user_row = fmt_audit_row(self._row(
+            action=AuditAction.CONFIG_ISSUED, actor_tg_id=42
+        ))
+        assert "Кто: бот" in bot_row
+        assert "Кто: админ" in admin_row
+        assert "Кто: юзер" in user_row
+
+    def test_device_label_cannot_break_markup(self) -> None:
+        """Метку устройства придумывает юзер: неэкранированный «<b>» из неё
+        уехал бы в разметку сообщения и Telegram отбил бы всю страницу ленты."""
+        out = fmt_audit_row(self._row(
+            action=AuditAction.CONFIG_REVOKED,
+            details='Устройство «<b>hack</b>» отозвано',
+        ))
+        assert "&lt;b&gt;hack&lt;/b&gt;" in out
+        assert "<b>hack</b>" not in out
+
+    def test_unknown_action_still_renders(self) -> None:
+        """Код из базы, которого больше нет в enum (переименовали кнопку,
+        откатили фичу), не должен ронять ленту целиком."""
+        out = fmt_audit_row(self._row(action="ancient_code", amount_kopeks=100))
+        assert "ancient_code" in out
+        assert "Сумма" in out
 
 
 class TestAuditBypassRevive:

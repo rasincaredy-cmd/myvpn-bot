@@ -11,7 +11,15 @@ from __future__ import annotations
 from aiogram import Router
 
 from bot.filters.admin import AdminFilter
-from bot.handlers.admin import broadcast, entry, stats, subscription, user_items, users
+from bot.handlers.admin import (
+    audit,
+    broadcast,
+    entry,
+    stats,
+    subscription,
+    user_items,
+    users,
+)
 from bot.handlers.admin.entry import cmd_admin
 
 router = Router(name="admin_panel")
@@ -22,6 +30,7 @@ router.callback_query.filter(AdminFilter())
 # ("panel:udev:" не поймает "panel:udevo:"), пересечений нет.
 router.include_router(entry.router)
 router.include_router(stats.router)
+router.include_router(audit.router)
 router.include_router(users.router)
 router.include_router(user_items.router)
 router.include_router(subscription.router)

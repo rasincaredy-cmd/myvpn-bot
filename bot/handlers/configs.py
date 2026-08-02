@@ -15,7 +15,15 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.db import repo
-from bot.db.models import Invite, Peer, PeerStatus, Server, ServerStatus, User
+from bot.db.models import (
+    AuditAction,
+    Invite,
+    Peer,
+    PeerStatus,
+    Server,
+    ServerStatus,
+    User,
+)
 from bot.filters.admin import AdminFilter
 from bot.keyboards.inline import (
     CB_INVITES,
@@ -97,6 +105,17 @@ async def _create_peer_for_user(
             await session.flush()
 
             await amnezia.add_peer_on_server(ssh, public_key=keys.public_key, peer_ip=ip)
+
+    # Пишем в журнал уже ВНЕ лока: запись в БД не участвует в аллокации IP,
+    # держать из-за неё сериализацию сервера незачем.
+    await repo.log_action(
+        session, AuditAction.CONFIG_ISSUED,
+        actor_tg_id=user.tg_id,
+        target_user_id=user.id,
+        target_type="peer",
+        target_id=peer.id,
+        details=f"{label} на сервере «{server.name}»",
+    )
 
     params = amnezia.AmneziaParams.from_json(server.awg_params_json)
     conf = amnezia.build_peer_conf(

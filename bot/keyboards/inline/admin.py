@@ -12,11 +12,24 @@ def admin_panel_menu() -> InlineKeyboardMarkup:
     kb.button(text="🛠 Установить VPN на VPS", callback_data=f"{CB_INSTALL}:start")
     kb.button(text="🖥 Серверы",               callback_data=f"{CB_SERVERS}:list")
     kb.button(text="📊 Статистика",   callback_data=f"{CB_PANEL}:stats")
+    kb.button(text="📝 Журнал",       callback_data=f"{CB_PANEL}:audit:0")
     kb.button(text="👤 Пользователи", callback_data=f"{CB_PANEL}:users:0")
     kb.button(text="📢 Рассылка",     callback_data=f"{CB_PANEL}:broadcast")
     kb.button(text="📦 Бэкап сейчас", callback_data=f"{CB_PANEL}:backup_now")
     kb.button(text="« В меню",        callback_data=f"{CB_MENU}:open")
     kb.adjust(1)
+    return kb.as_markup()
+
+
+def audit_list_kb(page: int, has_prev: bool, has_next: bool) -> InlineKeyboardMarkup:
+    """Лента журнала: листалка + возврат в панель."""
+    kb = InlineKeyboardBuilder()
+    if has_prev:
+        kb.button(text="« Новее", callback_data=f"{CB_PANEL}:audit:{page - 1}")
+    if has_next:
+        kb.button(text="Старее »", callback_data=f"{CB_PANEL}:audit:{page + 1}")
+    kb.button(text="« Админ-панель", callback_data=f"{CB_PANEL}:main")
+    kb.adjust(2, 1)
     return kb.as_markup()
 
 
@@ -149,6 +162,9 @@ def user_card_kb(
     kb.button(text="📱 Устройства", callback_data=f"{CB_PANEL}:udev:{user_id}:{page}")
     kb.button(text="🛡 Обходы БС",  callback_data=f"{CB_PANEL}:ubp:{user_id}:{page}")
     kb.button(text="🎫 Подписка",   callback_data=f"{CB_PANEL}:sub:{user_id}:{page}")
+    # Страница списка едет третьим аргументом: из истории надо вернуться на ту
+    # же страницу списка юзеров, с которой админ провалился в карточку.
+    kb.button(text="🕘 История", callback_data=f"{CB_PANEL}:uhist:{user_id}:{page}:0")
     # «Друг» видит приватные серверы (Server.is_private).
     kb.button(
         text="⭐ Друг: ВКЛ" if is_vip else "⭐ Друг: выкл",
@@ -160,7 +176,21 @@ def user_card_kb(
         kb.button(text="🚫 Заблокировать",  callback_data=f"{CB_PANEL}:block:{user_id}:{page}")
     kb.button(text="🗑 Стереть из БД", callback_data=f"{CB_PANEL}:udel:{user_id}:{page}")
     kb.button(text="« К списку", callback_data=f"{CB_PANEL}:users:{page}")
-    kb.adjust(2, 1, 2, 1, 1)
+    kb.adjust(2, 2, 2, 1, 1)
+    return kb.as_markup()
+
+
+def user_history_kb(
+    user_id: int, page: int, hpage: int, has_prev: bool, has_next: bool
+) -> InlineKeyboardMarkup:
+    """История юзера: листалка + возврат в его карточку."""
+    kb = InlineKeyboardBuilder()
+    if has_prev:
+        kb.button(text="« Новее", callback_data=f"{CB_PANEL}:uhist:{user_id}:{page}:{hpage - 1}")
+    if has_next:
+        kb.button(text="Старее »", callback_data=f"{CB_PANEL}:uhist:{user_id}:{page}:{hpage + 1}")
+    kb.button(text="« К пользователю", callback_data=f"{CB_PANEL}:user:{user_id}:{page}")
+    kb.adjust(2, 1)
     return kb.as_markup()
 
 

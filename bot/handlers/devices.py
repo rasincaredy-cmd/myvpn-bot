@@ -426,7 +426,15 @@ async def cb_dev_revoke(call: CallbackQuery, session: AsyncSession) -> None:
     # Снимаем всё с серверов и удаляем устройство из БД целиком (освобождает IP).
     from bot.services import teardown
     label = device.label
-    await teardown.delete_device(session, device)
+    # Журнал пишет сама delete_device, одной транзакцией с удалением: иначе при
+    # сбое ниже (например, Telegram не принял edit_text) устройство осталось бы
+    # снесённым, а следа в истории юзера не осталось. Врезки здесь больше нет —
+    # она бы задвоила событие.
+    await teardown.delete_device(
+        session, device,
+        actor_tg_id=user.tg_id,
+        details=f"Устройство «{label}» удалено юзером",
+    )
     await session.commit()
     # Удаление необратимо (ревайв невозможен) — фиксируем в лог, кто и что снёс.
     logger.info("User {} deleted device {} ({})", user.id, device_id, label)

@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
 from bot.db import repo
-from bot.db.models import PeerStatus, User
+from bot.db.models import AuditAction, PeerStatus, User
 from bot.services import amnezia
 from bot.services import wdtt as wdtt_svc
 from bot.services.crypto import decrypt
@@ -68,7 +68,14 @@ def _parse_wdtt_uri(uri: str) -> tuple[str, str] | None:
     return ",".join(parts[1:4]), parts[5]
 
 
-async def revoke_devices_for_user(session: AsyncSession, user_id: int) -> bool:
+async def revoke_devices_for_user(
+    session: AsyncSession,
+    user_id: int,
+    *,
+    actor_tg_id: int | None = None,
+    actor_is_admin: bool = False,
+    reason: str | None = None,
+) -> bool:
     """Отзывает ВСЕ активные устройства юзера: снимает WG-пиры и wdtt-доступы с
     серверов (best-effort), затем метит устройства/пиры/wdtt-строки REVOKED
     (см. repo.revoke_device) — они ждут ревайва при продлении retention-срок.
@@ -76,7 +83,18 @@ async def revoke_devices_for_user(session: AsyncSession, user_id: int) -> bool:
     Зеркало revive_devices_for_user. Зовётся планировщиком (истечение срока,
     лимит трафика) и админкой (мгновенное отключение подписки — конфиги гаснут
     сразу, без ожидания тика). Коммит и уведомление — на вызывающем.
-    Возвращает True, если что-то отозвали."""
+    Возвращает True, если что-то отозвали.
+
+    Событие журнала пишется здесь, а не врезкой у вызывающего: путей отзыва уже
+    четыре, и каждый новый — ещё один шанс врезку забыть. Почему погасло, знает
+    только вызывающий, поэтому актор и `reason` приходят параметрами. `reason` —
+    именно причина («истекла подписка»), а не готовая строка события: текст
+    собирается здесь из метки устройства, чтобы строки отличались друг от друга.
+
+    Строка пишется на КАЖДОЕ устройство — как и оживление ниже пишется на каждый
+    пир: в карточке юзера должно быть видно, что именно встало. Поэтому счётчику
+    устройств в тексте не место — сколько погасло, видно по числу строк, а
+    повторённый в каждой из них счётчик читался бы как задвоение."""
     devices = await repo.list_devices_for_user(session, user_id, active_only=True)
     if not devices:
         return False
@@ -105,6 +123,18 @@ async def revoke_devices_for_user(session: AsyncSession, user_id: int) -> bool:
                 except SSHError as exc:
                     logger.warning("Revoke-all wdtt remove err {}: {}", acc.id, exc)
         await repo.revoke_device(session, device.id)
+        await repo.log_action(
+            session, AuditAction.CONFIG_REVOKED,
+            actor_tg_id=actor_tg_id,
+            actor_is_admin=actor_is_admin,
+            target_user_id=user_id,
+            target_type="device",
+            target_id=device.id,
+            details=(
+                f"Устройство «{device.label}» отозвано: {reason}" if reason
+                else f"Устройство «{device.label}» отозвано"
+            ),
+        )
         logger.info("Revoked device {} (user {})", device.id, user_id)
     return True
 
@@ -113,7 +143,13 @@ async def revive_devices_for_user(session: AsyncSession, user: User) -> ReviveRe
     """Восстанавливает все REVOKED-устройства юзера (в пределах лимитов подписки).
 
     Коммит — на вызывающем. Уведомление юзеру — тоже на вызывающем (сервис
-    не знает контекста: продление из админки, будущие платежи и т.д.)."""
+    не знает контекста: продление из админки, будущие платежи и т.д.).
+
+    События журнала здесь несимметричны отзыву, и это намеренно: отзыв гасит
+    устройство целиком и пишет строку на устройство, а оживление возвращает по
+    отдельности пир и обход БС — каждый со своим SSH, каждый может не вернуться
+    (см. res.errors ниже). Одна строка на устройство скрыла бы случай «пир ожил,
+    обход не смог», ради которого админ в историю и полезет."""
     res = ReviveResult()
 
     devices = [
@@ -148,6 +184,16 @@ async def revive_devices_for_user(session: AsyncSession, user: User) -> ReviveRe
                 res.errors.append(f"пир {peer.label} ({server.name}): SSH-ошибка")
                 continue
             await repo.revive_peer(session, peer.id)
+            # Инициатора-человека нет: конфиг возвращает бот после оплаты,
+            # поэтому actor_tg_id=None (юзер лишь заплатил, оживление — наше).
+            await repo.log_action(
+                session, AuditAction.CONFIG_REVIVED,
+                actor_tg_id=None,
+                target_user_id=user.id,
+                target_type="peer",
+                target_id=peer.id,
+                details=f"{peer.label} на сервере «{server.name}» ожил после оплаты",
+            )
             res.peers_restored += 1
             revived_any = True
 
@@ -195,6 +241,17 @@ async def revive_devices_for_user(session: AsyncSession, user: User) -> ReviveRe
                     pass
                 continue
             await repo.revive_wdtt_access(session, acc.id)
+            # Симметрично оживлению пира выше: юзер платит один раз, а обратно
+            # у него включаются две разные вещи, и в истории должно быть видно
+            # обе. Актора-человека нет — возвращает бот после оплаты.
+            await repo.log_action(
+                session, AuditAction.CONFIG_REVIVED,
+                actor_tg_id=None,
+                target_user_id=user.id,
+                target_type="wdtt",
+                target_id=acc.id,
+                details=f"Обход БС «{acc.label}» на сервере «{server.name}» ожил после оплаты",
+            )
             bypass_budget -= 1
             res.bypass_restored += 1
             revived_any = True

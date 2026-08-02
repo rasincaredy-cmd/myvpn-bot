@@ -7,6 +7,14 @@
 """
 from __future__ import annotations
 
+from bot.db.repo.audit import (
+    count_audit,
+    count_audit_for_user,
+    delete_audit_older_than,
+    list_audit,
+    list_audit_for_user,
+    log_action,
+)
 from bot.db.repo.billing import (
     add_balance_tx,
     count_referrals,
@@ -100,6 +108,8 @@ __all__ = [
     "count_active_peers_by_server",
     "count_active_wdtt_by_server",
     "count_active_wdtt_for_user",
+    "count_audit",
+    "count_audit_for_user",
     "count_referrals",
     "count_users",
     "create_crypto_invoice",
@@ -107,6 +117,7 @@ __all__ = [
     "create_server",
     "create_wdtt_access",
     "creds_from_server",
+    "delete_audit_older_than",
     "delete_device",
     "delete_invite",
     "delete_peer",
@@ -126,6 +137,8 @@ __all__ = [
     "list_all_servers",
     "list_all_users",
     "list_all_users_for_broadcast",
+    "list_audit",
+    "list_audit_for_user",
     "list_balance_txs",
     "list_broadcast_targets",
     "list_devices_for_user",
@@ -141,6 +154,7 @@ __all__ = [
     "list_wdtt_for_device",
     "list_wdtt_for_server",
     "list_wdtt_for_user",
+    "log_action",
     "mark_invite_used",
     "purge_old_support_routes",
     "purge_user_records",

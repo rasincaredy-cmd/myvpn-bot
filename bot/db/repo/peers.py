@@ -6,7 +6,8 @@ from datetime import datetime, timezone
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bot.db.models import Peer, PeerStatus
+from bot.db.models import AuditAction, Peer, PeerStatus
+from bot.db.repo.audit import log_action
 
 
 async def list_peers_for_user(session: AsyncSession, user_id: int) -> list[Peer]:
@@ -27,11 +28,44 @@ async def get_peer(session: AsyncSession, peer_id: int) -> Peer | None:
     return await session.get(Peer, peer_id)
 
 
-async def revoke_peer(session: AsyncSession, peer_id: int) -> None:
+async def revoke_peer(
+    session: AsyncSession,
+    peer_id: int,
+    *,
+    actor_tg_id: int | None = None,
+    actor_is_admin: bool = False,
+    details: str | None = None,
+) -> None:
+    """Отзывает один пир и сразу пишет событие в журнал.
+
+    Запись живёт здесь, а не врезкой рядом с вызовом: одиночный отзыв идёт из
+    двух разных мест (карточка сервера в админке и стирание юзера), сервисной
+    обёртки у них общей нет — они по-разному ведут себя с SSH. Внутри примитива
+    запись обойти нельзя, а забытая врезка у нового вызывающего — ровно та
+    ошибка, которую в этой ветке ловили четыре раза подряд.
+
+    Коммит — на вызывающем: событие обязано откатиться вместе с самим отзывом.
+
+    Выборка пира перед UPDATE нужна не для самого отзыва (он идёт одним UPDATE
+    по id), а ради владельца и метки для записи: без них событие нельзя повесить
+    на юзера и в ленте оно было бы безымянным. Убирать её как «лишнюю» нельзя.
+    """
+    peer = await session.get(Peer, peer_id)
+    if peer is None:
+        return
     await session.execute(
         update(Peer)
         .where(Peer.id == peer_id)
         .values(status=PeerStatus.REVOKED, revoked_at=datetime.now(timezone.utc))
+    )
+    await log_action(
+        session, AuditAction.CONFIG_REVOKED,
+        actor_tg_id=actor_tg_id,
+        actor_is_admin=actor_is_admin,
+        target_user_id=peer.user_id,
+        target_type="peer",
+        target_id=peer_id,
+        details=details or f"Пир «{peer.label}» отозван",
     )
 
 

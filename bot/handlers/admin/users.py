@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
 from bot.db import repo
+from bot.db.models import AuditAction
 from bot.handlers.admin.common import PER_PAGE, user_card_text
 from bot.keyboards.inline import (
     CB_PANEL,
@@ -100,6 +101,16 @@ async def cb_panel_toggle_block(call: CallbackQuery, session: AsyncSession) -> N
         return
 
     await repo.set_user_blocked(session, user.id, block)
+    await repo.log_action(
+        session,
+        AuditAction.USER_BLOCKED if block else AuditAction.USER_UNBLOCKED,
+        actor_tg_id=call.from_user.id,
+        actor_is_admin=True,
+        target_user_id=user.id,
+        target_type="user",
+        target_id=user.id,
+        details="Заблокирован админом" if block else "Разблокирован админом",
+    )
     await session.commit()
     await session.refresh(user)
 
@@ -134,7 +145,9 @@ async def cb_panel_user_delete_ask(call: CallbackQuery, session: AsyncSession) -
         f"• устройств: <b>{devices}</b>, обходов: <b>{bypass}</b> "
         "(конфиги отзываются с серверов сразу)\n"
         f"• баланс <b>{fmt_rub(user.balance_kopeks)}</b> и вся история операций\n"
-        "• история поддержки, неоплаченные счета\n\n"
+        "• история поддержки, неоплаченные счета\n"
+        "• его записи в журнале действий (в общей ленте останется только "
+        "само стирание)\n\n"
         "⚠️ Если он снова напишет боту — создастся заново как новый юзер "
         "и ПОЛУЧИТ НОВЫЙ ТРИАЛ. Для наказания используй «🚫 Заблокировать», "
         "удаление — для мусорных/тестовых аккаунтов и «сотрите мои данные».",
@@ -157,6 +170,21 @@ async def cb_panel_user_delete_confirm(call: CallbackQuery, session: AsyncSessio
         await call.answer("Нельзя удалить админа.", show_alert=True)
         return
     await call.answer("⏳ Стираю...")
+    # Пишем ДО стирания: вместе с юзером уйдут и его строки, а событие должно
+    # остаться в общей ленте. target_user_id=None здесь не косметика — стирание
+    # чистит журнал именно по target_user_id, и с проставленной ссылкой это
+    # событие снесло бы само себя. Держать ссылку и нельзя: id стёртого юзера
+    # SQLite отдаст следующему зарегистрировавшемуся (см. purge_user_records),
+    # и запись про чужое стирание всплыла бы в карточке новичка.
+    await repo.log_action(
+        session, AuditAction.USER_WIPED,
+        actor_tg_id=call.from_user.id,
+        actor_is_admin=True,
+        target_user_id=None,
+        target_type="user",
+        target_id=user.id,
+        details=f"Стёрт юзер tg_id {user.tg_id} (@{user.username or '—'})",
+    )
     res = await user_wipe.wipe_user(session, user)
     await session.commit()
     lines = [
@@ -164,7 +192,8 @@ async def cb_panel_user_delete_confirm(call: CallbackQuery, session: AsyncSessio
         f"• Конфигов отозвано и снято с серверов: {res.revoked_items}",
         f"• Удалено записей: платежи {res.purged.get('balance_txs', 0)}, "
         f"счета {res.purged.get('invoices', 0)}, "
-        f"поддержка {res.purged.get('support_msgs', 0)}",
+        f"поддержка {res.purged.get('support_msgs', 0)}, "
+        f"журнал {res.history_rows}",
     ]
     if res.purged.get("referrals_unlinked"):
         lines.append(f"• Отвязано рефералов: {res.purged['referrals_unlinked']}")

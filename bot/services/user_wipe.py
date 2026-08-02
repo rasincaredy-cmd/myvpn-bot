@@ -32,6 +32,7 @@ from bot.services import revive as revive_svc
 class WipeResult:
     tg_id: int
     revoked_items: int = 0            # активных пиров+обходов снято при отзыве
+    history_rows: int = 0             # записей журнала БЫЛО у юзера до стирания
     purged: dict[str, int] = field(default_factory=dict)
 
 
@@ -41,6 +42,11 @@ async def wipe_user(session: AsyncSession, user: User) -> WipeResult:
     Коммит — на вызывающем. Защита от удаления админа — тоже на вызывающем
     (хендлер знает актуальный settings.admin_ids)."""
     res = WipeResult(tg_id=user.tg_id)
+    # Считаем ДО отзыва: шаг 1 сам пишет в журнал по строке на устройство, и
+    # эти строки тут же уносит чистка на шаге 2. Показывать админу их вместе с
+    # настоящей историей значит завышать цифру тем сильнее, чем больше у юзера
+    # было устройств.
+    res.history_rows = await repo.count_audit_for_user(session, user.id)
 
     # 1. Активные конфиги: SSH-снятие best-effort + пометка REVOKED (общий
     #    примитив с истечением подписки). До удаления строк — см. докстринг.

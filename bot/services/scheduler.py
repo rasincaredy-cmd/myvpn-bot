@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 
 from loguru import logger
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
 from bot.db import repo
@@ -52,12 +53,18 @@ def _humanize_left(delta: timedelta) -> str:
     return f"{max(minutes, 1)} мин"
 
 
-async def _revoke_all_devices_for_user(session, user_id: int) -> bool:
+async def _revoke_all_devices_for_user(session, user_id: int, *, reason: str) -> bool:
     """Отзыв всех устройств юзера — общая логика в revive.revoke_devices_for_user
-    (зеркало ревайва; её же зовёт админка при мгновенном отключении подписки)."""
+    (зеркало ревайва; её же зовёт админка при мгновенном отключении подписки).
+
+    Причину передаём внутрь: событие журнала пишет сама функция отзыва, а какая
+    из двух секций тика погасила доступ, знает только вызывающий. Причина —
+    короткая фраза без метки устройства и без счётчика: строку для ленты
+    собирает функция отзыва, по строке на устройство. Актора не передаём —
+    гасит планировщик, не человек (см. комментарии у вызывающих)."""
     from bot.services import revive as revive_svc
 
-    return await revive_svc.revoke_devices_for_user(session, user_id)
+    return await revive_svc.revoke_devices_for_user(session, user_id, reason=reason)
 
 
 async def _poll_crypto_invoices(session) -> None:
@@ -113,6 +120,14 @@ async def _try_autopay(session, user: User) -> bool:
     return True
 
 
+async def _cleanup_audit(session: AsyncSession) -> None:
+    """Чистка журнала по ретеншну. Идёт последней: если упадёт, важные секции
+    (отзыв, автопродление) уже отработали."""
+    removed = await repo.delete_audit_older_than(session, settings.audit_retention_days)
+    if removed:
+        logger.info("Ретеншн журнала: удалено записей {}", removed)
+
+
 async def _run_checks() -> None:
     now = datetime.now(timezone.utc)
 
@@ -148,7 +163,19 @@ async def _run_checks() -> None:
                 if await _try_autopay(session, user):
                     touched = True
                     continue
-                if await _revoke_all_devices_for_user(session, user.id):
+                # Инициатор — планировщик, не человек: актора не передаём.
+                # Поставить сюда tg_id владельца значило бы, что админ,
+                # разбирая жалобу «я ничего не отключал», увидел бы
+                # инициатором самого жалующегося.
+                # Событие пишет сама revoke_devices_for_user — врезки здесь
+                # больше нет, иначе на одно отключение вышло бы две строки.
+                # Сколько устройств погасло, админ считает по числу строк:
+                # функция пишет по строке на устройство, и счётчик в тексте
+                # только врал бы про масштаб, повторяясь в каждой из них.
+                if await _revoke_all_devices_for_user(
+                    session, user.id,
+                    reason="истекла подписка",
+                ):
                     touched = True
                     await _notify(
                         user.tg_id,
@@ -452,7 +479,21 @@ async def _run_checks() -> None:
                 used = await repo.sub_traffic_used(session, user)
                 if used < (user.sub_traffic_limit_bytes or 0):
                     continue
-                if await _revoke_all_devices_for_user(session, user.id):
+                # Инициатор — планировщик, не человек: актора не передаём.
+                # Причина обязана отличаться от «истёк срок»: это два разных
+                # разговора с юзером — там надо продлить срок, тут лимит
+                # выбран ВНУТРИ уже оплаченного периода. Цифры те же, что
+                # ушли юзеру в уведомлении ниже, — админ в журнале видит
+                # ровно то, что видел человек. Пишет саму строку функция
+                # отзыва; врезка отсюда убрана, чтобы не задваивать событие.
+                if await _revoke_all_devices_for_user(
+                    session, user.id,
+                    reason=(
+                        "выбран лимит трафика подписки "
+                        f"({amnezia.fmt_bytes(used)} из "
+                        f"{amnezia.fmt_bytes(user.sub_traffic_limit_bytes)})"
+                    ),
+                ):
                     limit_touched = True
                     logger.info("Auto-revoked user {} devices (traffic limit)", user.id)
                     await _notify(
@@ -469,6 +510,18 @@ async def _run_checks() -> None:
                 await session.commit()
         except Exception:
             logger.exception("Scheduler section 3b (traffic limit) failed")
+            await session.rollback()
+
+        # ── 3c. Ретеншн журнала действий ─────────────────────────────────────
+        # Держим журнал не длиннее audit_retention_days (0 = хранить вечно).
+        # Идёт ПОСЛЕДНЕЙ: чистка — самое необязательное дело тика, её сбой не
+        # должен стоять на пути отзыва по истечению, автопродления и учёта
+        # трафика. Изоляция та же, что у соседей: try/except + rollback.
+        try:
+            await _cleanup_audit(session)
+            await session.commit()
+        except Exception:
+            logger.exception("Scheduler section 3c (audit retention) failed")
             await session.rollback()
 
 

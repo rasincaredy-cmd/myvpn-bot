@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
 from bot.db import repo
+from bot.db.models import AuditAction
 from bot.handlers.admin.common import trial_line
 from bot.keyboards.inline import (
     CB_PANEL,
@@ -98,11 +99,23 @@ async def step_sub_limit(message: Message, state: FSMContext, session: AsyncSess
     data = await state.get_data()
     await state.clear()
     await repo.set_subscription(session, data["user_id"], max_devices=int(message.text.strip()))
-    await session.commit()
     user = await repo.get_user_by_id(session, data["user_id"])
     if user is None:
         await message.answer("Юзер уже удалён.")
         return
+    # refresh, а не commit: в журнале должен стоять итоговый тариф — тот, что
+    # админ видит в карточке, а не только изменённая половина. Раньше свежие
+    # значения добывались коммитом, и запись уходила ОТДЕЛЬНОЙ транзакцией —
+    # сбой между двумя коммитами оставлял тариф изменённым без следа в истории.
+    await session.refresh(user)
+    await repo.log_action(
+        session, AuditAction.TARIFF_CHANGED,
+        actor_tg_id=message.from_user.id,
+        actor_is_admin=True,
+        target_user_id=user.id,
+        details=f"Тариф: устройств {user.sub_max_devices}, обходов {user.sub_max_bypass}",
+    )
+    await session.commit()
     await message.answer(
         f"✅ Лимит устройств: <b>{user.sub_max_devices}</b>",
         reply_markup=admin_sub_kb(user.id, data["page"], is_trial=user.is_trial),
@@ -133,11 +146,22 @@ async def step_sub_bypass(message: Message, state: FSMContext, session: AsyncSes
     data = await state.get_data()
     await state.clear()
     await repo.set_subscription(session, data["user_id"], max_bypass=int(message.text.strip()))
-    await session.commit()
     user = await repo.get_user_by_id(session, data["user_id"])
     if user is None:
         await message.answer("Юзер уже удалён.")
         return
+    # Тот же итоговый тариф и та же одна транзакция, что при смене лимита
+    # устройств: одно событие на любую правку тарифа, чтобы в ленте читалось
+    # «стало столько-то».
+    await session.refresh(user)
+    await repo.log_action(
+        session, AuditAction.TARIFF_CHANGED,
+        actor_tg_id=message.from_user.id,
+        actor_is_admin=True,
+        target_user_id=user.id,
+        details=f"Тариф: устройств {user.sub_max_devices}, обходов {user.sub_max_bypass}",
+    )
+    await session.commit()
     await message.answer(
         f"✅ Лимит обхода БС: <b>{user.sub_max_bypass}</b>",
         reply_markup=admin_sub_kb(user.id, data["page"], is_trial=user.is_trial),
@@ -177,15 +201,28 @@ async def step_sub_balance(message: Message, state: FSMContext, session: AsyncSe
     data = await state.get_data()
     await state.clear()
     amount = int(raw[1:]) * 100 * (1 if sign == "+" else -1)
+    from bot.services.pricing import fmt_rub
     await repo.add_balance_tx(
         session, data["user_id"], amount, "admin", note="Ручная правка админом"
+    )
+    # Знак суммы сохраняем как есть: со взятым по модулю списание выглядело бы
+    # в ленте пополнением.
+    await repo.log_action(
+        session, AuditAction.ADMIN_CREDIT,
+        actor_tg_id=message.from_user.id,
+        actor_is_admin=True,
+        target_user_id=data["user_id"],
+        amount_kopeks=amount,
+        details=(
+            f"Админ вручную {'начислил' if amount > 0 else 'списал'} "
+            f"{fmt_rub(abs(amount))}"
+        ),
     )
     await session.commit()
     user = await repo.get_user_by_id(session, data["user_id"])
     if user is None:
         await message.answer("Юзер уже удалён — правка баланса отменена.")
         return
-    from bot.services.pricing import fmt_rub
     logger.info("Admin balance adjust: user {} {}{} kopeks", user.id, sign, abs(amount))
     try:
         await tg_bot.send_message(
@@ -251,6 +288,34 @@ async def step_sub_extend(message: Message, state: FSMContext, session: AsyncSes
         session, data["user_id"],
         expires_at=result, touch_expires=True, reset_traffic_base=True, mark_paid=True,
     )
+    # Этот путь выдаёт подписку в обход billing.grant_term (там срок из прайса,
+    # здесь — произвольная дата), поэтому запись в журнал делается тут же, иначе
+    # такой выдачи в ленте не будет вовсе. Формулировка отличает ручной срок от
+    # обычной выдачи тарифа.
+    #
+    # Дата в прошлом — это не выдача, а отключение: тем же полем ввода админ
+    # гасит подписку (ниже по коду устройства отзываются сразу). Писать оба
+    # случая кодом SUB_GRANTED значит показывать отключение в ленте как
+    # «🎁 Подписка выдана» — админ, разбирая жалобу, прочтёт ровно обратное
+    # тому, что произошло.
+    # now берётся один раз и используется и здесь, и в ветвлении ревайв/отзыв
+    # ниже: два отдельных вызова now() могли бы разойтись на дате «прямо сейчас»
+    # и записать в журнал не то, что бот на самом деле сделал.
+    now = datetime.now(timezone.utc)
+    turning_off = result is not None and result <= now
+    await repo.log_action(
+        session,
+        AuditAction.SUB_REVOKED if turning_off else AuditAction.SUB_GRANTED,
+        actor_tg_id=message.from_user.id,
+        actor_is_admin=True,
+        target_user_id=data["user_id"],
+        details=(
+            f"Админ отключил подписку: срок задан в прошлом ({fmt_msk(result)} МСК)"
+            if turning_off else
+            f"Админ вручную задал срок подписки: до {fmt_msk(result)} МСК"
+            if result else "Админ вручную сделал подписку бессрочной"
+        ),
+    )
     await session.commit()
     user = await repo.get_user_by_id(session, data["user_id"])
     if user is None:
@@ -266,8 +331,7 @@ async def step_sub_extend(message: Message, state: FSMContext, session: AsyncSes
     sub_line = (
         f"до {fmt_msk(result)} МСК" if result else "бессрочная"
     )
-    now = datetime.now(timezone.utc)
-    if result is None or result > now:
+    if not turning_off:
         rv = await revive_svc.revive_devices_for_user(session, user)
         await session.commit()
         if rv.touched:
@@ -291,7 +355,14 @@ async def step_sub_extend(message: Message, state: FSMContext, session: AsyncSes
             pass
     else:
         # Срок задан в прошлом = отключение: конфиги гаснут сразу, не ждём тика.
-        if await revive_svc.revoke_devices_for_user(session, user.id):
+        # Гасит человек, а не тик планировщика, — актором идёт админ, иначе в
+        # ленте это неотличимо от честного истечения срока.
+        if await revive_svc.revoke_devices_for_user(
+            session, user.id,
+            actor_tg_id=message.from_user.id,
+            actor_is_admin=True,
+            reason="админ задал срок подписки в прошлом",
+        ):
             await session.commit()
             msg += "\n🚫 Срок в прошлом — устройства отозваны сразу."
             try:
@@ -361,7 +432,9 @@ async def cb_panel_sub_give_do(call: CallbackQuery, session: AsyncSession) -> No
         return
     await call.answer("⏳ Выдаю...")
     try:
-        res = await billing.grant_term(session, user, months)
+        res = await billing.grant_term(
+            session, user, months, actor_tg_id=call.from_user.id
+        )
     except ValueError:
         await call.answer("Такой срок не продаётся", show_alert=True)
         return
@@ -420,6 +493,20 @@ async def cb_panel_sub_trial(call: CallbackQuery, session: AsyncSession) -> None
         touch_traffic_limit=True,
         reset_traffic_base=True,
         mark_trial=True,
+    )
+    # Триал вторым заходом — редкое ручное решение админа, и в ленте оно должно
+    # отличаться от обычной выдачи тарифа: юзер получает срок бесплатно.
+    # Одной транзакцией с самой выдачей, как и остальные админские события.
+    await repo.log_action(
+        session, AuditAction.SUB_GRANTED,
+        actor_tg_id=call.from_user.id,
+        actor_is_admin=True,
+        target_user_id=user_id,
+        details=(
+            f"Админ выдал триал заново: {settings.trial_days} дн. "
+            f"(до {fmt_msk(expires)} МСК), устройств {settings.trial_devices}, "
+            f"трафик {settings.trial_traffic_gb or '∞'} ГБ"
+        ),
     )
     await session.commit()
     user = await repo.get_user_by_id(session, user_id)
@@ -507,9 +594,24 @@ async def cb_panel_sub_off(call: CallbackQuery, session: AsyncSession) -> None:
     user_id, page = int(parts[2]), int(parts[3])
     now = datetime.now(timezone.utc)
     await repo.set_subscription(session, user_id, expires_at=now, touch_expires=True)
+    # Само отключение — отдельным событием от отзыва конфигов ниже: строки про
+    # устройства отвечают на «что погасло», а эта — на «кто выключил подписку».
+    # Без неё у юзера без единого устройства отключение не оставило бы следа.
+    await repo.log_action(
+        session, AuditAction.SUB_REVOKED,
+        actor_tg_id=call.from_user.id,
+        actor_is_admin=True,
+        target_user_id=user_id,
+        details="Админ отключил подписку кнопкой",
+    )
     # Конфиги гаснут сразу, а не на тике планировщика (симметрично мгновенному
     # ревайву при продлении). Строки остаются REVOKED — продление всё оживит.
-    revoked = await revive_svc.revoke_devices_for_user(session, user_id)
+    revoked = await revive_svc.revoke_devices_for_user(
+        session, user_id,
+        actor_tg_id=call.from_user.id,
+        actor_is_admin=True,
+        reason="админ отключил подписку",
+    )
     await session.commit()
     user = await repo.get_user_by_id(session, user_id)
     if user is None:

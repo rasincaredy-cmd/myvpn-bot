@@ -437,6 +437,7 @@ class AuditAction(StrEnum):
     CONFIG_REVOKED = "config_revoked"      # конфиг отозван
     CONFIG_REVIVED = "config_revived"      # конфиг ожил после оплаты
     SUB_GRANTED = "sub_granted"            # подписка выдана админом
+    SUB_REVOKED = "sub_revoked"            # админ отключил подписку
     USER_BLOCKED = "user_blocked"
     USER_UNBLOCKED = "user_unblocked"
 

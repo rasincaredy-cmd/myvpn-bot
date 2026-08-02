@@ -644,6 +644,97 @@ class TestAuditNoDoubleRow:
         assert rows[0].details == "Устройство «Телефон» удалено юзером"
 
 
+class _FakeStateMessage:
+    """Минимальный Message для FSM-шага: хендлеру нужны текст, автор и ответ."""
+
+    def __init__(self, text: str, uid: int) -> None:
+        self.text = text
+        self.from_user = _FakeFrom(uid)
+        self.answers: list[str] = []
+
+    async def answer(self, text: str, **kwargs) -> None:
+        self.answers.append(text)
+
+
+async def _fsm(user_id: int):
+    from aiogram.fsm.context import FSMContext
+    from aiogram.fsm.storage.base import StorageKey
+    from aiogram.fsm.storage.memory import MemoryStorage
+
+    state = FSMContext(
+        storage=MemoryStorage(), key=StorageKey(bot_id=1, chat_id=1, user_id=1)
+    )
+    await state.update_data(user_id=user_id, page=0)
+    return state
+
+
+class TestAuditSubTerm:
+    """«Задать срок» умеет и выдать подписку, и отключить её — по тому, в
+    будущем дата или в прошлом. В журнал оба случая писались одним кодом
+    SUB_GRANTED, и отключение показывалось в ленте как «🎁 Подписка выдана»."""
+
+    async def test_past_date_is_not_a_grant(
+        self, session: AsyncSession, monkeypatch
+    ) -> None:
+        from bot.handlers.admin import subscription as sub_h
+
+        _mute_ssh(monkeypatch)
+        monkeypatch.setattr(sub_h, "tg_bot", _FakeBot())
+        user, _, _, _ = await _user_with_device(session, tg_id=2201)
+        user_id = user.id
+        msg = _FakeStateMessage("01.01.2020", 777)
+
+        await sub_h.step_sub_extend(msg, await _fsm(user_id), session)
+        await session.commit()
+        session.expunge_all()
+
+        rows = await repo.list_audit_for_user(session, user_id)
+        actions = {r.action for r in rows}
+        assert AuditAction.SUB_GRANTED not in actions, (
+            "отключение подписки записано как её выдача"
+        )
+        assert AuditAction.SUB_REVOKED in actions
+
+    async def test_future_date_is_still_a_grant(
+        self, session: AsyncSession, monkeypatch
+    ) -> None:
+        from bot.handlers.admin import subscription as sub_h
+
+        _mute_ssh(monkeypatch)
+        monkeypatch.setattr(sub_h, "tg_bot", _FakeBot())
+        user, _, _, _ = await _user_with_device(session, tg_id=2202)
+        user_id = user.id
+        msg = _FakeStateMessage("30д", 777)
+
+        await sub_h.step_sub_extend(msg, await _fsm(user_id), session)
+        await session.commit()
+        session.expunge_all()
+
+        rows = await repo.list_audit_for_user(session, user_id)
+        actions = {r.action for r in rows}
+        assert AuditAction.SUB_GRANTED in actions
+        assert AuditAction.SUB_REVOKED not in actions
+
+    async def test_forever_is_a_grant(
+        self, session: AsyncSession, monkeypatch
+    ) -> None:
+        """Бессрочная подписка («-») — заведомо не отключение."""
+        from bot.handlers.admin import subscription as sub_h
+
+        _mute_ssh(monkeypatch)
+        monkeypatch.setattr(sub_h, "tg_bot", _FakeBot())
+        user, _, _, _ = await _user_with_device(session, tg_id=2203)
+        user_id = user.id
+        msg = _FakeStateMessage("-", 777)
+
+        await sub_h.step_sub_extend(msg, await _fsm(user_id), session)
+        await session.commit()
+        session.expunge_all()
+
+        rows = await repo.list_audit_for_user(session, user_id)
+        assert AuditAction.SUB_GRANTED in {r.action for r in rows}
+
+
 class TestAuditWipe:
     """Стирание юзера обязано уносить и его журнал.
 
@@ -735,6 +826,13 @@ class _FakeMessage:
 class _FakeFrom:
     def __init__(self, uid: int) -> None:
         self.id = uid
+
+
+class _FakeBot:
+    """Вместо реального Bot: уведомления юзеру в тестах никуда не летят."""
+
+    async def send_message(self, *args, **kwargs) -> None:
+        return None
 
 
 class _FakeCall:

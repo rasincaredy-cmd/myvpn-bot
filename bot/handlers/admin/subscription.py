@@ -289,12 +289,26 @@ async def step_sub_extend(message: Message, state: FSMContext, session: AsyncSes
     # здесь — произвольная дата), поэтому запись в журнал делается тут же, иначе
     # такой выдачи в ленте не будет вовсе. Формулировка отличает ручной срок от
     # обычной выдачи тарифа.
+    #
+    # Дата в прошлом — это не выдача, а отключение: тем же полем ввода админ
+    # гасит подписку (ниже по коду устройства отзываются сразу). Писать оба
+    # случая кодом SUB_GRANTED значит показывать отключение в ленте как
+    # «🎁 Подписка выдана» — админ, разбирая жалобу, прочтёт ровно обратное
+    # тому, что произошло.
+    # now берётся один раз и используется и здесь, и в ветвлении ревайв/отзыв
+    # ниже: два отдельных вызова now() могли бы разойтись на дате «прямо сейчас»
+    # и записать в журнал не то, что бот на самом деле сделал.
+    now = datetime.now(timezone.utc)
+    turning_off = result is not None and result <= now
     await repo.log_action(
-        session, AuditAction.SUB_GRANTED,
+        session,
+        AuditAction.SUB_REVOKED if turning_off else AuditAction.SUB_GRANTED,
         actor_tg_id=message.from_user.id,
         actor_is_admin=True,
         target_user_id=data["user_id"],
         details=(
+            f"Админ отключил подписку: срок задан в прошлом ({fmt_msk(result)} МСК)"
+            if turning_off else
             f"Админ вручную задал срок подписки: до {fmt_msk(result)} МСК"
             if result else "Админ вручную сделал подписку бессрочной"
         ),
@@ -314,8 +328,7 @@ async def step_sub_extend(message: Message, state: FSMContext, session: AsyncSes
     sub_line = (
         f"до {fmt_msk(result)} МСК" if result else "бессрочная"
     )
-    now = datetime.now(timezone.utc)
-    if result is None or result > now:
+    if not turning_off:
         rv = await revive_svc.revive_devices_for_user(session, user)
         await session.commit()
         if rv.touched:
@@ -345,7 +358,7 @@ async def step_sub_extend(message: Message, state: FSMContext, session: AsyncSes
             session, user.id,
             actor_tg_id=message.from_user.id,
             actor_is_admin=True,
-            reason="Отозван: админ задал срок подписки в прошлом",
+            reason="админ задал срок подписки в прошлом",
         ):
             await session.commit()
             msg += "\n🚫 Срок в прошлом — устройства отозваны сразу."
@@ -564,13 +577,23 @@ async def cb_panel_sub_off(call: CallbackQuery, session: AsyncSession) -> None:
     user_id, page = int(parts[2]), int(parts[3])
     now = datetime.now(timezone.utc)
     await repo.set_subscription(session, user_id, expires_at=now, touch_expires=True)
+    # Само отключение — отдельным событием от отзыва конфигов ниже: строки про
+    # устройства отвечают на «что погасло», а эта — на «кто выключил подписку».
+    # Без неё у юзера без единого устройства отключение не оставило бы следа.
+    await repo.log_action(
+        session, AuditAction.SUB_REVOKED,
+        actor_tg_id=call.from_user.id,
+        actor_is_admin=True,
+        target_user_id=user_id,
+        details="Админ отключил подписку кнопкой",
+    )
     # Конфиги гаснут сразу, а не на тике планировщика (симметрично мгновенному
     # ревайву при продлении). Строки остаются REVOKED — продление всё оживит.
     revoked = await revive_svc.revoke_devices_for_user(
         session, user_id,
         actor_tg_id=call.from_user.id,
         actor_is_admin=True,
-        reason="Отозван при отключении подписки админом",
+        reason="админ отключил подписку",
     )
     await session.commit()
     user = await repo.get_user_by_id(session, user_id)

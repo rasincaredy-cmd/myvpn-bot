@@ -8,8 +8,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
 from bot.db import repo
-from bot.db.models import AuditAction, AuditLog
-from bot.services import billing
+from bot.db.models import AuditAction, AuditLog, Peer, PeerStatus, ServerStatus
+from bot.services import billing, revive, teardown
+from bot.services.crypto import encrypt
 
 
 class TestAuditModel:
@@ -399,3 +400,261 @@ class TestAuditAdmin:
         rows = await repo.list_audit_for_user(session, user.id)
         assert rows[0].actor_is_admin is True
         assert rows[0].actor_tg_id == 111
+
+
+# --- Отзыв доступа ----------------------------------------------------------
+# Событие пишется ВНУТРИ общих функций отзыва, а не врезками рядом с их
+# вызовами: этот класс ошибки в ветке ловили четыре раза подряд — каждый раз
+# находился ещё один хендлер, зовущий ту же функцию без врезки. Поэтому тесты
+# дёргают сами функции (и один раз — хендлер целиком, чтобы поймать задвоение).
+
+
+class _FakeSSH:
+    """Асинхронный контекст-менеджер вместо SSHClient — соединения нет."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        pass
+
+    async def __aenter__(self) -> "_FakeSSH":
+        return self
+
+    async def __aexit__(self, *exc) -> None:
+        return None
+
+
+def _mute_ssh(monkeypatch) -> None:
+    """Глушим всю работу с VPS: тесты про журнал, а не про снятие пиров."""
+    async def noop(*args, **kwargs) -> None:
+        return None
+
+    for mod in (revive, teardown):
+        monkeypatch.setattr(mod, "SSHClient", _FakeSSH)
+        monkeypatch.setattr(mod.repo, "creds_from_server", lambda s: None)
+        monkeypatch.setattr(mod.amnezia, "remove_peer_on_server", noop)
+        monkeypatch.setattr(mod.wdtt_svc, "remove_access", noop)
+
+
+async def _user_with_device(session: AsyncSession, *, tg_id: int):
+    """Юзер с одним устройством, WG-пиром и доступом обхода на нём."""
+    user = await repo.get_or_create_user(
+        session, tg_id=tg_id, username="u", full_name="U"
+    )
+    user.sub_max_devices = 2
+    user.sub_max_bypass = 2
+    user.sub_expires_at = datetime.now(timezone.utc) + timedelta(days=30)
+    server = await repo.create_server(
+        session, name="s", host="1.1.1.1", wg_port=585,
+        owner_tg_id=tg_id, status=ServerStatus.READY,
+        server_public_key="pub", server_endpoint="1.1.1.1:585",
+    )
+    device = await repo.create_device(session, user_id=user.id, label="Телефон")
+    session.add(Peer(
+        server_id=server.id, user_id=user.id, device_id=device.id,
+        label="Телефон", ip="10.8.0.2", public_key="pp",
+        private_key_enc=encrypt("priv"), status=PeerStatus.ACTIVE,
+    ))
+    await session.flush()
+    access = await repo.create_wdtt_access(
+        session, server_id=server.id, user_id=user.id, device_id=device.id,
+        label="Телефон", uri_enc=encrypt("wdtt://1.1.1.1:1:2:3:PASS1:hashX"),
+        password_enc=encrypt("PASS1"), expires_at=None, platform="android",
+    )
+    return user, server, device, access
+
+
+async def _revoked_rows(session: AsyncSession, user_id: int) -> list[AuditLog]:
+    return [
+        r for r in await repo.list_audit_for_user(session, user_id)
+        if r.action == AuditAction.CONFIG_REVOKED
+    ]
+
+
+class TestAuditRevokeAll:
+    async def test_logs_who_turned_it_off(
+        self, session: AsyncSession, monkeypatch
+    ) -> None:
+        """Мгновенное отключение подписки админом: в ленте видно, что погасил
+        человек, а не планировщик."""
+        _mute_ssh(monkeypatch)
+        user, _, device, _ = await _user_with_device(session, tg_id=2001)
+        user_id = user.id
+
+        assert await revive.revoke_devices_for_user(
+            session, user_id, actor_tg_id=111, actor_is_admin=True,
+        ) is True
+        await session.commit()
+        session.expunge_all()
+
+        rows = await _revoked_rows(session, user_id)
+        assert len(rows) == 1
+        assert rows[0].actor_tg_id == 111
+        assert rows[0].actor_is_admin is True
+
+    async def test_scheduler_reason_survives(
+        self, session: AsyncSession, monkeypatch
+    ) -> None:
+        """Планировщик отдаёт готовый текст причины — он и попадает в ленту
+        дословно, вместе с числом погашенных устройств."""
+        _mute_ssh(monkeypatch)
+        user, _, _, _ = await _user_with_device(session, tg_id=2002)
+        user_id = user.id
+
+        await revive.revoke_devices_for_user(
+            session, user_id, reason="Отозван по истечению подписки (устройств: 1)",
+        )
+        await session.commit()
+        session.expunge_all()
+
+        rows = await _revoked_rows(session, user_id)
+        assert len(rows) == 1
+        assert rows[0].details == "Отозван по истечению подписки (устройств: 1)"
+        assert rows[0].actor_tg_id is None      # погасил бот, не человек
+
+    async def test_row_per_device(
+        self, session: AsyncSession, monkeypatch
+    ) -> None:
+        """Строка на каждое погашенное устройство, а не одна на весь отзыв:
+        админ в карточке юзера должен видеть, какое именно устройство встало,
+        — сводка «отозвано 2» на этот вопрос не отвечает."""
+        _mute_ssh(monkeypatch)
+        user, _, device, _ = await _user_with_device(session, tg_id=2008)
+        user_id, first_id = user.id, device.id
+        second = await repo.create_device(session, user_id=user_id, label="Ноут")
+        await session.flush()
+        second_id = second.id
+
+        await revive.revoke_devices_for_user(session, user_id, actor_tg_id=111)
+        await session.commit()
+        session.expunge_all()
+
+        rows = await _revoked_rows(session, user_id)
+        assert len(rows) == 2
+        assert {r.target_id for r in rows} == {first_id, second_id}
+        assert {r.target_type for r in rows} == {"device"}
+
+    async def test_nothing_to_revoke_writes_nothing(
+        self, session: AsyncSession
+    ) -> None:
+        user = await repo.get_or_create_user(
+            session, tg_id=2003, username="e", full_name="E"
+        )
+        await session.flush()
+        user_id = user.id
+
+        assert await revive.revoke_devices_for_user(session, user_id) is False
+        await session.commit()
+        session.expunge_all()
+
+        assert await _revoked_rows(session, user_id) == []
+
+
+class TestAuditTeardown:
+    async def test_delete_device_logs_for_any_caller(
+        self, session: AsyncSession, monkeypatch
+    ) -> None:
+        """Админское удаление устройства из карточки юзера врезки не имеет —
+        событие обязано появиться из самой функции."""
+        _mute_ssh(monkeypatch)
+        user, _, device, _ = await _user_with_device(session, tg_id=2004)
+        user_id, device_id = user.id, device.id
+
+        await teardown.delete_device(session, device)
+        await session.commit()
+        session.expunge_all()
+
+        rows = await _revoked_rows(session, user_id)
+        assert len(rows) == 1
+        assert rows[0].target_type == "device"
+        assert rows[0].target_id == device_id
+        assert "Телефон" in rows[0].details
+
+    async def test_revoke_bypass_logs_wdtt(
+        self, session: AsyncSession, monkeypatch
+    ) -> None:
+        _mute_ssh(monkeypatch)
+        user, _, _, access = await _user_with_device(session, tg_id=2005)
+        user_id, access_id = user.id, access.id
+
+        await teardown.revoke_bypass(session, access)
+        await session.commit()
+        session.expunge_all()
+
+        rows = await _revoked_rows(session, user_id)
+        assert len(rows) == 1
+        assert rows[0].target_type == "wdtt"
+        assert rows[0].target_id == access_id
+
+
+class TestAuditRevokePeer:
+    async def test_revoke_peer_logs_peer_target(
+        self, session: AsyncSession, monkeypatch
+    ) -> None:
+        """Отзыв одиночного пира из карточки сервера: общей сервисной функции у
+        этого пути нет, поэтому запись живёт в самом примитиве отзыва."""
+        _mute_ssh(monkeypatch)
+        user, _, _, _ = await _user_with_device(session, tg_id=2007)
+        user_id = user.id
+        peer = (await repo.list_peers_for_user(session, user_id))[0]
+        peer_id = peer.id
+
+        await repo.revoke_peer(
+            session, peer_id, actor_tg_id=111, actor_is_admin=True,
+            details="Пир «Телефон» отозван админом",
+        )
+        await session.commit()
+        session.expunge_all()
+
+        rows = await _revoked_rows(session, user_id)
+        assert len(rows) == 1
+        assert rows[0].target_type == "peer"
+        assert rows[0].target_id == peer_id
+        assert rows[0].actor_is_admin is True
+
+
+class TestAuditNoDoubleRow:
+    async def test_user_device_delete_is_one_row(
+        self, session: AsyncSession, monkeypatch
+    ) -> None:
+        """Юзерское удаление устройства проходит через ту же функцию. Если
+        врезку у вызывающего не снять, на одно действие в ленте будет две
+        строки — а админ решит, что юзер удалил устройство дважды."""
+        from bot.handlers import devices as devices_h
+
+        _mute_ssh(monkeypatch)
+        user, _, device, _ = await _user_with_device(session, tg_id=2006)
+        user_id, device_id, tg_id = user.id, device.id, user.tg_id
+        call = _FakeCall(f"dev:revoke:{device_id}", tg_id)
+
+        await devices_h.cb_dev_revoke(call, session)
+        session.expunge_all()
+
+        rows = await _revoked_rows(session, user_id)
+        assert len(rows) == 1, "врезка у вызывающего задваивает событие"
+        assert rows[0].actor_tg_id == tg_id
+        assert rows[0].details == "Устройство «Телефон» удалено юзером"
+
+
+class _FakeMessage:
+    def __init__(self) -> None:
+        self.texts: list[str] = []
+
+    async def edit_text(self, text: str, **kwargs) -> None:
+        self.texts.append(text)
+
+
+class _FakeFrom:
+    def __init__(self, uid: int) -> None:
+        self.id = uid
+
+
+class _FakeCall:
+    """Минимальный CallbackQuery — хендлеру нужны только эти четыре вещи."""
+
+    def __init__(self, data: str, uid: int) -> None:
+        self.data = data
+        self.from_user = _FakeFrom(uid)
+        self.message = _FakeMessage()
+        self.answers: list[str] = []
+
+    async def answer(self, text: str = "", show_alert: bool = False) -> None:
+        self.answers.append(text)

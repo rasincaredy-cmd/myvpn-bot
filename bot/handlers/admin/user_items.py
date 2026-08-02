@@ -125,7 +125,14 @@ async def cb_panel_user_device_del(call: CallbackQuery, session: AsyncSession) -
         return
     from bot.services import teardown
     label = device.label
-    await teardown.delete_device(session, device)
+    # Актор — админ из карточки юзера; текст отличаем от юзерского удаления,
+    # чтобы по ленте было видно, кто снёс устройство человеку.
+    await teardown.delete_device(
+        session, device,
+        actor_tg_id=call.from_user.id,
+        actor_is_admin=True,
+        details=f"Устройство «{label}» удалено админом",
+    )
     await session.commit()
     await _render_user_devices(call, session, user_id, page)
     await call.answer(f"Устройство «{label}» удалено")
@@ -200,7 +207,12 @@ async def cb_panel_user_bypass_del(call: CallbackQuery, session: AsyncSession) -
         await call.answer("Не найдено", show_alert=True)
         return
     from bot.services import teardown
-    await teardown.revoke_bypass(session, access)
+    await teardown.revoke_bypass(
+        session, access,
+        actor_tg_id=call.from_user.id,
+        actor_is_admin=True,
+        details=f"Обход БС «{access.label}» удалён админом",
+    )
     await session.commit()
     await _render_user_bypasses(call, session, user_id, page)
     await call.answer("Доступ отозван")

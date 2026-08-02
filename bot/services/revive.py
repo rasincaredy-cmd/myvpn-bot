@@ -68,7 +68,14 @@ def _parse_wdtt_uri(uri: str) -> tuple[str, str] | None:
     return ",".join(parts[1:4]), parts[5]
 
 
-async def revoke_devices_for_user(session: AsyncSession, user_id: int) -> bool:
+async def revoke_devices_for_user(
+    session: AsyncSession,
+    user_id: int,
+    *,
+    actor_tg_id: int | None = None,
+    actor_is_admin: bool = False,
+    reason: str | None = None,
+) -> bool:
     """Отзывает ВСЕ активные устройства юзера: снимает WG-пиры и wdtt-доступы с
     серверов (best-effort), затем метит устройства/пиры/wdtt-строки REVOKED
     (см. repo.revoke_device) — они ждут ревайва при продлении retention-срок.
@@ -76,7 +83,14 @@ async def revoke_devices_for_user(session: AsyncSession, user_id: int) -> bool:
     Зеркало revive_devices_for_user. Зовётся планировщиком (истечение срока,
     лимит трафика) и админкой (мгновенное отключение подписки — конфиги гаснут
     сразу, без ожидания тика). Коммит и уведомление — на вызывающем.
-    Возвращает True, если что-то отозвали."""
+    Возвращает True, если что-то отозвали.
+
+    Событие журнала пишется здесь, а не врезкой у вызывающего: путей отзыва уже
+    четыре, и каждый новый — ещё один шанс врезку забыть. Кто погасил и почему,
+    знает только вызывающий, поэтому актор и `reason` приходят параметрами;
+    планировщик передаёт готовый текст со своим счётчиком устройств. Строка
+    пишется на КАЖДОЕ устройство — как и оживление ниже пишется на каждый пир:
+    в карточке юзера должно быть видно, что именно встало."""
     devices = await repo.list_devices_for_user(session, user_id, active_only=True)
     if not devices:
         return False
@@ -105,6 +119,15 @@ async def revoke_devices_for_user(session: AsyncSession, user_id: int) -> bool:
                 except SSHError as exc:
                     logger.warning("Revoke-all wdtt remove err {}: {}", acc.id, exc)
         await repo.revoke_device(session, device.id)
+        await repo.log_action(
+            session, AuditAction.CONFIG_REVOKED,
+            actor_tg_id=actor_tg_id,
+            actor_is_admin=actor_is_admin,
+            target_user_id=user_id,
+            target_type="device",
+            target_id=device.id,
+            details=reason or f"Устройство «{device.label}» отозвано",
+        )
         logger.info("Revoked device {} (user {})", device.id, user_id)
     return True
 

@@ -232,7 +232,11 @@ async def cb_wdtt_my_revoke(call: CallbackQuery, session: AsyncSession) -> None:
         await call.answer("Не найдено", show_alert=True)
         return
     from bot.services import teardown
-    await teardown.revoke_bypass(session, access)
+    await teardown.revoke_bypass(
+        session, access,
+        actor_tg_id=user.tg_id,
+        details=f"Обход БС «{access.label}» удалён юзером",
+    )
     await session.commit()
     # Удаление необратимо (ревайв невозможен) — фиксируем в лог.
     logger.info("User {} deleted wdtt access {} ({})", user.id, access.id, access.label)

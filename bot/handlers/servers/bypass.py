@@ -135,7 +135,12 @@ async def cb_server_wdtt_del(call: CallbackQuery, session: AsyncSession) -> None
         await call.answer("Не найдено", show_alert=True)
         return
     from bot.services import teardown
-    await teardown.revoke_bypass(session, access)
+    await teardown.revoke_bypass(
+        session, access,
+        actor_tg_id=call.from_user.id,
+        actor_is_admin=True,
+        details=f"Обход БС «{access.label}» удалён админом из карточки сервера",
+    )
     await session.commit()
     await _render_server_wdtt(call, session, server_id)
     await call.answer("Отозвано")

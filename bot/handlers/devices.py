@@ -16,7 +16,7 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.db import repo
-from bot.db.models import AuditAction, PeerStatus
+from bot.db.models import PeerStatus
 from bot.keyboards.inline import (
     CB_DEVICE,
     CB_SUB,
@@ -426,16 +426,13 @@ async def cb_dev_revoke(call: CallbackQuery, session: AsyncSession) -> None:
     # Снимаем всё с серверов и удаляем устройство из БД целиком (освобождает IP).
     from bot.services import teardown
     label = device.label
-    await teardown.delete_device(session, device)
-    # Журнал пишем ДО коммита, одной транзакцией с удалением: иначе при сбое
-    # ниже (например, Telegram не принял edit_text) устройство осталось бы
-    # снесённым, а следа в истории юзера не осталось.
-    await repo.log_action(
-        session, AuditAction.CONFIG_REVOKED,
+    # Журнал пишет сама delete_device, одной транзакцией с удалением: иначе при
+    # сбое ниже (например, Telegram не принял edit_text) устройство осталось бы
+    # снесённым, а следа в истории юзера не осталось. Врезки здесь больше нет —
+    # она бы задвоила событие.
+    await teardown.delete_device(
+        session, device,
         actor_tg_id=user.tg_id,
-        target_user_id=user.id,
-        target_type="device",
-        target_id=device_id,
         details=f"Устройство «{label}» удалено юзером",
     )
     await session.commit()

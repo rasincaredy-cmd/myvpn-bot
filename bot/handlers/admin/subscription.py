@@ -339,7 +339,14 @@ async def step_sub_extend(message: Message, state: FSMContext, session: AsyncSes
             pass
     else:
         # Срок задан в прошлом = отключение: конфиги гаснут сразу, не ждём тика.
-        if await revive_svc.revoke_devices_for_user(session, user.id):
+        # Гасит человек, а не тик планировщика, — актором идёт админ, иначе в
+        # ленте это неотличимо от честного истечения срока.
+        if await revive_svc.revoke_devices_for_user(
+            session, user.id,
+            actor_tg_id=message.from_user.id,
+            actor_is_admin=True,
+            reason="Отозван: админ задал срок подписки в прошлом",
+        ):
             await session.commit()
             msg += "\n🚫 Срок в прошлом — устройства отозваны сразу."
             try:
@@ -559,7 +566,12 @@ async def cb_panel_sub_off(call: CallbackQuery, session: AsyncSession) -> None:
     await repo.set_subscription(session, user_id, expires_at=now, touch_expires=True)
     # Конфиги гаснут сразу, а не на тике планировщика (симметрично мгновенному
     # ревайву при продлении). Строки остаются REVOKED — продление всё оживит.
-    revoked = await revive_svc.revoke_devices_for_user(session, user_id)
+    revoked = await revive_svc.revoke_devices_for_user(
+        session, user_id,
+        actor_tg_id=call.from_user.id,
+        actor_is_admin=True,
+        reason="Отозван при отключении подписки админом",
+    )
     await session.commit()
     user = await repo.get_user_by_id(session, user_id)
     if user is None:

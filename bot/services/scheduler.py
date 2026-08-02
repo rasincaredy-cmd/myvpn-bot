@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from bot.config import settings
 from bot.db import repo
 from bot.db.base import session_scope
-from bot.db.models import AuditAction, Device, Peer, PeerStatus, User, WdttAccess
+from bot.db.models import Device, Peer, PeerStatus, User, WdttAccess
 from bot.loader import bot
 from bot.services import amnezia
 from bot.services import wdtt as wdtt_svc
@@ -53,12 +53,16 @@ def _humanize_left(delta: timedelta) -> str:
     return f"{max(minutes, 1)} мин"
 
 
-async def _revoke_all_devices_for_user(session, user_id: int) -> bool:
+async def _revoke_all_devices_for_user(session, user_id: int, *, reason: str) -> bool:
     """Отзыв всех устройств юзера — общая логика в revive.revoke_devices_for_user
-    (зеркало ревайва; её же зовёт админка при мгновенном отключении подписки)."""
+    (зеркало ревайва; её же зовёт админка при мгновенном отключении подписки).
+
+    Причину передаём внутрь: событие журнала пишет сама функция отзыва, и текст
+    для ленты знает только эта секция тика. Актора не передаём — гасит
+    планировщик, не человек (см. комментарии у вызывающих)."""
     from bot.services import revive as revive_svc
 
-    return await revive_svc.revoke_devices_for_user(session, user_id)
+    return await revive_svc.revoke_devices_for_user(session, user_id, reason=reason)
 
 
 async def _poll_crypto_invoices(session) -> None:
@@ -160,20 +164,17 @@ async def _run_checks() -> None:
                 # Считаем ДО отзыва: после него активных устройств не останется,
                 # а админу в ленте нужна цифра «сколько погасло у человека».
                 devices_hit = await repo.count_active_devices(session, user.id)
-                if await _revoke_all_devices_for_user(session, user.id):
+                # Инициатор — планировщик, не человек: актора не передаём.
+                # Поставить сюда tg_id владельца значило бы, что админ,
+                # разбирая жалобу «я ничего не отключал», увидел бы
+                # инициатором самого жалующегося.
+                # Событие пишет сама revoke_devices_for_user — врезки здесь
+                # больше нет, иначе на одно отключение вышло бы две строки.
+                if await _revoke_all_devices_for_user(
+                    session, user.id,
+                    reason=f"Отозван по истечению подписки (устройств: {devices_hit})",
+                ):
                     touched = True
-                    # Инициатор — планировщик, не человек: actor_tg_id=None.
-                    # Поставить сюда tg_id владельца значило бы, что админ,
-                    # разбирая жалобу «я ничего не отключал», увидел бы
-                    # инициатором самого жалующегося.
-                    # Отзыв накрывает все устройства сразу, конкретной цели нет —
-                    # событие вешаем на юзера (как денежные в billing).
-                    await repo.log_action(
-                        session, AuditAction.CONFIG_REVOKED,
-                        actor_tg_id=None,
-                        target_user_id=user.id,
-                        details=f"Отозван по истечению подписки (устройств: {devices_hit})",
-                    )
                     await _notify(
                         user.tg_id,
                         "⏱ <b>Подписка закончилась</b> — VPN и обход БС встали на паузу.\n"
@@ -476,25 +477,23 @@ async def _run_checks() -> None:
                 used = await repo.sub_traffic_used(session, user)
                 if used < (user.sub_traffic_limit_bytes or 0):
                     continue
-                if await _revoke_all_devices_for_user(session, user.id):
+                # Инициатор — планировщик, не человек: актора не передаём.
+                # Причина обязана отличаться от «истёк срок»: это два разных
+                # разговора с юзером — там надо продлить срок, тут лимит
+                # выбран ВНУТРИ уже оплаченного периода. Цифры те же, что
+                # ушли юзеру в уведомлении ниже, — админ в журнале видит
+                # ровно то, что видел человек. Пишет саму строку функция
+                # отзыва; врезка отсюда убрана, чтобы не задваивать событие.
+                if await _revoke_all_devices_for_user(
+                    session, user.id,
+                    reason=(
+                        "Отозван по лимиту трафика подписки "
+                        f"({amnezia.fmt_bytes(used)} из "
+                        f"{amnezia.fmt_bytes(user.sub_traffic_limit_bytes)})"
+                    ),
+                ):
                     limit_touched = True
                     logger.info("Auto-revoked user {} devices (traffic limit)", user.id)
-                    # Инициатор — планировщик, не человек: actor_tg_id=None.
-                    # Причина обязана отличаться от «истёк срок»: это два разных
-                    # разговора с юзером — там надо продлить срок, тут лимит
-                    # выбран ВНУТРИ уже оплаченного периода. Цифры те же, что
-                    # ушли юзеру в уведомлении ниже, — админ в журнале видит
-                    # ровно то, что видел человек.
-                    await repo.log_action(
-                        session, AuditAction.CONFIG_REVOKED,
-                        actor_tg_id=None,
-                        target_user_id=user.id,
-                        details=(
-                            "Отозван по лимиту трафика подписки "
-                            f"({amnezia.fmt_bytes(used)} из "
-                            f"{amnezia.fmt_bytes(user.sub_traffic_limit_bytes)})"
-                        ),
-                    )
                     await _notify(
                         user.tg_id,
                         f"📊 <b>Трафик подписки закончился</b> "

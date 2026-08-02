@@ -205,7 +205,12 @@ async def cb_admin_peer_revoke(call: CallbackQuery, session: AsyncSession) -> No
         # SSH упал, но статус в БД всё равно меняем
         logger.warning("Admin peer revoke ssh error: {}", exc)
 
-    await repo.revoke_peer(session, peer.id)
+    await repo.revoke_peer(
+        session, peer.id,
+        actor_tg_id=call.from_user.id,
+        actor_is_admin=True,
+        details=f"Пир «{peer.label}» отозван админом из карточки сервера",
+    )
     await session.commit()
 
     from aiogram.utils.keyboard import InlineKeyboardBuilder

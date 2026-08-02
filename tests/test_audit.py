@@ -548,6 +548,32 @@ class TestAuditRevokeAll:
             "Устройство «Ноут» отозвано: истекла подписка",
         }
 
+    async def test_scheduler_helper_writes_bot_rows(
+        self, session: AsyncSession, monkeypatch
+    ) -> None:
+        """Путь планировщика: обе его секции ходят через один helper, и врезку
+        рядом с ним сняли. Если запись когда-нибудь уедет обратно в секции,
+        здесь станет ноль строк, а в ленте — задвоение."""
+        from bot.services import scheduler as sched
+
+        _mute_ssh(monkeypatch)
+        user, _, _, _ = await _user_with_device(session, tg_id=2009)
+        user_id = user.id
+        second = await repo.create_device(session, user_id=user_id, label="Ноут")
+        await session.flush()
+
+        assert await sched._revoke_all_devices_for_user(
+            session, user_id, reason="истекла подписка"
+        ) is True
+        await session.commit()
+        session.expunge_all()
+
+        rows = await _revoked_rows(session, user_id)
+        assert len(rows) == 2
+        assert {r.actor_tg_id for r in rows} == {None}   # гасит бот, не человек
+        assert all(r.actor_is_admin is False for r in rows)
+        assert all("истекла подписка" in r.details for r in rows)
+
     async def test_nothing_to_revoke_writes_nothing(
         self, session: AsyncSession
     ) -> None:
@@ -934,6 +960,28 @@ class TestAuditWipe:
 
         assert await repo.count_audit_for_user(session, user_id) == 0
         assert res.purged["audit_logs"] > 0
+
+    async def test_reported_count_is_real_history_only(
+        self, session: AsyncSession, monkeypatch
+    ) -> None:
+        """Админу показывается размер настоящей истории. Отзыв на шаге 1 сам
+        пишет по строке на устройство, и они тут же удаляются чисткой — если
+        считать после отзыва, цифра растёт от числа устройств, а не от того,
+        сколько человек успел наделать."""
+        _mute_ssh(monkeypatch)
+        user, _, _, _ = await _user_with_device(session, tg_id=2105)
+        await repo.log_action(
+            session, AuditAction.BALANCE_TOPUP,
+            target_user_id=user.id, amount_kopeks=10000, details="Пополнение",
+        )
+
+        res = await user_wipe.wipe_user(session, user)
+        await session.commit()
+
+        assert res.history_rows == 1
+        # Удалено при этом больше — вместе с историей уносится и строка отзыва,
+        # которую породил сам wipe. Это правда, просто не та цифра для админа.
+        assert res.purged["audit_logs"] > res.history_rows
 
     async def test_history_does_not_leak_to_next_user(
         self, session: AsyncSession, monkeypatch

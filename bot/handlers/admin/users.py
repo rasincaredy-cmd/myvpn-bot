@@ -193,7 +193,7 @@ async def cb_panel_user_delete_confirm(call: CallbackQuery, session: AsyncSessio
         f"• Удалено записей: платежи {res.purged.get('balance_txs', 0)}, "
         f"счета {res.purged.get('invoices', 0)}, "
         f"поддержка {res.purged.get('support_msgs', 0)}, "
-        f"журнал {res.purged.get('audit_logs', 0)}",
+        f"журнал {res.history_rows}",
     ]
     if res.purged.get("referrals_unlinked"):
         lines.append(f"• Отвязано рефералов: {res.purged['referrals_unlinked']}")

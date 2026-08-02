@@ -31,3 +31,21 @@ def fmt_msk(dt: datetime, with_time: bool = True, *, fmt: str | None = None) -> 
     список операций: там год только мешает)."""
     local = as_utc(dt).astimezone(MSK)
     return local.strftime(fmt or ("%d.%m.%Y %H:%M" if with_time else "%d.%m.%Y"))
+
+
+def fmt_ago(moment: datetime | None) -> str:
+    """«12 мин назад» для карточек. None — события не было ни разу.
+
+    Шкала та же, что у хендшейка пира в метриках сервера (сек/мин/ч/д), чтобы
+    админ читал обе карточки одинаково.
+    """
+    if moment is None:
+        return "не видели ни разу"
+    delta = int((datetime.now(timezone.utc) - as_utc(moment)).total_seconds())
+    if delta < 60:
+        return f"{max(delta, 0)} сек назад"
+    if delta < 3600:
+        return f"{delta // 60} мин назад"
+    if delta < 86400:
+        return f"{delta // 3600} ч назад"
+    return f"{delta // 86400} д назад"

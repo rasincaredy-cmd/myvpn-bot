@@ -4,7 +4,19 @@ from __future__ import annotations
 from aiogram.types import InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from bot.keyboards.inline.prefixes import CB_BAL, CB_DEVICE, CB_MENU, CB_SUB, CB_WDTT
+from bot.keyboards.inline.prefixes import CB_BAL, CB_CFG, CB_DEVICE, CB_MENU, CB_SUB, CB_WDTT
+
+
+def config_format_kb(peer_id: int) -> InlineKeyboardMarkup:
+    """Чем прислать конфиг. Файл первой кнопкой — он нужен чаще всего и
+    работает на любой платформе; QR и ссылка закрывают частные случаи
+    (другое устройство рядом / этот же телефон)."""
+    kb = InlineKeyboardBuilder()
+    kb.button(text="📄 Файлом",    callback_data=f"{CB_CFG}:file:{peer_id}")
+    kb.button(text="📱 QR-кодом",  callback_data=f"{CB_CFG}:qr:{peer_id}")
+    kb.button(text="🔗 Ссылкой",   callback_data=f"{CB_CFG}:link:{peer_id}")
+    kb.adjust(1)
+    return kb.as_markup()
 
 
 def devices_list_kb(

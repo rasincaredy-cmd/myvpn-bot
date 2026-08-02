@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
-from aiogram.types import BufferedInputFile, CallbackQuery, Message
+from aiogram.types import CallbackQuery, Message
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,10 +17,7 @@ from bot.keyboards.inline import (
     server_card,
     server_peers_admin,
 )
-from bot.loader import bot as tg_bot
 from bot.services import amnezia
-from bot.services.crypto import decrypt
-from bot.services.qrgen import conf_to_qr_png
 from bot.services.ssh import SSHClient, SSHError
 from bot.states.install import PeerRenameStates
 from bot.texts import t
@@ -303,29 +300,12 @@ async def cb_admin_peer_conf(call: CallbackQuery, session: AsyncSession) -> None
         await call.answer("Peer отозван", show_alert=True)
         return
 
-    params = amnezia.AmneziaParams.from_json(server.awg_params_json)
-    priv = decrypt(peer.private_key_enc)
-    conf = amnezia.build_peer_conf(
-        peer_private_key=priv,
-        peer_ip=peer.ip,
-        server_public_key=server.server_public_key,
-        endpoint=server.server_endpoint,
-        params=params,
-        dns=server.dns,
-    )
-    await call.answer("Отправляю...")
-    filename = f"{server.name}-{peer.label}.conf".replace(" ", "_")
-    await tg_bot.send_document(
-        call.message.chat.id,
-        document=BufferedInputFile(conf.encode(), filename=filename),
-        caption=f"📄 <code>{filename}</code>",
-    )
-    qr = conf_to_qr_png(conf)
-    await tg_bot.send_photo(
-        call.message.chat.id,
-        photo=BufferedInputFile(qr, filename=f"{filename}.png"),
-        caption="📱 QR для AmneziaVPN",
-    )
+    # Тот же экран выбора, что у юзера: админ, провалившийся сюда из карточки
+    # юзера, не должен получать конфиг по другим правилам, чем сам юзер.
+    from bot.handlers.config_delivery import ask_config_format
+
+    await ask_config_format(call.message.chat.id, session, peer)
+    await call.answer("Спросил формат")
 
 
 # Индивидуальные лимиты пира (срок/трафик) убраны: единый гейт — подписка юзера

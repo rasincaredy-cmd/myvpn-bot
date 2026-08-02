@@ -338,6 +338,11 @@ class WdttAccess(Base):
         BigInteger, default=0, server_default="0", nullable=False
     )
 
+    # Когда планировщик в последний раз увидел ПРИРОСТ трафика. Сервер обхода
+    # времени последнего контакта не отдаёт вовсе, поэтому «пользовались» мы
+    # выводим из роста счётчиков — точность равна периоду тика (5 мин).
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
     # Битовая маска отправленных предупреждений об истечении (как у Peer).
     expiry_warn_flags: Mapped[int] = mapped_column(
         Integer, default=0, server_default="0", nullable=False

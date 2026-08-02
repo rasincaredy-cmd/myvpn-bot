@@ -34,6 +34,7 @@ from bot.keyboards.inline.balance import (
 )
 from bot.keyboards.inline.devices import (
     back_to_devices_kb,
+    config_format_kb,
     device_card_kb,
     device_created_kb,
     devices_list_kb,
@@ -55,6 +56,7 @@ from bot.keyboards.inline.prefixes import (
     CB_ADMIN,
     CB_BAL,
     CB_CANCEL,
+    CB_CFG,
     CB_DEVICE,
     CB_INSTALL,
     CB_INVITES,
@@ -97,6 +99,7 @@ __all__ = [
     "CB_ADMIN",
     "CB_BAL",
     "CB_CANCEL",
+    "CB_CFG",
     "CB_DEVICE",
     "CB_INSTALL",
     "CB_INVITES",
@@ -128,6 +131,7 @@ __all__ = [
     "cancel_only",
     "cancel_to_sub_kb",
     "confirm_delete_server",
+    "config_format_kb",
     "deposit_amounts_kb",
     "device_card_kb",
     "device_created_kb",

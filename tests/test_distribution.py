@@ -64,11 +64,24 @@ async def _add_active_wdtt(session: AsyncSession, server, user, n: int) -> None:
     await session.flush()
 
 
+async def _fake_peer(session, server, user, label, device_id):
+    """Строка пира без SSH. Настоящая, а не заглушка: вызывающему нужен peer.id,
+    чтобы потом предложить юзеру выбрать формат конфига."""
+    peer = Peer(
+        server_id=server.id, user_id=user.id, device_id=device_id,
+        label=label, ip="10.8.0.2", public_key=f"pk{server.id}",
+        private_key_enc=encrypt("priv"), status=PeerStatus.ACTIVE,
+    )
+    session.add(peer)
+    await session.flush()
+    return peer
+
+
 def _fake_create_peer(calls: list):
     """Подменяет configs._create_peer_for_user: без SSH, записывает выбранный сервер."""
     async def fake(session, server, user, label, *, device_id=None, expires_at=None):
         calls.append(server.id)
-        return f"conf-{server.id}", "10.8.0.2", label
+        return await _fake_peer(session, server, user, label, device_id), f"conf-{server.id}"
     return fake
 
 
@@ -145,7 +158,7 @@ class TestProvisionDistribution:
             calls.append(server.id)
             if server.id == s1.id:
                 raise SSHError("сервер лёг")
-            return f"conf-{server.id}", "10.8.0.2", label
+            return await _fake_peer(session_, server, user_, label, device_id), f"conf-{server.id}"
 
         monkeypatch.setattr(configs, "_create_peer_for_user", fake)
         made = await configs.provision_device_peers(session, user, device)
@@ -201,9 +214,12 @@ class TestConfigNames:
         assert configs.config_display_base(self._srv(None, name="kl-1")) == "kl-1"
 
     def test_filename_strips_emoji(self) -> None:
-        assert configs._safe_filename_base("🇳🇱 Нидерланды") == "Нидерланды"
-        assert configs._safe_filename_base("🇩🇪 Германия") == "Германия"
-        assert configs._safe_filename_base("🏴‍☠️💀") == "config"  # всё вырезали — фолбэк
+        # Имя файла собирает модуль доставки — туда же переехал и хелпер.
+        from bot.handlers.config_delivery import _safe_filename_base
+
+        assert _safe_filename_base("🇳🇱 Нидерланды") == "Нидерланды"
+        assert _safe_filename_base("🇩🇪 Германия") == "Германия"
+        assert _safe_filename_base("🏴‍☠️💀") == "vpn"  # всё вырезали — фолбэк
 
 
 class TestKnownLocations:

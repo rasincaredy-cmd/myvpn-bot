@@ -6,6 +6,7 @@ from bot.handlers import (
     admin,
     balance,
     common,
+    config_delivery,
     configs,
     devices,
     errors,
@@ -20,6 +21,7 @@ def register_handlers(dp: Dispatcher) -> None:
     dp.include_router(common.router)
     dp.include_router(servers.router)
     dp.include_router(configs.router)
+    dp.include_router(config_delivery.router)
     dp.include_router(devices.router)
     dp.include_router(install.router)
     dp.include_router(admin.router)

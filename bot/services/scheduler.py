@@ -128,6 +128,27 @@ async def _cleanup_audit(session: AsyncSession) -> None:
         logger.info("Ретеншн журнала: удалено записей {}", removed)
 
 
+def apply_wdtt_traffic(access: WdttAccess, *, raw: int) -> None:
+    """Копит трафик обхода и отмечает время, если он вырос.
+
+    Отдельной функцией, а не строчками внутри тика: это единственное место, где
+    решается вопрос «пользовались обходом или нет», и его надо уметь проверить
+    тестом, не поднимая весь планировщик.
+
+    Прирост определяется тем же accumulate_traffic, что и у пиров, — он же
+    переживает сброс счётчика при рестарте сервера обхода. Считаем сброс
+    трафиком: байты после рестарта настоящие.
+    """
+    before = access.traffic_used_bytes
+    access.traffic_used_bytes, access.traffic_last_raw_bytes = (
+        amnezia.accumulate_traffic(
+            access.traffic_used_bytes, access.traffic_last_raw_bytes, raw
+        )
+    )
+    if access.traffic_used_bytes > before:
+        access.last_seen_at = datetime.now(timezone.utc)
+
+
 async def _run_checks() -> None:
     now = datetime.now(timezone.utc)
 
@@ -455,11 +476,9 @@ async def _run_checks() -> None:
                         r = by_pw.get(decrypt(acc.password_enc))
                         if r is None:
                             continue
-                        raw = int(r.get("down_bytes", 0)) + int(r.get("up_bytes", 0))
-                        acc.traffic_used_bytes, acc.traffic_last_raw_bytes = (
-                            amnezia.accumulate_traffic(
-                                acc.traffic_used_bytes, acc.traffic_last_raw_bytes, raw
-                            )
+                        apply_wdtt_traffic(
+                            acc,
+                            raw=int(r.get("down_bytes", 0)) + int(r.get("up_bytes", 0)),
                         )
                 await session.commit()
         except Exception:

@@ -29,21 +29,15 @@ from bot.keyboards.inline import (
     subscription_kb,
 )
 from bot.services import amnezia
-from bot.services.crypto import decrypt
-from bot.services.ssh import SSHClient, SSHError
+from bot.services.ssh import SSHError
 from bot.states.install import DeviceStates
 from bot.texts import t
 from bot.utils.timefmt import as_utc, fmt_msk
 from bot.utils.validators import is_valid_label
 
-# Переиспользуем машинерию создания/отправки пиров.
-from bot.handlers.configs import (
-    provision_device_peers,
-    _safe_filename_base,
-    _send_peer_artifacts,
-    make_vpn_link,
-    config_display_base,
-)
+# Переиспользуем машинерию создания пиров и единый экран выбора формата.
+from bot.handlers.config_delivery import ask_config_format
+from bot.handlers.configs import provision_device_peers
 
 router = Router(name="devices")
 
@@ -220,11 +214,8 @@ async def step_device_label(message: Message, state: FSMContext, session: AsyncS
     import contextlib
     with contextlib.suppress(Exception):
         await status_msg.delete()
-    for server, conf in made:
-        await _send_peer_artifacts(
-            message.chat.id, config_display_base(server), label, conf,
-            vpn_link=await make_vpn_link(session, server, label, conf),
-        )
+    for _server, peer in made:
+        await ask_config_format(message.chat.id, session, peer)
     await message.answer(
         t.device_created.format(label=label), reply_markup=device_created_kb()
     )
@@ -246,11 +237,8 @@ async def cb_dev_open(call: CallbackQuery, session: AsyncSession) -> None:
         made = await provision_device_peers(session, user, device)
         if made:
             await session.commit()
-            for server, conf in made:
-                await _send_peer_artifacts(
-                    call.message.chat.id, config_display_base(server), device.label, conf,
-                    vpn_link=await make_vpn_link(session, server, device.label, conf),
-                )
+            for _server, peer in made:
+                await ask_config_format(call.message.chat.id, session, peer)
 
     peers = await repo.list_peers_for_device(session, device.id)
     accesses = await repo.list_wdtt_for_device(session, device.id)
@@ -303,24 +291,8 @@ async def cb_dev_send_one(call: CallbackQuery, session: AsyncSession) -> None:
     if peer.status != PeerStatus.ACTIVE:
         await call.answer("Конфиг отозван", show_alert=True)
         return
-    server = await repo.get_server(session, peer.server_id)
-    if server is None:
-        await call.answer("Сервер недоступен", show_alert=True)
-        return
-    params = amnezia.AmneziaParams.from_json(server.awg_params_json)
-    conf = amnezia.build_peer_conf(
-        peer_private_key=decrypt(peer.private_key_enc),
-        peer_ip=peer.ip,
-        server_public_key=server.server_public_key,
-        endpoint=server.server_endpoint,
-        params=params,
-        dns=server.dns,
-    )
-    await _send_peer_artifacts(
-        call.message.chat.id, config_display_base(server), peer.label, conf,
-        vpn_link=await make_vpn_link(session, server, peer.label, conf),
-    )
-    await call.answer("Готово")
+    await ask_config_format(call.message.chat.id, session, peer)
+    await call.answer()
 
 
 @router.callback_query(F.data.startswith(f"{CB_DEVICE}:send:"))
@@ -337,23 +309,8 @@ async def cb_dev_send(call: CallbackQuery, session: AsyncSession) -> None:
         await call.answer("Нет активных конфигов", show_alert=True)
         return
     for peer in peers:
-        server = await repo.get_server(session, peer.server_id)
-        if server is None:
-            continue
-        params = amnezia.AmneziaParams.from_json(server.awg_params_json)
-        conf = amnezia.build_peer_conf(
-            peer_private_key=decrypt(peer.private_key_enc),
-            peer_ip=peer.ip,
-            server_public_key=server.server_public_key,
-            endpoint=server.server_endpoint,
-            params=params,
-            dns=server.dns,
-        )
-        await _send_peer_artifacts(
-        call.message.chat.id, config_display_base(server), peer.label, conf,
-        vpn_link=await make_vpn_link(session, server, peer.label, conf),
-    )
-    await call.answer("Готово")
+        await ask_config_format(call.message.chat.id, session, peer)
+    await call.answer()
 
 
 @router.callback_query(F.data.startswith(f"{CB_DEVICE}:ren:"))

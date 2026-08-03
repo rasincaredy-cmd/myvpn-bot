@@ -28,6 +28,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.db import repo
 from bot.db.models import AuditAction, Peer, PeerStatus, Server, User
+from bot.services import amnezia
+from bot.services.ssh import SSHClient, SSHError
 from bot.utils.timefmt import as_utc
 
 # Сколько старый конфиг доживает после переезда и как часто можно переезжать.
@@ -178,3 +180,57 @@ async def move_peer(
         peer.id, target.id, new_peer.id, reason,
     )
     return new_peer
+
+
+async def expire_grace_peers(session: AsyncSession, now: datetime) -> list[Peer]:
+    """Снимает с серверов конфиги, у которых сутки грейса вышли, и метит их
+    REVOKED — дальше их подберёт обычный ретеншн (30 дней, секция 2 тика).
+
+    Отдельной функцией, а не строчками внутри тика планировщика: тик в тесте не
+    поднять, а поведение «снял по SSH → отозвал» — ровно то, что надо проверять.
+
+    Группируем по серверу: один коннект на сервер. Не поднялся коннект — строки
+    этого сервера НЕ трогаем: в них единственные ключи, которыми пир снимается с
+    VPS, и, потеряв их, мы оставили бы вечный конфиг на сервере (тот же приём,
+    что в ретеншне пиров). Повторим на следующем тике.
+
+    `grace_until` при отзыве не обнуляем: по нему ревайв узнаёт переехавший
+    конфиг и не поднимает его при продлении подписки.
+    """
+    peers = await repo.list_grace_expired_peers(session, now)
+    if not peers:
+        return []
+
+    by_server: dict[int, list[Peer]] = {}
+    for p in peers:
+        by_server.setdefault(p.server_id, []).append(p)
+
+    done: list[Peer] = []
+    for server_id, plist in by_server.items():
+        server = await repo.get_server(session, server_id)
+        if server is None:
+            continue
+        try:
+            async with SSHClient(repo.creds_from_server(server)) as ssh:
+                for p in plist:
+                    try:
+                        await amnezia.remove_peer_on_server(ssh, public_key=p.public_key)
+                    except SSHError as exc:
+                        # Сам пир мог быть уже снят руками — это не причина
+                        # держать строку живой: отзываем и идём дальше.
+                        logger.warning("Grace peer {} remove err: {}", p.id, exc)
+        except SSHError as exc:
+            logger.warning("Grace peers SSH connect err server {}: {}", server_id, exc)
+            continue
+        for p in plist:
+            # Актора-человека нет: снимает бот по расписанию. Поставить сюда
+            # tg_id владельца значило бы, что админ, разбирая жалобу «я ничего
+            # не отключал», увидел бы инициатором самого жалующегося.
+            await repo.revoke_peer(
+                session, p.id,
+                details=(
+                    f"Старый конфиг «{p.label}» снят: сутки после переезда прошли"
+                ),
+            )
+            done.append(p)
+    return done

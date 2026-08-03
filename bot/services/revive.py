@@ -12,7 +12,9 @@
 Лимиты подписки уважаем: восстанавливаем не больше sub_max_devices устройств и
 sub_max_bypass обходов (старейшие первыми); лишние остаются REVOKED до retention.
 SSH-сбой по одному пиру/доступу не валит остальные: что не ожило — остаётся
-REVOKED и попадёт под retention (или ручной ревайв админом)."""
+REVOKED и попадёт под retention (или ручной ревайв админом).
+
+Переехавшие пиры (Этап C, `Peer.grace_until`) не воскрешаются вообще."""
 from __future__ import annotations
 
 import math
@@ -169,6 +171,12 @@ async def revive_devices_for_user(session: AsyncSession, user: User) -> ReviveRe
         # --- WG-пиры: тот же ключ + тот же IP → старый конфиг оживает --------
         for peer in await repo.list_peers_for_device(session, device.id):
             if peer.status != PeerStatus.REVOKED:
+                continue
+            # Переехавший конфиг (Этап C) обратно не поднимаем: его заменил новый
+            # пир на другом сервере, а файла от старого у юзера в приложении
+            # уже нет — «оживший» конфиг просто занимал бы IP и место под
+            # потолком сервера. Метку переезда держит grace_until.
+            if peer.grace_until is not None:
                 continue
             server = await repo.get_server(session, peer.server_id)
             if server is None:

@@ -407,6 +407,22 @@ async def _run_checks() -> None:
             logger.exception("Scheduler section 2c (support routes) failed")
             await session.rollback()
 
+        # ── 2d. Конец грейса после переезда конфига (Этап C) ─────────────────
+        # Переехавший конфиг сутки работает со старого сервера, чтобы юзер успел
+        # заменить файл в приложении. Сутки вышли — снимаем его с VPS и метим
+        # REVOKED; дальше строку подберёт обычный ретеншн (секция 2). Изоляция
+        # та же, что у соседей: свой try/except + rollback.
+        try:
+            from bot.services import relocate as relocate_svc
+
+            expired_moved = await relocate_svc.expire_grace_peers(session, now)
+            if expired_moved:
+                await session.commit()
+                logger.info("Grace ended for {} moved peer(s)", len(expired_moved))
+        except Exception:
+            logger.exception("Scheduler section 2d (moved peers grace) failed")
+            await session.rollback()
+
         # ── 3. Учёт трафика (накопление по пирам) ───────────────────────────
         # Копим трафик для ВСЕХ активных пиров, чтобы счётчик пережил ребут сервера.
         # Лимит теперь на ПОДПИСКУ (см. 3b), а не на отдельный пир.

@@ -291,3 +291,136 @@ class TestMovePeer:
             )
 
         assert old.status == PeerStatus.ACTIVE and old.grace_until is None
+
+
+class FakeSSH:
+    """Асинхронный контекст-менеджер вместо SSHClient — соединения нет."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        pass
+
+    async def __aenter__(self) -> "FakeSSH":
+        return self
+
+    async def __aexit__(self, *exc) -> None:
+        return None
+
+
+class FailingSSH(FakeSSH):
+    """Коннект не поднимается — как упавший сервер."""
+
+    async def __aenter__(self):
+        raise SSHError("нет коннекта")
+
+
+def _patch_ssh(monkeypatch, cls=FakeSSH) -> None:
+    monkeypatch.setattr(relocate, "SSHClient", cls)
+    monkeypatch.setattr(relocate.repo, "creds_from_server", lambda s: None)
+
+
+class TestExpireGrace:
+    async def test_peer_alive_until_grace_ends(
+        self, session: AsyncSession, monkeypatch
+    ) -> None:
+        user = await _user(session)
+        srv = await _server(session, name="nl1", location="🇳🇱 Нидерланды")
+        device = await repo.create_device(session, user_id=user.id, label="phone")
+        peer = await _peer(session, server=srv, user=user, device_id=device.id)
+        peer.grace_until = datetime.now(timezone.utc) + timedelta(hours=5)
+        await session.flush()
+
+        _patch_ssh(monkeypatch)
+        removed: list[str] = []
+        monkeypatch.setattr(
+            relocate.amnezia, "remove_peer_on_server",
+            lambda ssh, *, public_key: removed.append(public_key),
+        )
+
+        done = await relocate.expire_grace_peers(session, datetime.now(timezone.utc))
+
+        assert done == [] and removed == []
+        assert peer.status == PeerStatus.ACTIVE
+
+    async def test_revokes_after_grace_and_logs_event(
+        self, session: AsyncSession, monkeypatch
+    ) -> None:
+        user = await _user(session)
+        srv = await _server(session, name="nl1", location="🇳🇱 Нидерланды")
+        device = await repo.create_device(session, user_id=user.id, label="phone")
+        peer = await _peer(session, server=srv, user=user, device_id=device.id)
+        peer.grace_until = datetime.now(timezone.utc) - timedelta(minutes=1)
+        await session.flush()
+
+        _patch_ssh(monkeypatch)
+        removed: list[str] = []
+
+        async def fake_remove(ssh, *, public_key):
+            removed.append(public_key)
+
+        monkeypatch.setattr(relocate.amnezia, "remove_peer_on_server", fake_remove)
+
+        done = await relocate.expire_grace_peers(session, datetime.now(timezone.utc))
+        await session.commit()
+
+        assert [p.id for p in done] == [peer.id]
+        assert removed == [peer.public_key]      # реально сняли с сервера
+        assert peer.status == PeerStatus.REVOKED
+        assert peer.revoked_at is not None       # дальше его подберёт ретеншн
+        # grace_until НЕ обнуляем: по нему ревайв узнаёт переехавший конфиг.
+        assert peer.grace_until is not None
+        rows = list((await session.execute(select(AuditLog))).scalars())
+        assert [r.action for r in rows] == [AuditAction.CONFIG_REVOKED]
+        assert rows[0].actor_tg_id is None       # снял бот, не человек
+
+    async def test_ssh_connect_failure_keeps_row_for_next_tick(
+        self, session: AsyncSession, monkeypatch
+    ) -> None:
+        """В строке пира единственные ключи, которыми его снимают с VPS. Не
+        поднялся коннект — не трогаем: повторим на следующем тике."""
+        user = await _user(session)
+        srv = await _server(session, name="nl1", location="🇳🇱 Нидерланды")
+        device = await repo.create_device(session, user_id=user.id, label="phone")
+        peer = await _peer(session, server=srv, user=user, device_id=device.id)
+        peer.grace_until = datetime.now(timezone.utc) - timedelta(minutes=1)
+        await session.flush()
+
+        _patch_ssh(monkeypatch, FailingSSH)
+
+        done = await relocate.expire_grace_peers(session, datetime.now(timezone.utc))
+
+        assert done == []
+        assert peer.status == PeerStatus.ACTIVE and peer.grace_until is not None
+
+
+class TestReviveSkipsMoved:
+    async def test_moved_peer_not_resurrected(
+        self, session: AsyncSession, monkeypatch
+    ) -> None:
+        """Подписка кончилась во время грейса, юзер продлил. Переехавший конфиг
+        поднимать нельзя: в приложении у юзера уже новый."""
+        from bot.services import revive
+
+        user = await _user(session)
+        srv = await _server(session, name="nl1", location="🇳🇱 Нидерланды")
+        device = await repo.create_device(session, user_id=user.id, label="phone")
+        moved = await _peer(session, server=srv, user=user, device_id=device.id)
+        normal = await _peer(session, server=srv, user=user, device_id=device.id,
+                             ip="10.8.0.3")
+        moved.grace_until = datetime.now(timezone.utc) - timedelta(hours=1)
+        await repo.revoke_device(session, device.id)
+        await session.flush()
+
+        monkeypatch.setattr(revive, "SSHClient", FakeSSH)
+        monkeypatch.setattr(revive.repo, "creds_from_server", lambda s: None)
+
+        async def fake_add(ssh, *, public_key, peer_ip):
+            return None
+
+        monkeypatch.setattr(revive.amnezia, "add_peer_on_server", fake_add)
+
+        res = await revive.revive_devices_for_user(session, user)
+        await session.commit()
+
+        assert res.peers_restored == 1
+        assert normal.status == PeerStatus.ACTIVE
+        assert moved.status == PeerStatus.REVOKED

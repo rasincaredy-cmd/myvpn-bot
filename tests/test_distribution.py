@@ -245,13 +245,17 @@ class TestPeerCapacity:
         free = await _make_server(session, name="nl2", location="🇳🇱 Нидерланды")
         full.max_peers = 1
         await _add_active_peers(session, full, other, 1)  # место занято
+        # Свободный сервер нарочно загружен СИЛЬНЕЕ заполненного: сортировка по
+        # нагрузке поставит первым `full`, и увести выбор на `free` может только
+        # потолок. Без него тест ничего бы не проверял.
+        await _add_active_peers(session, free, other, 3)
         device = await repo.create_device(session, user_id=user.id, label="phone")
 
         calls: list[int] = []
         monkeypatch.setattr(configs, "_create_peer_for_user", _fake_create_peer(calls))
         made = await configs.provision_device_peers(session, user, device)
 
-        # Заполненный сервер не берём, хотя он наименее загруженный он или нет —
+        # Заполненный сервер не берём, даже когда он наименее загруженный:
         # решает потолок, а не сравнение нагрузок.
         assert calls == [free.id]
         assert [srv.id for srv, _ in made] == [free.id]

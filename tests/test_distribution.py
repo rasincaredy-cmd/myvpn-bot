@@ -230,3 +230,72 @@ class TestKnownLocations:
         await _make_server(session, name="d", location=None)
         locs = await repo.list_known_locations(session)
         assert locs == ["🇩🇪 Германия", "🇳🇱 Нидерланды"]
+
+
+class TestPeerCapacity:
+    """Потолок конфигов на сервере (Этап C): Server.max_peers. Зеркало того, что
+    уже проверено для обхода БС в TestWdttCapacity."""
+
+    async def test_full_server_skipped_next_in_location_used(
+        self, session: AsyncSession, monkeypatch
+    ) -> None:
+        user = await _make_user(session)
+        other = await _make_user(session, tg_id=222)
+        full = await _make_server(session, name="nl1", location="🇳🇱 Нидерланды")
+        free = await _make_server(session, name="nl2", location="🇳🇱 Нидерланды")
+        full.max_peers = 1
+        await _add_active_peers(session, full, other, 1)  # место занято
+        device = await repo.create_device(session, user_id=user.id, label="phone")
+
+        calls: list[int] = []
+        monkeypatch.setattr(configs, "_create_peer_for_user", _fake_create_peer(calls))
+        made = await configs.provision_device_peers(session, user, device)
+
+        # Заполненный сервер не берём, хотя он наименее загруженный он или нет —
+        # решает потолок, а не сравнение нагрузок.
+        assert calls == [free.id]
+        assert [srv.id for srv, _ in made] == [free.id]
+
+    async def test_zero_limit_closes_issuance_for_whole_location(
+        self, session: AsyncSession, monkeypatch
+    ) -> None:
+        """max_peers=0 — «сюда больше никого»: локация из выдачи выпадает
+        целиком, а не подсовывает переполненный сервер."""
+        user = await _make_user(session)
+        closed = await _make_server(session, name="nl1", location="🇳🇱 Нидерланды")
+        closed.max_peers = 0
+        device = await repo.create_device(session, user_id=user.id, label="phone")
+
+        calls: list[int] = []
+        monkeypatch.setattr(configs, "_create_peer_for_user", _fake_create_peer(calls))
+        made = await configs.provision_device_peers(session, user, device)
+
+        assert calls == [] and made == []
+
+    async def test_null_limit_is_unlimited(
+        self, session: AsyncSession, monkeypatch
+    ) -> None:
+        """Старые серверы (поле NULL после миграции) продолжают выдавать конфиги."""
+        user = await _make_user(session)
+        other = await _make_user(session, tg_id=333)
+        srv = await _make_server(session, name="nl1", location="🇳🇱 Нидерланды")
+        await _add_active_peers(session, srv, other, 50)
+        device = await repo.create_device(session, user_id=user.id, label="phone")
+
+        calls: list[int] = []
+        monkeypatch.setattr(configs, "_create_peer_for_user", _fake_create_peer(calls))
+        made = await configs.provision_device_peers(session, user, device)
+
+        assert calls == [srv.id] and len(made) == 1
+
+    def test_has_free_wg_slot_counts_only_this_server(self) -> None:
+        """Нагрузка приходит словарём по всем серверам разом — функция обязана
+        смотреть только на свой id, иначе один загруженный сервер закрыл бы все."""
+        class S:  # лёгкая заглушка вместо ORM-объекта
+            pass
+        s = S()
+        s.id, s.max_peers = 7, 2
+
+        assert repo.has_free_wg_slot(s, {7: 1, 8: 99}) is True
+        assert repo.has_free_wg_slot(s, {7: 2}) is False
+        assert repo.has_free_wg_slot(s, {}) is True

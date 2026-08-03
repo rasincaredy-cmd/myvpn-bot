@@ -59,6 +59,20 @@ async def count_active_peers_by_server(session: AsyncSession) -> dict[int, int]:
     return {sid: n for sid, n in rows.all()}
 
 
+def has_free_wg_slot(server: Server, load: dict[int, int]) -> bool:
+    """Есть ли на сервере место под ещё один WG-конфиг (`Server.max_peers`:
+    NULL — безлимит, 0 — выдача закрыта).
+
+    Функция чистая, а нагрузку вызывающий считает одним запросом
+    (`count_active_peers_by_server`): подбор сервера идёт по списку, и запрос
+    на каждый сервер дал бы N+1. Ровно так же устроена ёмкость обхода БС в
+    `handlers/wdtt._wdtt_location_groups`.
+    """
+    if server.max_peers is None:
+        return True
+    return load.get(server.id, 0) < server.max_peers
+
+
 async def count_active_wdtt_by_server(session: AsyncSession) -> dict[int, int]:
     """id сервера → число АКТИВНЫХ wdtt-доступов. Для ёмкости обхода
     (Server.wdtt_max_accesses) и распределения внутри локации."""

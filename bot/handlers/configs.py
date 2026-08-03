@@ -135,7 +135,9 @@ async def provision_device_peers(
     «Распределение»); упавший сервер не хороним локацию — пробуем следующий.
     Существующие пиры не переезжают: конфиг на руках у клиента привязан к серверу.
     Приватные серверы (Блок «Ревизия») обычным юзерам не выдаются — гейт в
-    list_ready_servers(for_user=...). Возвращает [(server, peer), ...]."""
+    list_ready_servers(for_user=...). Заполненные по `Server.max_peers` серверы
+    пропускаются — потолок действует и здесь, иначе его обходил бы кто угодно
+    кнопкой «добавить устройство». Возвращает [(server, peer), ...]."""
     servers = await repo.list_ready_servers(session, for_user=user)
     existing = {
         p.server_id
@@ -148,6 +150,8 @@ async def provision_device_peers(
         if any(s.id in existing for s in group):
             continue  # в этой локации у устройства уже есть конфиг
         for server in sorted(group, key=lambda s: load.get(s.id, 0)):
+            if not repo.has_free_wg_slot(server, load):
+                continue  # сервер упёрся в потолок — юзеру его не предлагаем
             try:
                 peer, _conf = await _create_peer_for_user(
                     session, server, user, device.label,

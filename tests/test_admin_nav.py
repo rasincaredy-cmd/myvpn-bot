@@ -33,3 +33,14 @@ class TestJumpToServerCard:
         )
 
         assert "srv:wopen:15" in _callbacks(kb)
+
+
+class TestServerPeerLimitButton:
+    def test_peers_list_has_limit_button(self) -> None:
+        """Лимит конфигов правится оттуда же, откуда админ смотрит пиры, —
+        как «✏️ Лимит обходов» в списке обходов сервера."""
+        from bot.keyboards.inline import server_peers_admin
+
+        kb = server_peers_admin([], server_id=9)
+
+        assert "srv:plim:9" in _callbacks(kb)

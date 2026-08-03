@@ -202,6 +202,7 @@ def server_peers_admin(
         kb.button(text="← Назад",  callback_data=f"{CB_SERVERS}:peers:{server_id}:{page - 1}")
     if has_next:
         kb.button(text="Вперёд →", callback_data=f"{CB_SERVERS}:peers:{server_id}:{page + 1}")
+    kb.button(text="✏️ Лимит конфигов", callback_data=f"{CB_SERVERS}:plim:{server_id}")
     kb.button(text="« К серверу", callback_data=f"{CB_SERVERS}:open:{server_id}")
     kb.adjust(1)
     return kb.as_markup()

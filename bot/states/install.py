@@ -37,6 +37,7 @@ class ServerEditStates(StatesGroup):
     location = State()
     dns = State()
     wdtt_limit = State()  # ёмкость обхода: Server.wdtt_max_accesses
+    peer_limit = State()  # ёмкость по конфигам: Server.max_peers
     name = State()        # переименование сервера (Блок «Ревизия»)
 
 

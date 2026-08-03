@@ -249,6 +249,18 @@ class Peer(Base):
         Integer, default=0, server_default="0", nullable=False
     )
 
+    # Переезд конфига на другой сервер (Этап C). Бесшовного переезда не бывает:
+    # у нового сервера свой публичный ключ и адрес, файл в приложении юзер
+    # обязан заменить. Поэтому старый пир не гасится сразу, а доживает сутки:
+    # grace_until — момент, когда планировщик снимет его с сервера. Поле
+    # остаётся заполненным и ПОСЛЕ снятия: по нему ревайв узнаёт, что этот
+    # конфиг переехал, и не поднимает его обратно при продлении подписки.
+    grace_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Когда ЭТОТ конфиг появился в результате переезда (у обычных пиров NULL).
+    # На нём держится ограничение «переезжать не чаще раза в сутки»: иначе
+    # серверы дёргали бы каждые пять минут.
+    moved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
     server: Mapped[Server] = relationship(back_populates="peers")
     user: Mapped[User] = relationship(back_populates="peers")
 
@@ -449,6 +461,7 @@ class AuditAction(StrEnum):
     CONFIG_ISSUED = "config_issued"        # выдан конфиг
     CONFIG_REVOKED = "config_revoked"      # конфиг отозван
     CONFIG_REVIVED = "config_revived"      # конфиг ожил после оплаты
+    CONFIG_MOVED = "config_moved"          # конфиг переехал на другой сервер
     SUB_GRANTED = "sub_granted"            # подписка выдана админом
     SUB_REVOKED = "sub_revoked"            # админ отключил подписку
     USER_BLOCKED = "user_blocked"

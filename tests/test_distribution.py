@@ -79,7 +79,8 @@ async def _fake_peer(session, server, user, label, device_id):
 
 def _fake_create_peer(calls: list):
     """Подменяет configs._create_peer_for_user: без SSH, записывает выбранный сервер."""
-    async def fake(session, server, user, label, *, device_id=None, expires_at=None):
+    async def fake(session, server, user, label, *, device_id=None, expires_at=None,
+                   log_issue=True):
         calls.append(server.id)
         return await _fake_peer(session, server, user, label, device_id), f"conf-{server.id}"
     return fake
@@ -154,7 +155,8 @@ class TestProvisionDistribution:
 
         calls: list[int] = []
 
-        async def fake(session_, server, user_, label, *, device_id=None, expires_at=None):
+        async def fake(session_, server, user_, label, *, device_id=None, expires_at=None,
+                       log_issue=True):
             calls.append(server.id)
             if server.id == s1.id:
                 raise SSHError("сервер лёг")

@@ -67,6 +67,7 @@ async def _create_peer_for_user(
     *,
     device_id: int | None = None,
     expires_at: "datetime | None" = None,
+    log_issue: bool = True,
 ) -> tuple[Peer, str]:
     """Создаёт peer на сервере и в БД. Возвращает (peer, conf).
 
@@ -111,14 +112,20 @@ async def _create_peer_for_user(
 
     # Пишем в журнал уже ВНЕ лока: запись в БД не участвует в аллокации IP,
     # держать из-за неё сериализацию сервера незачем.
-    await repo.log_action(
-        session, AuditAction.CONFIG_ISSUED,
-        actor_tg_id=user.tg_id,
-        target_user_id=user.id,
-        target_type="peer",
-        target_id=peer.id,
-        details=f"{label} на сервере «{server.name}»",
-    )
+    #
+    # log_issue=False зовёт переезд (services/relocate): он пишет своё событие
+    # «конфиг переехал». Иначе на один переезд в истории вышли бы две строки —
+    # «выдан конфиг» и «переехал», — и админ, разбирая жалобу, не отличил бы
+    # переезд от выдачи нового устройства.
+    if log_issue:
+        await repo.log_action(
+            session, AuditAction.CONFIG_ISSUED,
+            actor_tg_id=user.tg_id,
+            target_user_id=user.id,
+            target_type="peer",
+            target_id=peer.id,
+            details=f"{label} на сервере «{server.name}»",
+        )
 
     # Сервер только что читали из БД в этой же функции — None тут невозможен,
     # проверка на него была бы мёртвым кодом.

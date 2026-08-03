@@ -28,6 +28,7 @@ _TITLES: dict[str, str] = {
     AuditAction.CONFIG_ISSUED: "📄 Выдан конфиг",
     AuditAction.CONFIG_REVOKED: "🚫 Конфиг отозван",
     AuditAction.CONFIG_REVIVED: "♻️ Конфиг оживлён",
+    AuditAction.CONFIG_MOVED: "🔀 Конфиг переехал",
     AuditAction.SUB_GRANTED: "🎁 Подписка выдана",
     AuditAction.SUB_REVOKED: "⏹ Подписка отключена",
     AuditAction.USER_BLOCKED: "⛔ Юзер заблокирован",

@@ -85,6 +85,41 @@ async def revive_peer(session: AsyncSession, peer_id: int) -> None:
     )
 
 
+async def start_peer_grace(session: AsyncSession, peer_id: int, *, until: datetime) -> None:
+    """Помечает пир «доживает до until» (Этап C).
+
+    Статус НЕ меняем: конфиг обязан работать все эти сутки — юзер мог нажать
+    кнопку из любопытства, и мгновенный обрыв оставил бы его без интернета.
+
+    Присваиваем через ORM, а не bulk-UPDATE'ом: grace_until у только что
+    созданного пира ещё не загружен, и массовый UPDATE оставил бы в объекте
+    вызывающего None. Экран сразу после переезда перерисовывается из этого же
+    объекта (`relocate.visible_peers` смотрит именно на grace_until) — и показал
+    бы уехавший конфиг как живой.
+    """
+    peer = await session.get(Peer, peer_id)
+    if peer is None:
+        return
+    peer.grace_until = until
+    await session.flush()
+
+
+async def list_grace_expired_peers(session: AsyncSession, now: datetime) -> list[Peer]:
+    """Активные пиры, у которых сутки после переезда вышли.
+
+    Сравнение дат остаётся в SQL: SQLite отдаёт naive datetime, и в Python это
+    был бы TypeError (тот же капкан, что описан у `utils.timefmt.as_utc`).
+    """
+    res = await session.execute(
+        select(Peer)
+        .where(Peer.status == PeerStatus.ACTIVE)
+        .where(Peer.grace_until.isnot(None))
+        .where(Peer.grace_until <= now)
+        .order_by(Peer.id)
+    )
+    return list(res.scalars())
+
+
 async def delete_peer(session: AsyncSession, peer_id: int) -> None:
     peer = await session.get(Peer, peer_id)
     if peer is not None:

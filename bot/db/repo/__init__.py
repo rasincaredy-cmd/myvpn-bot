@@ -54,10 +54,12 @@ from bot.db.repo.invites import (
 from bot.db.repo.peers import (
     delete_peer,
     get_peer,
+    list_grace_expired_peers,
     list_peers_for_server,
     list_peers_for_user,
     revive_peer,
     revoke_peer,
+    start_peer_grace,
 )
 from bot.db.repo.servers import (
     create_server,
@@ -144,6 +146,7 @@ __all__ = [
     "list_balance_txs",
     "list_broadcast_targets",
     "list_devices_for_user",
+    "list_grace_expired_peers",
     "list_invites_for_server",
     "list_known_locations",
     "list_open_invoices",
@@ -169,6 +172,7 @@ __all__ = [
     "set_server_status",
     "set_subscription",
     "set_user_blocked",
+    "start_peer_grace",
     "sub_traffic_used",
     "sum_ref_earned",
     "sum_user_traffic",

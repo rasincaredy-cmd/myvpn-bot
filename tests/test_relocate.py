@@ -623,17 +623,31 @@ class TestAdminMoveHandler:
 
         assert [c for c, _ in sent] == [user.tg_id, user.tg_id]
         assert "сменили сервер" in sent[0][1]
+        # Всё дошло — админу не за что извиняться.
+        assert "⚠️" not in call.message.texts[0]
         fresh = await repo.get_peer(session, old.id)
         assert fresh.grace_until is not None      # старый доживает сутки
         new = [p for p in await repo.list_peers_for_device(session, device.id)
                if p.server_id == target.id]
         assert len(new) == 1
+        # В журнале переезд числится за админом, а не за юзером: иначе, разбирая
+        # жалобу «мне никто ничего не менял», админ увидит инициатором самого
+        # жалующегося.
+        row = (await session.execute(
+            select(AuditLog).where(AuditLog.action == AuditAction.CONFIG_MOVED)
+        )).scalars().one()
+        assert row.actor_tg_id == 999 and row.actor_is_admin is True
 
     async def test_blocked_user_does_not_undo_the_move(
         self, session: AsyncSession, monkeypatch
     ) -> None:
         """Юзер заблокировал бота — переезд всё равно состоялся: он уже в БД и
-        на серверах, и откатывать его из-за недоставленного сообщения нельзя."""
+        на серверах, и откатывать его из-за недоставленного сообщения нельзя.
+
+        Но админу об этом говорим прямо: молчаливое «юзеру ушёл конфиг» здесь
+        означало бы, что он уйдёт довольным, а юзер через сутки останется без
+        интернета и придёт в поддержку.
+        """
         from bot.handlers.servers import peers as h
 
         user = await _user(session, tg_id=337)
@@ -651,9 +665,61 @@ class TestAdminMoveHandler:
 
         monkeypatch.setattr(h, "bot", _DeadBot())
 
+        # Заблокировавшему юзеру не уходит и конфиг — на той же блокировке.
+        async def dead_ask(chat_id, session_, peer):
+            raise RuntimeError("bot was blocked by the user")
+
+        import bot.handlers.config_delivery as cd
+        monkeypatch.setattr(cd, "ask_config_format", dead_ask)
+
         call = _FakeCall(f"adm:move:{old.id}", 999)
         await h.cb_admin_peer_move(call, session)
 
         fresh = await repo.get_peer(session, old.id)
         assert fresh.grace_until is not None
-        assert call.message.texts and "переехал" in call.message.texts[0]
+        text = call.message.texts[0]
+        assert "переехал" in text                  # переезд состоялся — однозначно
+        assert "предупредить не вышло" in text     # но юзер об этом не знает
+        assert "Мои устройства" in text            # где он заберёт конфиг сам
+        # Сырой текст исключения админу не показываем.
+        assert "blocked by the user" not in text
+
+    async def test_admin_is_told_when_only_the_config_did_not_reach(
+        self, session: AsyncSession, monkeypatch
+    ) -> None:
+        """Объяснение ушло, а конфиг нет: для админа это не полный отказ, и
+        путать эти два случая нельзя — юзер уже прочитал «ниже спрошу, в каком
+        виде прислать» и ждёт продолжения, которого не будет."""
+        from bot.handlers.servers import peers as h
+
+        user = await _user(session, tg_id=341)
+        home = await _server(session, name="nl1", location="🇳🇱 Нидерланды")
+        await _server(session, name="nl2", location="🇳🇱 Нидерланды")
+        device = await repo.create_device(session, user_id=user.id, label="phone")
+        old = await _peer(session, server=home, user=user, device_id=device.id)
+        await session.commit()
+
+        monkeypatch.setattr(configs, "_create_peer_for_user", _fake_create([]))
+
+        class _Bot:
+            async def send_message(self, *a, **kw):
+                return None
+
+        monkeypatch.setattr(h, "bot", _Bot())
+
+        async def dead_ask(chat_id, session_, peer):
+            raise RuntimeError("upload timeout")
+
+        import bot.handlers.config_delivery as cd
+        monkeypatch.setattr(cd, "ask_config_format", dead_ask)
+
+        call = _FakeCall(f"adm:move:{old.id}", 999)
+        await h.cb_admin_peer_move(call, session)
+
+        text = call.message.texts[0]
+        assert "переехал" in text
+        assert "конфиг не отправился" in text
+        assert "Мои устройства" in text
+        assert "upload timeout" not in text
+        # Это не тот же случай, что «юзер заблокировал бота».
+        assert "предупредить не вышло" not in text

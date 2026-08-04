@@ -253,9 +253,14 @@ async def cb_admin_peer_move(call: CallbackQuery, session: AsyncSession) -> None
     where_to = labels.get(target.id, target.name)
 
     # Уведомление юзеру — best-effort: он мог заблокировать бота, и это не
-    # повод считать переезд несостоявшимся (он уже в БД и на серверах).
+    # повод считать переезд несостоявшимся (он уже в БД и на серверах). Но
+    # админу об этом надо сказать: иначе он разгрузит сервер, увидит пять
+    # бодрых «юзеру ушёл конфиг» и уйдёт, а двое заблокировавших бота через
+    # сутки останутся без интернета и придут в поддержку.
     from bot.handlers.config_delivery import ask_config_format
 
+    told = False   # дошло ли объяснение «мы сменили сервер»
+    gave = False   # дошёл ли сам новый конфиг
     try:
         await bot.send_message(
             owner.tg_id,
@@ -263,9 +268,31 @@ async def cb_admin_peer_move(call: CallbackQuery, session: AsyncSession) -> None
                 label=label, where_from=where_from, where_to=where_to
             ),
         )
+        told = True
+    except Exception as exc:
+        logger.warning("Move notify failed for user {}: {}", owner.id, exc)
+    # Отдельная попытка: сообщение могло уйти, а выбор формата — упасть, и
+    # тогда юзер остался бы на обещании «ниже спрошу, в каком виде прислать».
+    try:
         await ask_config_format(owner.tg_id, session, new_peer)
-    except Exception:
-        logger.warning("Move notify failed for user {}", owner.id)
+        gave = True
+    except Exception as exc:
+        logger.warning("Move config delivery failed for user {}: {}", owner.id, exc)
+
+    if told and gave:
+        delivery = "Юзеру ушёл новый конфиг с пояснением."
+    elif told:
+        delivery = (
+            "⚠️ Юзеру ушло объяснение, а сам конфиг не отправился. "
+            "Он заберёт его сам в «📱 Мои устройства»."
+        )
+    else:
+        delivery = (
+            "⚠️ Юзера предупредить не вышло: бот у него заблокирован или чат "
+            "недоступен. Новый конфиг лежит в «📱 Мои устройства» — он заберёт "
+            "его сам, но о замене файла не знает. Если сможешь, скажи ему "
+            "другим способом."
+        )
 
     from aiogram.utils.keyboard import InlineKeyboardBuilder as IKB
     kb = IKB()
@@ -274,8 +301,8 @@ async def cb_admin_peer_move(call: CallbackQuery, session: AsyncSession) -> None
     kb.adjust(1)
     await call.message.edit_text(
         f"🔀 Конфиг <code>{label}</code> переехал: {where_from} → {where_to}.\n"
-        "Юзеру ушёл новый конфиг с пояснением. Старый работает ещё сутки, "
-        "потом бот снимет его сам.",
+        f"{delivery}\n"
+        "Старый работает ещё сутки, потом бот снимет его сам.",
         reply_markup=kb.as_markup(),
     )
 

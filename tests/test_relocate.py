@@ -424,3 +424,236 @@ class TestReviveSkipsMoved:
         assert res.peers_restored == 1
         assert normal.status == PeerStatus.ACTIVE
         assert moved.status == PeerStatus.REVOKED
+
+
+class _FakeMessage:
+    def __init__(self) -> None:
+        self.texts: list[str] = []
+        self.markups: list[object] = []
+
+    async def edit_text(self, text: str, reply_markup=None, **kw) -> None:
+        self.texts.append(text)
+        self.markups.append(reply_markup)
+
+
+class _FakeCall:
+    def __init__(self, data: str, uid: int) -> None:
+        self.data = data
+        self.from_user = type("_U", (), {"id": uid})()
+        self.message = _FakeMessage()
+        self.answers: list[str] = []
+        self.alerts: list[str] = []
+
+    async def answer(self, text: str = "", show_alert: bool = False) -> None:
+        (self.alerts if show_alert else self.answers).append(text)
+
+
+class _FakeState:
+    """FSM-заглушка: карточка пира чистит состояние на входе."""
+
+    async def clear(self) -> None:
+        return None
+
+
+def _cbs(markup) -> list[str]:
+    return [b.callback_data for row in markup.inline_keyboard for b in row]
+
+
+class TestAdminPeerCardMoveState:
+    """Карточка пира: когда показывать кнопку «Переселить» и надпись о грейсе."""
+
+    async def test_card_offers_move_when_there_is_a_free_neighbour(
+        self, session: AsyncSession
+    ) -> None:
+        from bot.handlers.servers import peers as h
+
+        user = await _user(session, tg_id=338)
+        home = await _server(session, name="nl1", location="🇳🇱 Нидерланды")
+        await _server(session, name="nl2", location="🇳🇱 Нидерланды")
+        device = await repo.create_device(session, user_id=user.id, label="phone")
+        peer = await _peer(session, server=home, user=user, device_id=device.id)
+        await session.flush()
+
+        call = _FakeCall(f"adm:peer:{peer.id}", 999)
+        await h.cb_admin_peer_open(call, session, _FakeState())
+
+        assert f"adm:move:{peer.id}" in _cbs(call.message.markups[0])
+
+    async def test_card_hides_move_when_alone_in_location(
+        self, session: AsyncSession
+    ) -> None:
+        """Соседа нет — кнопки быть не должно: нажатие всё равно ответит
+        «некуда», а админ уже потратил на неё клик."""
+        from bot.handlers.servers import peers as h
+
+        user = await _user(session, tg_id=339)
+        home = await _server(session, name="nl1", location="🇳🇱 Нидерланды")
+        device = await repo.create_device(session, user_id=user.id, label="phone")
+        peer = await _peer(session, server=home, user=user, device_id=device.id)
+        await session.flush()
+
+        call = _FakeCall(f"adm:peer:{peer.id}", 999)
+        await h.cb_admin_peer_open(call, session, _FakeState())
+
+        assert f"adm:move:{peer.id}" not in _cbs(call.message.markups[0])
+
+    async def test_card_explains_why_moved_peer_is_still_alive(
+        self, session: AsyncSession
+    ) -> None:
+        """Переехавший пир жив, но в карточке устройства у юзера его нет —
+        админ должен видеть причину, а не гадать."""
+        from bot.handlers.servers import peers as h
+
+        user = await _user(session, tg_id=340)
+        home = await _server(session, name="nl1", location="🇳🇱 Нидерланды")
+        await _server(session, name="nl2", location="🇳🇱 Нидерланды")
+        device = await repo.create_device(session, user_id=user.id, label="phone")
+        peer = await _peer(session, server=home, user=user, device_id=device.id)
+        peer.grace_until = datetime.now(timezone.utc) + timedelta(hours=5)
+        await session.flush()
+
+        call = _FakeCall(f"adm:peer:{peer.id}", 999)
+        await h.cb_admin_peer_open(call, session, _FakeState())
+
+        assert "Переехал, работает до" in call.message.texts[0]
+        # Второй раз переселять доживающий конфиг нечего — кнопки нет.
+        assert f"adm:move:{peer.id}" not in _cbs(call.message.markups[0])
+
+
+class TestAdminMoveHandler:
+    """Кнопка «Переселить» в карточке пира на сервере."""
+
+    async def test_ssh_failure_keeps_old_peer_and_tells_admin(
+        self, session: AsyncSession, monkeypatch
+    ) -> None:
+        """Целевой сервер не ответил: откат сессии гасит загруженные объекты, и
+        хендлер обязан пережить это, а не упасть на чтении метки пира."""
+        from bot.handlers.servers import peers as h
+
+        user = await _user(session, tg_id=333)
+        home = await _server(session, name="nl1", location="🇳🇱 Нидерланды")
+        await _server(session, name="nl2", location="🇳🇱 Нидерланды")
+        device = await repo.create_device(session, user_id=user.id, label="phone")
+        old = await _peer(session, server=home, user=user, device_id=device.id)
+        await session.commit()
+        # id забираем ДО вызова: хендлер откатит сессию, а откат гасит объект —
+        # `old.id` после него полез бы в БД и уронил уже сам тест.
+        old_id = old.id
+
+        async def boom(*a, **kw):
+            raise SSHError("сервер лёг")
+
+        monkeypatch.setattr(configs, "_create_peer_for_user", boom)
+
+        call = _FakeCall(f"adm:move:{old_id}", 999)
+        await h.cb_admin_peer_move(call, session)
+
+        assert call.message.texts, "админу должно прийти объяснение"
+        assert "не отвечает" in call.message.texts[0]
+        # Сырой текст исключения админу не показываем — он выдаёт host сервера.
+        assert "сервер лёг" not in call.message.texts[0]
+        fresh = await repo.get_peer(session, old_id)
+        assert fresh.status == PeerStatus.ACTIVE and fresh.grace_until is None
+
+    async def test_nowhere_to_go_answers_alert(
+        self, session: AsyncSession, monkeypatch
+    ) -> None:
+        from bot.handlers.servers import peers as h
+
+        user = await _user(session, tg_id=334)
+        home = await _server(session, name="nl1", location="🇳🇱 Нидерланды")
+        device = await repo.create_device(session, user_id=user.id, label="phone")
+        old = await _peer(session, server=home, user=user, device_id=device.id)
+        await session.flush()
+
+        call = _FakeCall(f"adm:move:{old.id}", 999)
+        await h.cb_admin_peer_move(call, session)
+
+        assert call.alerts and "некуда" in call.alerts[0]
+        assert old.grace_until is None
+
+    async def test_already_moved_peer_is_refused(
+        self, session: AsyncSession, monkeypatch
+    ) -> None:
+        """Второй раз переселять доживающий конфиг нельзя: он уже заменён."""
+        from bot.handlers.servers import peers as h
+
+        user = await _user(session, tg_id=335)
+        home = await _server(session, name="nl1", location="🇳🇱 Нидерланды")
+        await _server(session, name="nl2", location="🇳🇱 Нидерланды")
+        device = await repo.create_device(session, user_id=user.id, label="phone")
+        old = await _peer(session, server=home, user=user, device_id=device.id)
+        old.grace_until = datetime.now(timezone.utc) + timedelta(hours=5)
+        await session.flush()
+
+        call = _FakeCall(f"adm:move:{old.id}", 999)
+        await h.cb_admin_peer_move(call, session)
+
+        assert call.alerts and "переехал" in call.alerts[0]
+
+    async def test_moves_and_notifies_user(
+        self, session: AsyncSession, monkeypatch
+    ) -> None:
+        from bot.handlers.servers import peers as h
+
+        user = await _user(session, tg_id=336)
+        home = await _server(session, name="nl1", location="🇳🇱 Нидерланды")
+        target = await _server(session, name="nl2", location="🇳🇱 Нидерланды")
+        device = await repo.create_device(session, user_id=user.id, label="phone")
+        old = await _peer(session, server=home, user=user, device_id=device.id)
+        await session.commit()
+
+        monkeypatch.setattr(configs, "_create_peer_for_user", _fake_create([]))
+        sent: list[tuple[int, str]] = []
+
+        class _Bot:
+            async def send_message(self, chat_id, text, **kw):
+                sent.append((chat_id, text))
+
+        monkeypatch.setattr(h, "bot", _Bot())
+
+        async def fake_ask(chat_id, session_, peer):
+            sent.append((chat_id, "формат"))
+
+        import bot.handlers.config_delivery as cd
+        monkeypatch.setattr(cd, "ask_config_format", fake_ask)
+
+        call = _FakeCall(f"adm:move:{old.id}", 999)
+        await h.cb_admin_peer_move(call, session)
+
+        assert [c for c, _ in sent] == [user.tg_id, user.tg_id]
+        assert "сменили сервер" in sent[0][1]
+        fresh = await repo.get_peer(session, old.id)
+        assert fresh.grace_until is not None      # старый доживает сутки
+        new = [p for p in await repo.list_peers_for_device(session, device.id)
+               if p.server_id == target.id]
+        assert len(new) == 1
+
+    async def test_blocked_user_does_not_undo_the_move(
+        self, session: AsyncSession, monkeypatch
+    ) -> None:
+        """Юзер заблокировал бота — переезд всё равно состоялся: он уже в БД и
+        на серверах, и откатывать его из-за недоставленного сообщения нельзя."""
+        from bot.handlers.servers import peers as h
+
+        user = await _user(session, tg_id=337)
+        home = await _server(session, name="nl1", location="🇳🇱 Нидерланды")
+        await _server(session, name="nl2", location="🇳🇱 Нидерланды")
+        device = await repo.create_device(session, user_id=user.id, label="phone")
+        old = await _peer(session, server=home, user=user, device_id=device.id)
+        await session.commit()
+
+        monkeypatch.setattr(configs, "_create_peer_for_user", _fake_create([]))
+
+        class _DeadBot:
+            async def send_message(self, *a, **kw):
+                raise RuntimeError("bot was blocked by the user")
+
+        monkeypatch.setattr(h, "bot", _DeadBot())
+
+        call = _FakeCall(f"adm:move:{old.id}", 999)
+        await h.cb_admin_peer_move(call, session)
+
+        fresh = await repo.get_peer(session, old.id)
+        assert fresh.grace_until is not None
+        assert call.message.texts and "переехал" in call.message.texts[0]

@@ -44,3 +44,28 @@ class TestServerPeerLimitButton:
         kb = server_peers_admin([], server_id=9)
 
         assert "srv:plim:9" in _callbacks(kb)
+
+
+class TestAdminMoveButton:
+    def test_active_peer_card_has_move(self) -> None:
+        from bot.keyboards.inline import admin_peer_card
+
+        kb = admin_peer_card(peer_id=42, server_id=9, can_revoke=True, can_move=True)
+
+        assert "adm:move:42" in _callbacks(kb)
+
+    def test_no_move_when_nowhere_to_go(self) -> None:
+        """Кнопки нет, когда переселять некуда: живая кнопка, отвечающая
+        «некуда», — это обещание, которого админу не выполнят."""
+        from bot.keyboards.inline import admin_peer_card
+
+        kb = admin_peer_card(peer_id=42, server_id=9, can_revoke=True, can_move=False)
+
+        assert "adm:move:42" not in _callbacks(kb)
+
+    def test_revoked_peer_has_no_move(self) -> None:
+        from bot.keyboards.inline import admin_peer_card
+
+        kb = admin_peer_card(peer_id=42, server_id=9, can_revoke=False, can_move=False)
+
+        assert "adm:move:42" not in _callbacks(kb)

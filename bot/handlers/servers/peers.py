@@ -16,7 +16,8 @@ from bot.keyboards.inline import (
     admin_peer_card,
     server_peers_admin,
 )
-from bot.services import amnezia
+from bot.loader import bot
+from bot.services import amnezia, relocate
 from bot.services.ssh import SSHClient, SSHError
 from bot.states.install import PeerRenameStates, ServerEditStates
 from bot.texts import t
@@ -163,13 +164,121 @@ async def cb_admin_peer_open(
     elif peer.traffic_used_bytes:
         text += f"\n• 📊 Трафик: {amnezia.fmt_bytes(peer.traffic_used_bytes)}"
 
+    if peer.grace_until is not None:
+        # Переехавший конфиг: админ должен понимать, почему пир жив, но его
+        # нет в карточке устройства у юзера.
+        text += (
+            f"\n• 🔀 Переехал, работает до {fmt_msk(peer.grace_until)} МСК"
+        )
+
+    # Кнопку показываем, только если переселять реально есть куда: владелец
+    # нужен потому, что приватные серверы видны не всем, и «свободный сервер»
+    # у каждого юзера свой. Владельца уже достали выше — второй раз не ходим.
+    can_move = False
+    if peer.status == PeerStatus.ACTIVE and peer.grace_until is None and owner is not None:
+        can_move = await relocate.auto_target(session, peer, owner=owner) is not None
+
     await call.message.edit_text(
         text,
         reply_markup=admin_peer_card(
-            peer.id, server.id, can_revoke=peer.status == PeerStatus.ACTIVE
+            peer.id, server.id,
+            can_revoke=peer.status == PeerStatus.ACTIVE,
+            can_move=can_move,
         ),
     )
     await call.answer()
+
+
+@router.callback_query(F.data.startswith(f"{CB_ADMIN}:move:"))
+async def cb_admin_peer_move(call: CallbackQuery, session: AsyncSession) -> None:
+    """Админ отвязывает конфиг от сервера — бот сам подбирает другой.
+
+    Кулдаун «раз в сутки» здесь намеренно не проверяется: он защищает серверы
+    от юзера, который дёргает кнопку, а админ как раз разгружает сервер.
+    """
+    peer_id = int(call.data.rsplit(":", 1)[-1])
+    peer = await repo.get_peer(session, peer_id)
+    if peer is None:
+        await call.answer("Не найдено", show_alert=True)
+        return
+    server = await repo.get_server(session, peer.server_id)
+    if server is None:
+        await call.answer("Нет доступа", show_alert=True)
+        return
+    if peer.status != PeerStatus.ACTIVE or peer.grace_until is not None:
+        await call.answer("Этот конфиг уже отозван или переехал", show_alert=True)
+        return
+    owner = await repo.get_user_by_id(session, peer.user_id)
+    if owner is None:
+        await call.answer("Владелец не найден", show_alert=True)
+        return
+
+    target = await relocate.auto_target(session, peer, owner=owner)
+    if target is None:
+        await call.answer(
+            "Переселять некуда: в этой локации нет другого свободного сервера. "
+            "Подними лимит конфигов на соседнем или добавь сервер.",
+            show_alert=True,
+        )
+        return
+
+    await call.answer("⏳ Переселяю...")
+    # Метку и id забираем ДО переезда: если он упадёт, придётся откатить сессию,
+    # а откат гасит загруженные объекты — обращение к peer.label после него
+    # полезло бы в БД посреди уже закрытой транзакции и уронило хендлер.
+    label, peer_pk, server_pk = peer.label, peer.id, server.id
+    try:
+        new_peer = await relocate.move_peer(
+            session, peer, target, owner=owner,
+            actor_tg_id=call.from_user.id, actor_is_admin=True,
+            reason="отвязал админ",
+        )
+    except SSHError as exc:
+        await session.rollback()
+        # Сырой exc в текст не тащим: он может содержать host:port и ломает
+        # HTML символом «<». Админу хватает факта и лога.
+        logger.warning("Admin peer move failed: {}", exc)
+        await call.message.edit_text(
+            "❌ Не получилось переселить — целевой сервер не отвечает. "
+            "Конфиг остался на прежнем месте и работает.",
+            reply_markup=admin_peer_card(
+                peer_pk, server_pk, can_revoke=True, can_move=True
+            ),
+        )
+        return
+    await session.commit()
+
+    labels = await repo.server_labels_map(session)
+    where_from = labels.get(server_pk, server.name)
+    where_to = labels.get(target.id, target.name)
+
+    # Уведомление юзеру — best-effort: он мог заблокировать бота, и это не
+    # повод считать переезд несостоявшимся (он уже в БД и на серверах).
+    from bot.handlers.config_delivery import ask_config_format
+
+    try:
+        await bot.send_message(
+            owner.tg_id,
+            t.move_by_admin.format(
+                label=label, where_from=where_from, where_to=where_to
+            ),
+        )
+        await ask_config_format(owner.tg_id, session, new_peer)
+    except Exception:
+        logger.warning("Move notify failed for user {}", owner.id)
+
+    from aiogram.utils.keyboard import InlineKeyboardBuilder as IKB
+    kb = IKB()
+    kb.button(text="🔍 К новому пиру", callback_data=f"{CB_ADMIN}:peer:{new_peer.id}")
+    kb.button(text="« К пирам сервера", callback_data=f"{CB_SERVERS}:peers:{server_pk}")
+    kb.adjust(1)
+    await call.message.edit_text(
+        f"🔀 Конфиг <code>{label}</code> переехал: {where_from} → {where_to}.\n"
+        "Юзеру ушёл новый конфиг с пояснением. Старый работает ещё сутки, "
+        "потом бот снимет его сам.",
+        reply_markup=kb.as_markup(),
+    )
+
 
 # --- Переименование пира -----------------------------------------------------
 

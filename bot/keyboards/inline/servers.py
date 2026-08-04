@@ -208,10 +208,17 @@ def server_peers_admin(
     return kb.as_markup()
 
 
-def admin_peer_card(peer_id: int, server_id: int, can_revoke: bool) -> InlineKeyboardMarkup:
+def admin_peer_card(
+    peer_id: int, server_id: int, can_revoke: bool, can_move: bool = False
+) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     if can_revoke:
         kb.button(text="📥 Получить конфиг", callback_data=f"{CB_ADMIN}:conf:{peer_id}")
+        # Переезд (Этап C): бот сам возьмёт свободный сервер этой же локации.
+        # Кнопки нет, когда переселять некуда, — живая кнопка, отвечающая
+        # «некуда», это обещание, которого админу не выполнят.
+        if can_move:
+            kb.button(text="🔀 Переселить", callback_data=f"{CB_ADMIN}:move:{peer_id}")
         kb.button(text="🗑 Отозвать",         callback_data=f"{CB_ADMIN}:revoke:{peer_id}")
     else:
         kb.button(text="♻️ Возобновить",   callback_data=f"{CB_ADMIN}:revive:{peer_id}")

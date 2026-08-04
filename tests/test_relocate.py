@@ -891,6 +891,33 @@ class TestDeviceCardHidesMovedPeer:
 
         assert sent == [live.id]
 
+    async def test_old_button_does_not_send_the_dying_config(
+        self, session: AsyncSession, monkeypatch
+    ) -> None:
+        """Кнопку на локацию карточка уже не рисует, но старое сообщение в чате
+        нажимается — третья точка выдачи, её тоже надо закрыть."""
+        from bot.handlers import devices as devices_h
+
+        user = await _user(session, tg_id=423)
+        srv = await _server(session, name="nl1-423", location="🇳🇱 Нидерланды")
+        device = await repo.create_device(session, user_id=user.id, label="phone")
+        dying = await _peer(session, server=srv, user=user, device_id=device.id)
+        dying.grace_until = datetime.now(timezone.utc) + timedelta(hours=10)
+        await session.flush()
+
+        sent: list[int] = []
+
+        async def fake_ask(chat_id, session_, peer_):
+            sent.append(peer_.id)
+
+        monkeypatch.setattr(devices_h, "ask_config_format", fake_ask)
+
+        call = _FakeCall(f"dev:send1:{dying.id}", user.tg_id)
+        await devices_h.cb_dev_send_one(call, session)
+
+        assert sent == []
+        assert any("заменён новым" in a for a in call.alerts)
+
 
 class TestUserMoveScreens:
     """Юзерские экраны: права, кулдаун и устаревшие списки.

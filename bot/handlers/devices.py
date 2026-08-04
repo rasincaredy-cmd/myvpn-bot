@@ -299,6 +299,15 @@ async def cb_dev_send_one(call: CallbackQuery, session: AsyncSession) -> None:
     if peer.status != PeerStatus.ACTIVE:
         await call.answer("Конфиг отозван", show_alert=True)
         return
+    # Третья точка выдачи (Этап C): кнопки на доживающий конфиг карточка больше
+    # не рисует, но старое сообщение в чате нажимается — и юзер настроил бы в
+    # приложении файл, который через сутки погаснет сам.
+    if peer.grace_until is not None:
+        await call.answer(
+            "Этот конфиг заменён новым — открой карточку устройства.",
+            show_alert=True,
+        )
+        return
     await ask_config_format(call.message.chat.id, session, peer)
     await call.answer()
 

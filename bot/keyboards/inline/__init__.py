@@ -38,6 +38,10 @@ from bot.keyboards.inline.devices import (
     device_card_kb,
     device_created_kb,
     devices_list_kb,
+    move_confirm_kb,
+    move_pick_config_kb,
+    move_pick_location_kb,
+    move_pick_server_kb,
     subscription_kb,
 )
 from bot.keyboards.inline.install import (
@@ -144,6 +148,10 @@ __all__ = [
     "invoice_kb",
     "location_choice_kb",
     "main_menu",
+    "move_confirm_kb",
+    "move_pick_config_kb",
+    "move_pick_location_kb",
+    "move_pick_server_kb",
     "notify_settings_kb",
     "onboarding_hint_kb",
     "pick_location_kb",

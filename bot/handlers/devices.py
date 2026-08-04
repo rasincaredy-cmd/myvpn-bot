@@ -28,7 +28,7 @@ from bot.keyboards.inline import (
     devices_list_kb,
     subscription_kb,
 )
-from bot.services import amnezia
+from bot.services import amnezia, relocate
 from bot.services.ssh import SSHError
 from bot.states.install import DeviceStates
 from bot.texts import t
@@ -242,7 +242,10 @@ async def cb_dev_open(call: CallbackQuery, session: AsyncSession) -> None:
 
     peers = await repo.list_peers_for_device(session, device.id)
     accesses = await repo.list_wdtt_for_device(session, device.id)
-    active_peers = [p for p in peers if p.status == PeerStatus.ACTIVE]
+    # Доживающий после переезда конфиг (Этап C) в списке не показываем: он уже
+    # заменён новым в той же локации, и две строки одной страны читались бы как
+    # удвоение. Работать он при этом продолжает — сутки на замену файла есть.
+    active_peers = relocate.visible_peers(peers)
     lines = [
         f"📱 <b>{device.label}</b>",
         f"• Статус: <b>{t.STATUS_RU.get(device.status, device.status)}</b>",
@@ -270,10 +273,15 @@ async def cb_dev_open(call: CallbackQuery, session: AsyncSession) -> None:
         a.traffic_used_bytes for a in accesses
     )
     lines.append(f"• 📊 Всего трафика: <b>{amnezia.fmt_bytes(dev_total)}</b>")
+    # Кнопка «Сменить сервер» (Этап C): есть что переселять, устройство живо и
+    # подписка не кончилась. Кулдаун здесь не смотрим — он живёт на экранах
+    # переезда: карточка не должна ходить на каждый конфиг за его сроком.
+    can_move = bool(active_peers) and active and _sub_active(user)
     await call.message.edit_text(
         "\n".join(lines),
         reply_markup=device_card_kb(
-            device.id, can_get=active, can_revoke=active, locations=locations
+            device.id, can_get=active, can_revoke=active,
+            locations=locations, can_move=can_move,
         ),
     )
     await call.answer()
@@ -303,8 +311,9 @@ async def cb_dev_send(call: CallbackQuery, session: AsyncSession) -> None:
     if device is None or user is None or device.user_id != user.id:
         await call.answer("Не найдено", show_alert=True)
         return
-    peers = [p for p in await repo.list_peers_for_device(session, device.id)
-             if p.status == PeerStatus.ACTIVE]
+    # Та же фильтрация, что в карточке: «получить все» не должно слать
+    # доживающий после переезда конфиг — в приложении уже нужен новый.
+    peers = relocate.visible_peers(await repo.list_peers_for_device(session, device.id))
     if not peers:
         await call.answer("Нет активных конфигов", show_alert=True)
         return

@@ -430,6 +430,8 @@ class _FakeMessage:
     def __init__(self) -> None:
         self.texts: list[str] = []
         self.markups: list[object] = []
+        # Юзерские экраны шлют конфиг в тот же чат — нужен chat.id.
+        self.chat = type("_C", (), {"id": 555})()
 
     async def edit_text(self, text: str, reply_markup=None, **kw) -> None:
         self.texts.append(text)
@@ -723,3 +725,405 @@ class TestAdminMoveHandler:
         assert "upload timeout" not in text
         # Это не тот же случай, что «юзер заблокировал бота».
         assert "предупредить не вышло" not in text
+
+
+class TestMoveKeyboards:
+    def _cb(self, markup) -> list[str]:
+        return [b.callback_data for row in markup.inline_keyboard for b in row]
+
+    def test_device_card_has_move_button(self) -> None:
+        from bot.keyboards.inline import device_card_kb
+
+        kb = device_card_kb(
+            device_id=7, can_get=True, can_revoke=True,
+            locations=[(42, "🇳🇱 Нидерланды")], can_move=True,
+        )
+
+        assert "dev:move:7" in self._cb(kb)
+
+    def test_device_card_without_move(self) -> None:
+        """Подписка кончилась или переезжать некуда — кнопки нет."""
+        from bot.keyboards.inline import device_card_kb
+
+        kb = device_card_kb(
+            device_id=7, can_get=True, can_revoke=True,
+            locations=[(42, "🇳🇱 Нидерланды")], can_move=False,
+        )
+
+        assert "dev:move:7" not in self._cb(kb)
+
+    def test_pick_config_then_location_then_server_then_confirm(self) -> None:
+        """Четыре экрана связаны в цепочку: каждый ведёт в следующий."""
+        from bot.keyboards.inline import (
+            move_confirm_kb, move_pick_config_kb, move_pick_location_kb,
+            move_pick_server_kb,
+        )
+
+        assert "dev:mvloc:42" in self._cb(
+            move_pick_config_kb([(42, "🇳🇱 Нидерланды")], device_id=7)
+        )
+        assert "dev:mvsrv:42:0" in self._cb(
+            move_pick_location_kb(42, ["🇳🇱 Нидерланды"], device_id=7)
+        )
+        assert "dev:mvok:42:9" in self._cb(
+            move_pick_server_kb(42, [(9, "🇳🇱 Нидерланды 2")], device_id=7)
+        )
+        assert "dev:mvgo:42:9" in self._cb(move_confirm_kb(42, 9, device_id=7))
+
+    def test_every_screen_can_go_back_to_device(self) -> None:
+        """Из любого шага юзер должен уметь выйти в карточку устройства, не
+        доводя переезд до конца."""
+        from bot.keyboards.inline import (
+            move_confirm_kb, move_pick_config_kb, move_pick_location_kb,
+            move_pick_server_kb,
+        )
+
+        for kb in (
+            move_pick_config_kb([(42, "🇳🇱 Нидерланды")], device_id=7),
+            move_pick_location_kb(42, ["🇳🇱 Нидерланды"], device_id=7),
+            move_pick_server_kb(42, [(9, "🇳🇱 Нидерланды 2")], device_id=7),
+            move_confirm_kb(42, 9, device_id=7),
+        ):
+            assert "dev:open:7" in self._cb(kb)
+
+
+class TestDeviceCardHidesMovedPeer:
+    async def test_card_shows_only_live_configs(self, session: AsyncSession) -> None:
+        """Карточка устройства строится через relocate.visible_peers: старый
+        конфиг сутки работает, но в списке его быть не должно."""
+        user = await _user(session)
+        srv = await _server(session, name="nl1", location="🇳🇱 Нидерланды")
+        device = await repo.create_device(session, user_id=user.id, label="phone")
+        dying = await _peer(session, server=srv, user=user, device_id=device.id)
+        dying.grace_until = datetime.now(timezone.utc) + timedelta(hours=10)
+        live = await _peer(session, server=srv, user=user, device_id=device.id,
+                           ip="10.8.0.7")
+        await session.flush()
+
+        peers = await repo.list_peers_for_device(session, device.id)
+
+        assert [p.id for p in relocate.visible_peers(peers)] == [live.id]
+
+    async def test_real_card_handler_hides_dying_peer_and_offers_move(
+        self, session: AsyncSession, monkeypatch
+    ) -> None:
+        """Проверка не самой visible_peers, а того, что карточка её зовёт: без
+        этого фильтр остаётся правильной функцией, которой никто не пользуется,
+        и юзер видит две строки одной страны."""
+        from bot.handlers import devices as devices_h
+
+        user = await _user(session, tg_id=420)
+        srv = await _server(session, name="nl1-420", location="🇳🇱 Нидерланды")
+        device = await repo.create_device(session, user_id=user.id, label="phone")
+        dying = await _peer(session, server=srv, user=user, device_id=device.id)
+        dying.grace_until = datetime.now(timezone.utc) + timedelta(hours=10)
+        live = await _peer(session, server=srv, user=user, device_id=device.id,
+                           ip="10.8.0.7")
+        await session.flush()
+
+        async def no_provision(*a, **kw):
+            return []
+
+        monkeypatch.setattr(devices_h, "provision_device_peers", no_provision)
+
+        call = _FakeCall(f"dev:open:{device.id}", user.tg_id)
+        await devices_h.cb_dev_open(call, session)
+
+        cbs = _cbs(call.message.markups[0])
+        # Кнопка «получить» есть только на живой конфиг, доживающего в списке нет.
+        assert f"dev:send1:{dying.id}" not in cbs
+        # Одна локация → кнопка «получить конфиг» общая, без строки на пир.
+        assert f"dev:send:{device.id}" in cbs
+        # Строка расхода в тексте тоже одна: два конфига одной страны читались
+        # бы как удвоение.
+        assert call.message.texts[0].count("🇳🇱 Нидерланды") == 1
+        assert f"dev:move:{device.id}" in cbs
+        assert live.id  # живой пир существует — фильтр отбросил именно старый
+
+    async def test_card_has_no_move_button_without_subscription(
+        self, session: AsyncSession, monkeypatch
+    ) -> None:
+        """Подписка кончилась — переселять нечего: карточка кнопку не рисует."""
+        from bot.handlers import devices as devices_h
+
+        user = await _user(session, tg_id=421)
+        srv = await _server(session, name="nl1-421", location="🇳🇱 Нидерланды")
+        device = await repo.create_device(session, user_id=user.id, label="phone")
+        await _peer(session, server=srv, user=user, device_id=device.id)
+        user.sub_expires_at = datetime.now(timezone.utc) - timedelta(days=1)
+        await session.flush()
+
+        async def no_provision(*a, **kw):
+            return []
+
+        monkeypatch.setattr(devices_h, "provision_device_peers", no_provision)
+
+        call = _FakeCall(f"dev:open:{device.id}", user.tg_id)
+        await devices_h.cb_dev_open(call, session)
+
+        assert f"dev:move:{device.id}" not in _cbs(call.message.markups[0])
+
+    async def test_get_all_does_not_send_the_dying_config(
+        self, session: AsyncSession, monkeypatch
+    ) -> None:
+        """«Получить все» на доживающем конфиге отправило бы юзера настраивать
+        файл, который через сутки отключится сам."""
+        from bot.handlers import devices as devices_h
+
+        user = await _user(session, tg_id=422)
+        srv = await _server(session, name="nl1-422", location="🇳🇱 Нидерланды")
+        device = await repo.create_device(session, user_id=user.id, label="phone")
+        dying = await _peer(session, server=srv, user=user, device_id=device.id)
+        dying.grace_until = datetime.now(timezone.utc) + timedelta(hours=10)
+        live = await _peer(session, server=srv, user=user, device_id=device.id,
+                           ip="10.8.0.7")
+        await session.flush()
+
+        sent: list[int] = []
+
+        async def fake_ask(chat_id, session_, peer_):
+            sent.append(peer_.id)
+
+        monkeypatch.setattr(devices_h, "ask_config_format", fake_ask)
+
+        call = _FakeCall(f"dev:send:{device.id}", user.tg_id)
+        await devices_h.cb_dev_send(call, session)
+
+        assert sent == [live.id]
+
+
+class TestUserMoveScreens:
+    """Юзерские экраны: права, кулдаун и устаревшие списки.
+
+    Ровно те места, где ошибка не видна глазом: id в callback_data
+    подделывается, а между экранами проходит время.
+    """
+
+    async def _setup(self, session: AsyncSession, *, tg_id: int, neighbours: int = 1):
+        user = await _user(session, tg_id=tg_id)
+        home = await _server(session, name=f"nl1-{tg_id}", location="🇳🇱 Нидерланды")
+        for i in range(neighbours):
+            await _server(session, name=f"nl{i + 2}-{tg_id}", location="🇳🇱 Нидерланды")
+        device = await repo.create_device(session, user_id=user.id, label="phone")
+        peer = await _peer(session, server=home, user=user, device_id=device.id)
+        await session.flush()
+        return user, device, peer
+
+    async def test_locations_screen_lists_countries(self, session: AsyncSession) -> None:
+        from bot.handlers import config_move as h
+
+        user, device, peer = await self._setup(session, tg_id=401)
+
+        call = _FakeCall(f"dev:move:{device.id}", user.tg_id)
+        await h.cb_move_start(call, session)
+
+        # Конфиг один — экран выбора конфига пропущен, сразу страны.
+        assert f"dev:mvsrv:{peer.id}:0" in _cbs(call.message.markups[0])
+
+    async def test_foreign_peer_answers_exactly_like_missing_one(
+        self, session: AsyncSession
+    ) -> None:
+        """Ответ на чужой id обязан совпадать с ответом на несуществующий —
+        иначе чужие конфиги перебираются подбором."""
+        from bot.handlers import config_move as h
+
+        owner, _device, peer = await self._setup(session, tg_id=402)
+        await _user(session, tg_id=403)
+
+        stranger = _FakeCall(f"dev:mvloc:{peer.id}", 403)
+        await h.cb_move_locations(stranger, session)
+        ghost = _FakeCall("dev:mvloc:999999", 403)
+        await h.cb_move_locations(ghost, session)
+
+        assert stranger.alerts == ghost.alerts != []
+
+    async def test_cooldown_blocks_entering_the_flow(self, session: AsyncSession) -> None:
+        """Кулдаун живёт только здесь: relocate.move_peer его не знает."""
+        from bot.handlers import config_move as h
+
+        user, device, peer = await self._setup(session, tg_id=404)
+        peer.moved_at = datetime.now(timezone.utc) - timedelta(hours=2)
+        await session.flush()
+
+        call = _FakeCall(f"dev:move:{device.id}", user.tg_id)
+        await h.cb_move_start(call, session)
+
+        assert call.alerts and "раз в сутки" not in call.alerts[0]
+        assert "переезжал недавно" in call.alerts[0]
+        assert not call.message.markups
+
+    async def test_cooldown_checked_again_right_before_the_move(
+        self, session: AsyncSession, monkeypatch
+    ) -> None:
+        """Между подтверждением и нажатием проходит время: кулдаун мог начаться
+        в другом окне бота."""
+        from bot.handlers import config_move as h
+
+        user, _device, peer = await self._setup(session, tg_id=405)
+        target = (await repo.list_ready_servers(session, for_user=user))[-1]
+        peer.moved_at = datetime.now(timezone.utc) - timedelta(minutes=30)
+        await session.flush()
+
+        calls: list[tuple[int, bool]] = []
+        monkeypatch.setattr(configs, "_create_peer_for_user", _fake_create(calls))
+
+        call = _FakeCall(f"dev:mvgo:{peer.id}:{target.id}", user.tg_id)
+        await h.cb_move_go(call, session)
+
+        assert calls == []                      # переезда не было
+        assert peer.grace_until is None
+        assert call.alerts and "переезжал недавно" in call.alerts[0]
+
+    async def test_nowhere_to_go(self, session: AsyncSession) -> None:
+        from bot.handlers import config_move as h
+
+        user, device, _peer_ = await self._setup(session, tg_id=406, neighbours=0)
+
+        call = _FakeCall(f"dev:move:{device.id}", user.tg_id)
+        await h.cb_move_start(call, session)
+
+        assert call.alerts and "некуда" in call.alerts[0]
+
+    async def test_stale_location_index_is_refused(self, session: AsyncSession) -> None:
+        """Пока юзер думал, локация могла исчезнуть — индекс уехал бы в чужую."""
+        from bot.handlers import config_move as h
+
+        user, _device, peer = await self._setup(session, tg_id=407)
+
+        call = _FakeCall(f"dev:mvsrv:{peer.id}:9", user.tg_id)
+        await h.cb_move_servers(call, session)
+
+        assert call.alerts and "начни заново" in call.alerts[0]
+
+    async def test_confirm_warns_about_replacing_the_file(
+        self, session: AsyncSession
+    ) -> None:
+        """Про замену файла в приложении юзер узнаёт ДО переезда."""
+        from bot.handlers import config_move as h
+
+        user, _device, peer = await self._setup(session, tg_id=408)
+        target = (await repo.list_ready_servers(session, for_user=user))[-1]
+
+        call = _FakeCall(f"dev:mvok:{peer.id}:{target.id}", user.tg_id)
+        await h.cb_move_confirm(call, session)
+
+        assert "придётся заменить" in call.message.texts[0]
+        assert f"dev:mvgo:{peer.id}:{target.id}" in _cbs(call.message.markups[0])
+
+    async def test_taken_slot_between_screens_is_refused(
+        self, session: AsyncSession
+    ) -> None:
+        """Место на выбранном сервере заняли, пока юзер читал подтверждение."""
+        from bot.handlers import config_move as h
+
+        user, _device, peer = await self._setup(session, tg_id=409)
+        target = (await repo.list_ready_servers(session, for_user=user))[-1]
+        target.max_peers = 0          # админ закрыл выдачу
+        await session.flush()
+
+        call = _FakeCall(f"dev:mvgo:{peer.id}:{target.id}", user.tg_id)
+        await h.cb_move_go(call, session)
+
+        assert call.alerts and "заняли" in call.alerts[0]
+        assert peer.grace_until is None
+
+    async def test_expired_subscription_cannot_move(self, session: AsyncSession) -> None:
+        from bot.handlers import config_move as h
+
+        user, _device, peer = await self._setup(session, tg_id=410)
+        user.sub_expires_at = datetime.now(timezone.utc) - timedelta(days=1)
+        await session.flush()
+
+        call = _FakeCall(f"dev:mvloc:{peer.id}", user.tg_id)
+        await h.cb_move_locations(call, session)
+
+        assert call.alerts and "Подписка закончилась" in call.alerts[0]
+
+    async def test_expired_subscription_cannot_even_start(
+        self, session: AsyncSession
+    ) -> None:
+        """Первый экран идёт не через _own_peer — свою проверку подписки он
+        обязан иметь. Кнопки в карточке при истёкшей подписке нет, но
+        callback_data остаётся в старом сообщении и нажимается повторно."""
+        from bot.handlers import config_move as h
+
+        user, device, _peer_ = await self._setup(session, tg_id=414)
+        user.sub_expires_at = datetime.now(timezone.utc) - timedelta(days=1)
+        await session.flush()
+
+        call = _FakeCall(f"dev:move:{device.id}", user.tg_id)
+        await h.cb_move_start(call, session)
+
+        assert call.alerts and "Подписка закончилась" in call.alerts[0]
+        assert not call.message.markups
+
+    async def test_peer_already_in_grace_cannot_move_again(
+        self, session: AsyncSession
+    ) -> None:
+        from bot.handlers import config_move as h
+
+        user, _device, peer = await self._setup(session, tg_id=411)
+        peer.grace_until = datetime.now(timezone.utc) + timedelta(hours=5)
+        await session.flush()
+
+        call = _FakeCall(f"dev:mvloc:{peer.id}", user.tg_id)
+        await h.cb_move_locations(call, session)
+
+        assert call.alerts and "нельзя переселить" in call.alerts[0]
+
+    async def test_successful_move_sends_new_config(
+        self, session: AsyncSession, monkeypatch
+    ) -> None:
+        from bot.handlers import config_move as h
+
+        user, device, peer = await self._setup(session, tg_id=412)
+        target = (await repo.list_ready_servers(session, for_user=user))[-1]
+        await session.commit()
+
+        monkeypatch.setattr(configs, "_create_peer_for_user", _fake_create([]))
+        asked: list[int] = []
+
+        async def fake_ask(chat_id, session_, peer_):
+            asked.append(peer_.id)
+
+        monkeypatch.setattr(h, "ask_config_format", fake_ask)
+
+        call = _FakeCall(f"dev:mvgo:{peer.id}:{target.id}", user.tg_id)
+        await h.cb_move_go(call, session)
+
+        assert "Готово" in call.message.texts[0]
+        fresh = await repo.get_peer(session, peer.id)
+        assert fresh.grace_until is not None          # старый доживает сутки
+        new = [p for p in await repo.list_peers_for_device(session, device.id)
+               if p.server_id == target.id]
+        assert len(new) == 1 and asked == [new[0].id]
+        row = (await session.execute(
+            select(AuditLog).where(AuditLog.action == AuditAction.CONFIG_MOVED)
+        )).scalars().one()
+        assert row.actor_tg_id == user.tg_id and row.actor_is_admin is False
+
+    async def test_ssh_failure_leaves_peer_and_explains(
+        self, session: AsyncSession, monkeypatch
+    ) -> None:
+        """Откат сессии гасит загруженные объекты — хендлер обязан пережить это,
+        а не упасть на чтении метки пира (MissingGreenlet)."""
+        from bot.handlers import config_move as h
+
+        user, _device, peer = await self._setup(session, tg_id=413)
+        target = (await repo.list_ready_servers(session, for_user=user))[-1]
+        await session.commit()
+        peer_id, target_id = peer.id, target.id
+
+        async def boom(*a, **kw):
+            raise SSHError("сервер лёг")
+
+        monkeypatch.setattr(configs, "_create_peer_for_user", boom)
+
+        call = _FakeCall(f"dev:mvgo:{peer_id}:{target_id}", user.tg_id)
+        await h.cb_move_go(call, session)
+
+        assert call.message.texts and "не ответил" in call.message.texts[0]
+        # Сырой текст исключения юзеру не показываем — он выдаёт host сервера.
+        assert "сервер лёг" not in call.message.texts[0]
+        fresh = await repo.get_peer(session, peer_id)
+        assert fresh.status == PeerStatus.ACTIVE and fresh.grace_until is None

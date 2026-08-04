@@ -50,6 +50,7 @@ def device_card_kb(
     can_get: bool,
     can_revoke: bool,
     locations: list[tuple[int, str]] | None = None,  # (peer_id, loc_label)
+    can_move: bool = False,
 ) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     if can_get:
@@ -61,12 +62,63 @@ def device_card_kb(
             kb.button(text="📥 Получить все", callback_data=f"{CB_DEVICE}:send:{device_id}")
         else:
             kb.button(text="📥 Получить конфиг", callback_data=f"{CB_DEVICE}:send:{device_id}")
+    # Смена сервера (Этап C). Кнопки нет, когда переезжать некуда: живая
+    # кнопка, отвечающая «некуда», хуже отсутствующей.
+    if can_move:
+        kb.button(text="🔀 Сменить сервер", callback_data=f"{CB_DEVICE}:move:{device_id}")
     # Переименование — только метка в БД, конфиги не трогает (Блок «Ревизия»).
     kb.button(text="✏️ Переименовать", callback_data=f"{CB_DEVICE}:ren:{device_id}")
     # Удаление доступно всегда: активное устройство удаляется (с отзывом), а
     # неактивное (истекшее) — убирается из списка, чтобы не висело мусором.
     kb.button(text="🗑 Удалить устройство", callback_data=f"{CB_DEVICE}:revoke:{device_id}")
     kb.button(text="« К устройствам", callback_data=f"{CB_DEVICE}:list")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def move_pick_config_kb(
+    rows: list[tuple[int, str]], device_id: int  # (peer_id, loc_label)
+) -> InlineKeyboardMarkup:
+    """Какой из конфигов устройства переселяем. Показывается только когда их
+    больше одного — с единственным конфигом лишний экран это лишний тап."""
+    kb = InlineKeyboardBuilder()
+    for peer_id, loc in rows:
+        kb.button(text=f"🔀 {loc}", callback_data=f"{CB_DEVICE}:mvloc:{peer_id}")
+    kb.button(text="« К устройству", callback_data=f"{CB_DEVICE}:open:{device_id}")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def move_pick_location_kb(
+    peer_id: int, names: list[str], device_id: int
+) -> InlineKeyboardMarkup:
+    """Локации кнопками ПО ИНДЕКСУ: юникод-название с флагом («🇳🇱 Нидерланды»)
+    в 64 байта callback_data не всегда влезает — тот же приём, что в
+    pick_location_kb. Индекс — позиция в отсортированном списке ключей, и
+    хендлер пересобирает список тем же способом."""
+    kb = InlineKeyboardBuilder()
+    for i, name in enumerate(names):
+        kb.button(text=name, callback_data=f"{CB_DEVICE}:mvsrv:{peer_id}:{i}")
+    kb.button(text="« К устройству", callback_data=f"{CB_DEVICE}:open:{device_id}")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def move_pick_server_kb(
+    peer_id: int, rows: list[tuple[int, str]], device_id: int  # (server_id, label)
+) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    for server_id, label in rows:
+        kb.button(text=f"🖥 {label}", callback_data=f"{CB_DEVICE}:mvok:{peer_id}:{server_id}")
+    kb.button(text="« К устройству", callback_data=f"{CB_DEVICE}:open:{device_id}")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def move_confirm_kb(peer_id: int, server_id: int, device_id: int) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✅ Да, переехать", callback_data=f"{CB_DEVICE}:mvgo:{peer_id}:{server_id}")
+    kb.button(text="« К устройству", callback_data=f"{CB_DEVICE}:open:{device_id}")
     kb.adjust(1)
     return kb.as_markup()
 

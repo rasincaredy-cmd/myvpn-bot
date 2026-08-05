@@ -166,10 +166,13 @@ async def cb_admin_peer_open(
 
     if peer.grace_until is not None:
         # Переехавший конфиг: админ должен понимать, почему пир жив, но его
-        # нет в карточке устройства у юзера.
-        text += (
-            f"\n• 🔀 Переехал, работает до {fmt_msk(peer.grace_until)} МСК"
-        )
+        # нет в карточке устройства у юзера. После снятия по концу грейса строка
+        # обязана менять время: «работает до» на отозванном пире читалось бы
+        # как обещание, которого уже нет.
+        if peer.status == PeerStatus.ACTIVE:
+            text += f"\n• 🔀 Переехал, работает до {fmt_msk(peer.grace_until)} МСК"
+        else:
+            text += f"\n• 🔀 Переехал, снят {fmt_msk(peer.grace_until)} МСК"
 
     # Кнопку показываем, только если переселять реально есть куда: владелец
     # нужен потому, что приватные серверы видны не всем, и «свободный сервер»
@@ -418,6 +421,17 @@ async def cb_admin_peer_revive(call: CallbackQuery, session: AsyncSession) -> No
     server = await repo.get_server(session, peer.server_id)
     if server is None:
         await call.answer("Нет доступа", show_alert=True)
+        return
+
+    # Переехавший конфиг оживлять нечего: у юзера в приложении уже новый файл,
+    # а этот пир секция 2d планировщика снимет обратно ближайшим тиком — админ
+    # увидел бы «возобновлён», а через пять минут снова «отозван».
+    if peer.grace_until is not None:
+        await call.answer(
+            "Этот конфиг переехал на другой сервер — возобновлять нечего, "
+            "у юзера уже работает новый.",
+            show_alert=True,
+        )
         return
 
     await call.answer("⏳ Возобновляю...")

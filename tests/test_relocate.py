@@ -521,6 +521,68 @@ class TestAdminPeerCardMoveState:
         # Второй раз переселять доживающий конфиг нечего — кнопки нет.
         assert f"adm:move:{peer.id}" not in _cbs(call.message.markups[0])
 
+    async def test_card_does_not_promise_work_after_grace_ended(
+        self, session: AsyncSession
+    ) -> None:
+        """Грейс кончился, пир снят — «работает до» стало бы обещанием,
+        которого уже нет: конфиг мёртв, а строка звала бы админа не туда."""
+        from bot.handlers.servers import peers as h
+
+        user = await _user(session, tg_id=341)
+        home = await _server(session, name="nl1", location="🇳🇱 Нидерланды")
+        device = await repo.create_device(session, user_id=user.id, label="phone")
+        peer = await _peer(session, server=home, user=user, device_id=device.id)
+        peer.grace_until = datetime.now(timezone.utc) - timedelta(hours=1)
+        peer.status = PeerStatus.REVOKED
+        await session.flush()
+
+        call = _FakeCall(f"adm:peer:{peer.id}", 999)
+        await h.cb_admin_peer_open(call, session, _FakeState())
+
+        assert "работает до" not in call.message.texts[0]
+        assert "Переехал, снят" in call.message.texts[0]
+
+    async def test_revive_refuses_moved_peer(
+        self, session: AsyncSession, monkeypatch
+    ) -> None:
+        """«Возобновить» на переехавшем конфиге: у юзера в приложении уже новый
+        файл, а этот пир секция 2d снимет обратно ближайшим тиком — админ увидел
+        бы «возобновлён», а через пять минут снова «отозван». И на сервер за этим
+        ходить незачем."""
+        from bot.handlers.servers import peers as h
+
+        user = await _user(session, tg_id=342)
+        home = await _server(session, name="nl1", location="🇳🇱 Нидерланды")
+        device = await repo.create_device(session, user_id=user.id, label="phone")
+        peer = await _peer(session, server=home, user=user, device_id=device.id)
+        peer.grace_until = datetime.now(timezone.utc) - timedelta(hours=1)
+        peer.status = PeerStatus.REVOKED
+        await session.flush()
+        peer_id = peer.id
+
+        went_to_server = False
+
+        class _Boom:
+            def __init__(self, *a, **kw) -> None:
+                nonlocal went_to_server
+                went_to_server = True
+
+            async def __aenter__(self):
+                raise AssertionError("на сервер ходить не должны")
+
+            async def __aexit__(self, *a):
+                return False
+
+        monkeypatch.setattr(h, "SSHClient", _Boom)
+
+        call = _FakeCall(f"adm:revive:{peer_id}", 999)
+        await h.cb_admin_peer_revive(call, session)
+
+        assert went_to_server is False
+        assert any("переехал" in a.lower() for a in call.alerts)
+        refreshed = await repo.get_peer(session, peer_id)
+        assert refreshed.status == PeerStatus.REVOKED
+
 
 class TestAdminMoveHandler:
     """Кнопка «Переселить» в карточке пира на сервере."""

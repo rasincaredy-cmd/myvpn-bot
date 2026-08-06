@@ -58,14 +58,24 @@ def _docstring_nodes(tree: ast.AST) -> set[int]:
 
 
 def _has_suppression_marker(source: str, node: ast.Constant) -> bool:
-    """Проверяет, есть ли маркер `# wording: ok` в диапазоне узла."""
+    """Проверяет маркер `# wording: ok` только на последней строке узла.
+
+    Маркер действует точечно: для однострочных литералов это строка литерала,
+    для многострочных склеек нужно явно указать маркер на последней строке.
+    Это предотвращает случайное подавление соседних блоков текста.
+
+    Ограничение: маркер внутри строкового литерала (например, в raw-string)
+    может быть ошибочно принят как подавление. Избегайте комментариев
+    типа `# wording: ok` внутри строк. Два литерала на одной строке оба
+    подавляются одним маркером — это известное ограничение.
+    """
     if node.end_lineno is None:
         return False
     lines = source.split('\n')
-    for line_idx in range(node.lineno - 1, min(node.end_lineno, len(lines))):
-        if '# wording: ok' in lines[line_idx]:
-            return True
-    return False
+    if node.end_lineno > len(lines):
+        return False
+    last_line = lines[node.end_lineno - 1]
+    return '# wording: ok' in last_line
 
 
 def _files_by_glob() -> dict[str, list[Path]]:
@@ -131,23 +141,66 @@ def test_scanner_sees_files() -> None:
     )
 
 
-def test_suppression_marker_works() -> None:
-    """Проверяем, что маркер `# wording: ok` подавляет ошибки."""
-    # Создаём временный файл с запрещённым словом и маркером подавления
-    test_code = '''
-message = "Обход БС"  # wording: ok
+def test_suppression_marker_detects_marker() -> None:
+    """Тест: маркер `# wording: ok` на строке находится."""
+    code_with_marker = 'message = "Обход БС"  # wording: ok\n'
+    tree = ast.parse(code_with_marker)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if node.value == "Обход БС":
+                assert _has_suppression_marker(code_with_marker, node), (
+                    "Маркер должен быть найден на строке с литералом"
+                )
+
+
+def test_suppression_marker_missing_without_marker() -> None:
+    """Тест: без маркера литерал не подавляется."""
+    code_without_marker = 'message = "Обход БС"\n'
+    tree = ast.parse(code_without_marker)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            if node.value == "Обход БС":
+                assert not _has_suppression_marker(code_without_marker, node), (
+                    "Маркер не должен быть найден на строке без маркера"
+                )
+
+
+def test_suppression_marker_on_multiline_string() -> None:
+    """Тест: маркер на последней строке многострочного литерала подавляет его."""
+    # При неявной конкатенации маркер должен быть на линии, где end_lineno
+    code = '''x = ("text "
+     "text")  # wording: ok
 '''
-    tree = ast.parse(test_code)
+    tree = ast.parse(code)
+    nodes = [n for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, str)]
+    assert len(nodes) == 1
+    assert _has_suppression_marker(code, nodes[0]), (
+        "Маркер на последней строке многострочного литерала должен подавлять"
+    )
+
+
+def test_wording_guard_finds_violations() -> None:
+    """Тест: страж вообще способен обнаруживать стоп-слова без маркера."""
+    code_with_violation = 'message = "Обход БС"\n'
+    tree = ast.parse(code_with_violation)
     skip = _docstring_nodes(tree)
 
-    # Проверяем, что маркер работает
+    found_violation = False
     for node in ast.walk(tree):
         if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
             continue
         if id(node) in skip:
             continue
-        if FORBIDDEN.search(node.value):
-            # Если найдено стоп-слово, проверяем маркер
-            assert _has_suppression_marker(test_code, node), (
-                "Маркер подавления не сработал для строки с запрещённым текстом"
-            )
+        if _has_suppression_marker(code_with_violation, node):
+            continue
+        match = FORBIDDEN.search(node.value)
+        if match:
+            found_violation = True
+            break
+
+    assert found_violation, (
+        "Страж должен обнаружить стоп-слово в коде без маркера подавления. "
+        "Если тест не прошёл, механизм подавления сломан."
+    )

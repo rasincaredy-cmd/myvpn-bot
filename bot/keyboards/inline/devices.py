@@ -143,10 +143,10 @@ def subscription_kb(
 
 
 def device_created_kb() -> InlineKeyboardMarkup:
-    """После создания устройства: текст t.device_created отсылает к «🛡 Обход БС» —
-    даём кнопку прямо здесь, а не заставляем идти через меню."""
+    """После создания устройства: даём кнопку в резервное подключение прямо
+    здесь, а не заставляем идти через меню."""
     kb = InlineKeyboardBuilder()
-    kb.button(text="🛡 Обход БС", callback_data=f"{CB_WDTT}:my")
+    kb.button(text="⚡ Резервное подключение", callback_data=f"{CB_WDTT}:my")
     kb.button(text="📱 Мои устройства", callback_data=f"{CB_DEVICE}:list")
     kb.button(text="« В меню", callback_data=f"{CB_MENU}:open")
     kb.adjust(1)

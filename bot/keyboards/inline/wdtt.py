@@ -1,4 +1,4 @@
-"""Обход белых списков (wdtt): выбор VK-ссылки, платформы, список и карточка."""
+"""Резервное подключение (wdtt): выбор VK-ссылки, платформы, список и карточка."""
 from __future__ import annotations
 
 from aiogram.types import InlineKeyboardMarkup
@@ -10,7 +10,7 @@ from bot.keyboards.inline.prefixes import CB_CANCEL, CB_MENU, CB_WDTT
 def wdtt_vk_choice_kb() -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="⚡ Рекомендуемый вариант", callback_data=f"{CB_WDTT}:vk:svc")
-    kb.button(text="🔗 Своя ссылка на звонок VK", callback_data=f"{CB_WDTT}:vk:own")
+    kb.button(text="🔗 Свой адрес", callback_data=f"{CB_WDTT}:vk:own")
     kb.button(text="✖️ Отмена", callback_data=CB_CANCEL)
     kb.adjust(1)
     return kb.as_markup()
@@ -40,7 +40,7 @@ def wdtt_user_list_kb(
             callback_data=f"{CB_WDTT}:myopen:{access_id}",
         )
     if can_create:
-        kb.button(text="➕ Добавить обход", callback_data=f"{CB_WDTT}:new")
+        kb.button(text="➕ Добавить", callback_data=f"{CB_WDTT}:new")
     if has_prev:
         kb.button(text="← Назад",  callback_data=f"{CB_WDTT}:my:{page - 1}")
     if has_next:
@@ -71,10 +71,10 @@ def wdtt_pick_device_kb(devices: list[tuple[int, str]]) -> InlineKeyboardMarkup:
 
 
 def back_to_bypasses_kb() -> InlineKeyboardMarkup:
-    """Возврат после удаления своего обхода БС — в список обходов, а не в меню
-    (Блок «Мелочи 2»). То же, что back_to_devices_kb у устройств."""
+    """Возврат после удаления своего резервного подключения — в список доступов,
+    а не в меню (Блок «Мелочи 2»). То же, что back_to_devices_kb у устройств."""
     kb = InlineKeyboardBuilder()
-    kb.button(text="« Мои обходы", callback_data=f"{CB_WDTT}:my")
+    kb.button(text="« К списку", callback_data=f"{CB_WDTT}:my")
     kb.button(text="« В меню", callback_data=f"{CB_MENU}:open")
     kb.adjust(1)
     return kb.as_markup()

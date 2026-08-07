@@ -18,7 +18,7 @@ from bot.keyboards.inline.prefixes import (
 def main_menu(is_admin: bool) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="📱 Мои устройства", callback_data=f"{CB_DEVICE}:list")
-    kb.button(text="🛡 Обход БС", callback_data=f"{CB_WDTT}:my")
+    kb.button(text="⚡ Резервное подключение", callback_data=f"{CB_WDTT}:my")
     kb.button(text="🎫 Моя подписка", callback_data=f"{CB_SUB}:my")
     kb.button(text="💰 Баланс", callback_data=f"{CB_BAL}:my")
     kb.button(text="🌍 Локации", callback_data=f"{CB_MENU}:locations")

@@ -15,7 +15,6 @@ from bot.keyboards.inline import (
     CB_MENU,
     CB_NOP,
     back_to_menu,
-    consent_kb,
     main_menu,
     notify_settings_kb,
     onboarding_hint_kb,
@@ -25,9 +24,6 @@ from bot.texts import t
 
 router = Router(name="common")
 
-# Экран согласия показываем только тем, кто зарегистрировался начиная с этой
-# даты. Действующих юзеров не дёргаем: они пришли до появления требования.
-CONSENT_SINCE = datetime(2026, 8, 5, tzinfo=timezone.utc)
 
 
 def build_sub_status_line(user) -> str:
@@ -55,23 +51,6 @@ async def send_start_screens(message: Message, user, *, is_new: bool) -> None:
     await _send_onboarding_hint(message, is_new=is_new, is_admin=user.is_admin)
 
 
-def _needs_consent(user) -> bool:
-    """Гейт только для НОВЫХ: у тех, кто пользовался ботом до появления экрана,
-    terms_accepted_at пустой, но дёргать их лишним вопросом не будем —
-    отличаем по дате регистрации относительно даты выката."""
-    from bot.config import settings
-
-    if user.terms_accepted_at is not None:
-        return False
-    if not (settings.legal_terms_url or settings.legal_privacy_url):
-        return False
-    created = user.created_at
-    if created is None:
-        return False
-    # SQLite отдаёт naive datetime — сравнивать с aware нельзя.
-    if created.tzinfo is None:
-        created = created.replace(tzinfo=timezone.utc)
-    return created >= CONSENT_SINCE
 
 
 # --- /start ------------------------------------------------------------------
@@ -110,9 +89,6 @@ async def cmd_start_deep(
                 logger.info("Referral: user {} invited by {}", user.id, referrer.id)
         # Гейт и здесь: иначе новый юзер по реф-ссылке получал бы меню, минуя
         # экран условий. Реферер уже привязан выше — согласие его не отменяет.
-        if _needs_consent(user):
-            await message.answer(t.consent_intro, reply_markup=consent_kb())
-            return
         await send_start_screens(message, user, is_new=not existed)
         return
 
@@ -124,9 +100,6 @@ async def cmd_start_deep(
             return
         await message.answer(t.invite_invalid)
 
-    if _needs_consent(user):
-        await message.answer(t.consent_intro, reply_markup=consent_kb())
-        return
     await send_start_screens(message, user, is_new=not existed)
 
 
@@ -144,9 +117,6 @@ async def cmd_start(
         username=message.from_user.username,
         full_name=message.from_user.full_name,
     )
-    if _needs_consent(user):
-        await message.answer(t.consent_intro, reply_markup=consent_kb())
-        return
     await send_start_screens(message, user, is_new=not existed)
 
 

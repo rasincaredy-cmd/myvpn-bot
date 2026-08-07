@@ -81,6 +81,7 @@ from bot.db.repo.support import (
     purge_old_support_routes,
 )
 from bot.db.repo.users import (
+    accept_terms,
     count_users,
     get_or_create_user,
     get_user_by_id,
@@ -104,6 +105,7 @@ from bot.db.repo.wdtt import (
 from bot.db.repo.wipe import purge_user_records
 
 __all__ = [
+    "accept_terms",
     "add_balance_tx",
     "add_support_route",
     "backfill_devices",

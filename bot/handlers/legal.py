@@ -8,9 +8,11 @@ from __future__ import annotations
 
 from aiogram import F, Router
 from aiogram.types import CallbackQuery
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
-from bot.keyboards.inline import CB_LEGAL, back_to_menu
+from bot.db import repo
+from bot.keyboards.inline import CB_LEGAL, back_to_menu, consent_kb
 from bot.services.pricing import (
     TERM_DISCOUNTS,
     TERM_LABELS,
@@ -51,4 +53,28 @@ def build_tariffs_text() -> str:
 @router.callback_query(F.data == f"{CB_LEGAL}:tariffs")
 async def cb_tariffs(call: CallbackQuery) -> None:
     await call.message.edit_text(build_tariffs_text(), reply_markup=back_to_menu())
+    await call.answer()
+
+
+@router.callback_query(F.data == f"{CB_LEGAL}:accept")
+async def cb_accept(call: CallbackQuery, session: AsyncSession) -> None:
+    user = await repo.get_or_create_user(
+        session,
+        tg_id=call.from_user.id,
+        username=call.from_user.username,
+        full_name=call.from_user.full_name,
+    )
+    await repo.accept_terms(session, user)
+    await call.message.delete()
+    # Импорт внутри функции: common.py импортирует клавиатуры, а те — конфиг;
+    # на уровне модуля получился бы цикл.
+    from bot.handlers.common import send_start_screens
+
+    await send_start_screens(call.message, user, is_new=True)
+    await call.answer()
+
+
+@router.callback_query(F.data == f"{CB_LEGAL}:decline")
+async def cb_decline(call: CallbackQuery) -> None:
+    await call.message.edit_text(t.consent_declined)
     await call.answer()

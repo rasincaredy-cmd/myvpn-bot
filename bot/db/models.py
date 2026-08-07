@@ -48,6 +48,13 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+    # Когда юзер принял условия (экран согласия при первом входе).
+    # NULL — либо ещё не принял, либо пользовался ботом до появления экрана:
+    # таких не трогаем, гейт только для новых. Колонку добавляет автомиграция
+    # ALTER TABLE ADD COLUMN, поэтому она nullable и без REFERENCES.
+    terms_accepted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
 
     # --- Подписка (Блок 9) ---
     # Лимит устройств у юзера. server_default="2" → существующие юзеры при миграции

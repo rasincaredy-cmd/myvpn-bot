@@ -49,6 +49,7 @@ from bot.keyboards.inline.install import (
     install_auth_method,
     install_confirm,
 )
+from bot.keyboards.inline.legal import consent_kb
 from bot.keyboards.inline.menu import (
     back_to_menu,
     main_menu,
@@ -138,6 +139,7 @@ __all__ = [
     "cancel_to_sub_kb",
     "confirm_delete_server",
     "config_format_kb",
+    "consent_kb",
     "deposit_amounts_kb",
     "device_card_kb",
     "device_created_kb",

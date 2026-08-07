@@ -131,3 +131,12 @@ async def set_user_blocked(
     await session.execute(
         update(User).where(User.id == user_id).values(is_blocked=blocked)
     )
+
+
+async def accept_terms(session: AsyncSession, user: User) -> None:
+    """Фиксирует согласие с условиями. Повторный вызов дату не переписывает:
+    важна ПЕРВАЯ, именно её показывают при разборе спора об оплате."""
+    if user.terms_accepted_at is not None:
+        return
+    user.terms_accepted_at = datetime.now(timezone.utc)
+    await session.commit()

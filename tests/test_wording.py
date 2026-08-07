@@ -33,8 +33,12 @@ EXCLUDE = {
     "bot/handlers/install.py",
 }
 
+# \b перед «обход» обязателен: без него страж ловит «неОБХОДимо» — безобидное
+# слово, которое встречается и в текстах бота, и в юридических документах.
+# У «блокиров» \b тоже стоит: «заблокирован» про юзера в админке — не про
+# интернет, а вот «блокировки операторов» в соглашении провайдер просил убрать.
 FORBIDDEN = re.compile(
-    r"обход|блокиров|белы[йех]\s+спис|\bDPI\b|ТСПУ|глушилк|\bLTE\b|\bИНН\b",
+    r"\bобход|\bблокиров|белы[йех]\s+спис|\bDPI\b|ТСПУ|глушилк|\bLTE\b|\bИНН\b",
     re.IGNORECASE,
 )
 
@@ -268,6 +272,33 @@ def test_marker_after_cyrillic_literal() -> None:
         "Маркер после кириллического литерала должен находиться"
     )
     assert not _scan(code), "с маркером находок быть не должно"
+
+
+@pytest.mark.parametrize(
+    "path",
+    sorted((ROOT / "docs" / "legal").glob("*.md")),
+    ids=lambda p: p.name,
+)
+def test_no_forbidden_wording_in_legal_docs(path: Path) -> None:
+    """Документы для банка: их читает проверяющий, стоп-слов быть не должно.
+
+    Это исходники страниц telegra.ph. Формат — markdown, не python, поэтому
+    ast здесь не при чём: смотрим текст построчно целиком.
+    """
+    hits = [
+        f"строка {num}: «{m.group(0)}» в ...{line.strip()[:120]}..."
+        for num, line in enumerate(path.read_text(encoding="utf-8").split("\n"), 1)
+        if (m := FORBIDDEN.search(line))
+    ]
+    assert not hits, f"Запрещённые формулировки в {path.name}:\n" + "\n".join(hits)
+
+
+def test_legal_docs_found() -> None:
+    """Защита от переезда папки: без файлов параметризация выше тихо пустеет."""
+    found = sorted(p.name for p in (ROOT / "docs" / "legal").glob("*.md"))
+    assert found == ["privacy.md", "terms.md"], (
+        f"Ожидались privacy.md и terms.md, найдено: {found}"
+    )
 
 
 def test_wording_guard_finds_violations() -> None:

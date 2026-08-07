@@ -183,9 +183,9 @@ async def cb_wdtt_my_open(call: CallbackQuery, session: AsyncSession) -> None:
     # перестаёт работать, если юзер создал новый звонок, — пусть видит сразу.
     vk = {True: "своя", False: "сервиса"}.get(access.vk_own)
     text = (
-        f"🛡 <b>{access.label}</b>\n"
+        f"⚡ <b>{access.label}</b>\n"
         f"• Платформа: <b>{plat}</b>\n"
-        + (f"• Ссылка на звонок VK: <b>{vk}</b>\n" if vk else "")
+        + (f"• Адрес подключения: <b>{vk}</b>\n" if vk else "")
         + f"• 🌍 Локация: <b>{labels.get(access.server_id, '—')}</b>\n"
         f"• Статус: <b>{t.STATUS_RU.get(access.status, access.status)}</b>\n"
         f"• 📊 Трафик: {amnezia.fmt_bytes(access.traffic_used_bytes)}"

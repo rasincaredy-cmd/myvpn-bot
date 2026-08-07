@@ -30,6 +30,24 @@ router = Router(name="common")
 CONSENT_SINCE = datetime(2026, 8, 5, tzinfo=timezone.utc)
 
 
+def build_sub_status_line(user) -> str:
+    """Строка о подписке для главного меню: раньше за сроком нужно было идти
+    в отдельный раздел «Моя подписка»."""
+    expires = user.sub_expires_at
+    if expires is None:
+        return "🎫 Подписка: <b>не активна</b>"
+    # SQLite отдаёт naive datetime — сравнивать с aware нельзя.
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
+    if expires <= now:
+        return "🎫 Подписка: <b>не активна</b>"
+    # Округляем вверх: последний неполный день юзер всё ещё пользуется сервисом,
+    # показать «0 дней» на активной подписке было бы неверно.
+    days = -((now - expires).days)
+    return f"🎫 Подписка: <b>активна</b>, осталось дней: <b>{days}</b>"
+
+
 async def send_start_screens(message: Message, user, *, is_new: bool) -> None:
     """Главное меню + подсказка новичку. Вызывается и из /start, и после
     нажатия «Согласен» на экране условий."""
@@ -90,8 +108,12 @@ async def cmd_start_deep(
                 user.referrer_id = referrer.id
                 await session.commit()
                 logger.info("Referral: user {} invited by {}", user.id, referrer.id)
-        await _send_main_menu(message, user.is_admin)
-        await _send_onboarding_hint(message, is_new=not existed, is_admin=user.is_admin)
+        # Гейт и здесь: иначе новый юзер по реф-ссылке получал бы меню, минуя
+        # экран условий. Реферер уже привязан выше — согласие его не отменяет.
+        if _needs_consent(user):
+            await message.answer(t.consent_intro, reply_markup=consent_kb())
+            return
+        await send_start_screens(message, user, is_new=not existed)
         return
 
     from bot.handlers.configs import redeem_invite
@@ -172,7 +194,10 @@ async def cmd_menu(message: Message, session: AsyncSession, state: FSMContext) -
         username=message.from_user.username,
         full_name=message.from_user.full_name,
     )
-    await message.answer(t.menu_title, reply_markup=main_menu(user.is_admin))
+    await message.answer(
+        f"{t.menu_title}\n\n{build_sub_status_line(user)}",
+        reply_markup=main_menu(user.is_admin),
+    )
 
 
 @router.callback_query(F.data == f"{CB_MENU}:open")
@@ -184,7 +209,10 @@ async def cb_menu_open(call: CallbackQuery, session: AsyncSession, state: FSMCon
         username=call.from_user.username,
         full_name=call.from_user.full_name,
     )
-    await call.message.edit_text(t.menu_title, reply_markup=main_menu(user.is_admin))
+    await call.message.edit_text(
+        f"{t.menu_title}\n\n{build_sub_status_line(user)}",
+        reply_markup=main_menu(user.is_admin),
+    )
     await call.answer()
 
 

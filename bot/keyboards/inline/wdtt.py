@@ -54,7 +54,8 @@ def wdtt_user_card_kb(access_id: int, can_get: bool) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     if can_get:
         kb.button(text="🔗 Получить ссылку", callback_data=f"{CB_WDTT}:mylink:{access_id}")
-        kb.button(text="🗑 Удалить", callback_data=f"{CB_WDTT}:myrevoke:{access_id}")
+        kb.button(text="🗑 Удалить", callback_data=f"{CB_WDTT}:myrevoke:{access_id}",
+                  style="danger")
     kb.button(text="« К списку", callback_data=f"{CB_WDTT}:my")
     kb.adjust(1)
     return kb.as_markup()

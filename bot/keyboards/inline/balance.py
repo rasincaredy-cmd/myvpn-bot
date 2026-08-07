@@ -10,7 +10,7 @@ from bot.keyboards.inline.prefixes import CB_BAL, CB_MENU, CB_NOP, CB_SUB
 def balance_kb(can_deposit: bool) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     if can_deposit:
-        kb.button(text="➕ Пополнить", callback_data=f"{CB_BAL}:dep")
+        kb.button(text="➕ Пополнить", callback_data=f"{CB_BAL}:dep", style="success")
     kb.button(text="📜 История", callback_data=f"{CB_BAL}:hist")
     kb.button(text="👥 Реферальная программа", callback_data=f"{CB_BAL}:ref")
     kb.button(text="« В меню", callback_data=f"{CB_MENU}:open")
@@ -23,7 +23,8 @@ def topup_kb() -> InlineKeyboardMarkup:
     вовремя (например, автопродление срезало срок подписки): юзеру не нужно
     искать раздел «Баланс» в меню."""
     kb = InlineKeyboardBuilder()
-    kb.button(text="➕ Пополнить баланс", callback_data=f"{CB_BAL}:dep")
+    kb.button(text="➕ Пополнить баланс", callback_data=f"{CB_BAL}:dep",
+              style="success")
     return kb.as_markup()
 
 
@@ -41,7 +42,7 @@ def deposit_amounts_kb(amounts: list[tuple[int, str]]) -> InlineKeyboardMarkup:
 
 def invoice_kb(pay_url: str, row_id: int) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-    kb.button(text="💳 Оплатить в @CryptoBot", url=pay_url)
+    kb.button(text="💳 Оплатить в @CryptoBot", url=pay_url, style="success")
     kb.button(text="✅ Я оплатил — проверить", callback_data=f"{CB_BAL}:check:{row_id}")
     kb.button(text="« К балансу", callback_data=f"{CB_BAL}:my")
     kb.adjust(1)
@@ -69,10 +70,11 @@ def extend_kb(
     kb.button(text=f"📱 {devices}", callback_data=CB_NOP)
     kb.button(text="+", callback_data=_step(devices + 1, bypass, devices < max_devices))
     kb.button(text="−", callback_data=_step(devices, bypass - 1, bypass > 0 and devices + bypass > 1))
-    kb.button(text=f"🛡 {bypass}", callback_data=CB_NOP)
+    kb.button(text=f"⚡ {bypass}", callback_data=CB_NOP)
     kb.button(text="+", callback_data=_step(devices, bypass + 1, bypass < max_bypass))
     for months, label in term_prices:
-        kb.button(text=label, callback_data=f"{CB_BAL}:buy:{devices}:{bypass}:{months}")
+        kb.button(text=label, callback_data=f"{CB_BAL}:buy:{devices}:{bypass}:{months}",
+                  style="success")
     # Выход на пополнение прямо отсюда: юзеру с пустым балансом не нужно
     # догадываться, что пополнение живёт в разделе «Баланс».
     kb.button(text="➕ Пополнить баланс", callback_data=f"{CB_BAL}:dep")

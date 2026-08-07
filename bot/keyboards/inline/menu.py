@@ -17,31 +17,35 @@ from bot.keyboards.inline.prefixes import (
 
 
 def main_menu(is_admin: bool) -> InlineKeyboardMarkup:
-    # settings импортируем внутри функции: иначе конфиг тянется в момент
-    # импорта клавиатур (как это уже сделано в common.py).
+    """Главные действия — во всю ширину и цветом, справочные разделы — парами.
+    Цвет кнопок (style) поддерживается с Bot API 9.4; старые клиенты просто
+    покажут обычные кнопки."""
     from bot.config import settings
 
     kb = InlineKeyboardBuilder()
-    kb.button(text="📱 Мои устройства", callback_data=f"{CB_DEVICE}:list")
+    kb.button(text="📱 Мои устройства", callback_data=f"{CB_DEVICE}:list",
+              style="primary")
     kb.button(text="⚡ Резервное подключение", callback_data=f"{CB_WDTT}:my")
     kb.button(text="🎫 Моя подписка", callback_data=f"{CB_SUB}:my")
     kb.button(text="💰 Баланс", callback_data=f"{CB_BAL}:my")
     kb.button(text="💳 Тарифы", callback_data=f"{CB_LEGAL}:tariffs")
     kb.button(text="🌍 Локации", callback_data=f"{CB_MENU}:locations")
-    # У админа то же меню, что у юзера, плюс ОДНА кнопка — вход в админ-панель.
-    # Всё управление сервисом (установка VPN, серверы, выдача конфигов/инвайтов)
-    # живёт внутри панели, а не на главном экране.
-    if is_admin:
-        kb.button(text="👮 Админ-панель", callback_data=f"{CB_PANEL}:main")
     kb.button(text="🔔 Оповещения", callback_data=f"{CB_MENU}:notify")
     kb.button(text="🆘 Поддержка", callback_data=f"{CB_MENU}:help")
-    # Документы — требование платёжного провайдера: должны быть в постоянном
-    # доступе. Пустой url ломает отправку меню, поэтому кнопка только с адресом.
+
+    sizes = [1, 1, 2, 2, 2]
+
     if settings.legal_privacy_url:
         kb.button(text="📄 Политика конфиденциальности", url=settings.legal_privacy_url)
+        sizes.append(1)
     if settings.legal_terms_url:
         kb.button(text="📜 Пользовательское соглашение", url=settings.legal_terms_url)
-    kb.adjust(1)
+        sizes.append(1)
+    if is_admin:
+        kb.button(text="👮 Админ-панель", callback_data=f"{CB_PANEL}:main")
+        sizes.append(1)
+
+    kb.adjust(*sizes)
     return kb.as_markup()
 
 

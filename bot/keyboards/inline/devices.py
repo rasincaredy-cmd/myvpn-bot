@@ -70,7 +70,8 @@ def device_card_kb(
     kb.button(text="✏️ Переименовать", callback_data=f"{CB_DEVICE}:ren:{device_id}")
     # Удаление доступно всегда: активное устройство удаляется (с отзывом), а
     # неактивное (истекшее) — убирается из списка, чтобы не висело мусором.
-    kb.button(text="🗑 Удалить устройство", callback_data=f"{CB_DEVICE}:revoke:{device_id}")
+    kb.button(text="🗑 Удалить устройство", callback_data=f"{CB_DEVICE}:revoke:{device_id}",
+              style="danger")
     kb.button(text="« К устройствам", callback_data=f"{CB_DEVICE}:list")
     kb.adjust(1)
     return kb.as_markup()

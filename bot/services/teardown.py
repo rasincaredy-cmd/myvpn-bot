@@ -86,7 +86,7 @@ async def revoke_bypass(
         target_user_id=user_id,
         target_type="wdtt",
         target_id=access_id,
-        details=details or f"Обход БС «{label}» удалён",
+        details=details or f"Обход БС «{label}» удалён",  # wording: ok — аудит-лог админа
     )
 
 

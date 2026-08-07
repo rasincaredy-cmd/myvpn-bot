@@ -92,9 +92,9 @@ async def cb_dev_list(call: CallbackQuery, session: AsyncSession) -> None:
         )
     elif user.sub_max_devices == 0 and not devices:
         head += (
-            "\n\nВ твоём тарифе сейчас нет устройств — только обход БС. "
-            "Понадобится VPN — добавь устройства в «🎫 Моя подписка» → "
-            "«🔁 Продлить / купить»."
+            "\n\nВ твоём тарифе сейчас нет устройств — только резервное "
+            "подключение. Понадобится VPN — добавь устройства в «🎫 Моя "
+            "подписка» → «🔁 Продлить / купить»."
         )
     elif not devices:
         head += (
@@ -266,7 +266,7 @@ async def cb_dev_open(call: CallbackQuery, session: AsyncSession) -> None:
             lines.append(f"   • {loc} — {amnezia.fmt_bytes(p.traffic_used_bytes)}")
             locations.append((p.id, loc))
     active_acc = [a for a in accesses if a.status == PeerStatus.ACTIVE]
-    lines.append(f"• Доступов обхода: <b>{len(active_acc)}</b>")
+    lines.append(f"• Резервных подключений: <b>{len(active_acc)}</b>")
     # Итог по устройству — конфиги плюс обходы, привязанные к нему. Отозванные
     # тоже в сумме: трафик уже потрачен и в лимит подписки он вошёл.
     dev_total = sum(p.traffic_used_bytes for p in peers) + sum(
@@ -449,7 +449,7 @@ async def cb_sub_my(call: CallbackQuery, session: AsyncSession) -> None:
     text = (
         f"{title}\n"
         f"• Устройства: <b>{used}/{user.sub_max_devices}</b>\n"
-        f"• Обход БС: <b>{bypass}/{user.sub_max_bypass}</b>\n"
+        f"• Резервное подключение: <b>{bypass}/{user.sub_max_bypass}</b>\n"
         f"• Срок: <b>{_sub_line(user)}</b>\n"
         f"• Трафик: <b>{trf_line}</b>\n"
         f"• Баланс: <b>{fmt_rub(user.balance_kopeks)}</b>"
@@ -462,7 +462,7 @@ async def cb_sub_my(call: CallbackQuery, session: AsyncSession) -> None:
             "дней. Когда он закончится, VPN просто встанет на паузу — ничего "
             "настраивать заново не придётся, все конфиги сохранятся. Дальше — "
             f"от {fmt_rub(monthly_price_kopeks(1, 1))}/мес (1 устройство + "
-            "1 обход БС)."
+            "1 резервное подключение)."
             + (" Кстати, продлить можно уже сейчас: оплаченный срок прибавится "
                "к пробному, ни дня не сгорит." if can_pay else "")
             + "</i>"

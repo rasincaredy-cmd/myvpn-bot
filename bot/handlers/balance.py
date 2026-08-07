@@ -117,7 +117,7 @@ async def cb_bal_deposit(call: CallbackQuery, session: AsyncSession) -> None:
         "в @CryptoBot за пару минут (раздел «Купить») и сразу оплатить счёт.</i>\n\n"
         "Выбери сумму:\n"
         "<i>Суммы на кнопках — стоимость базового тарифа (1 устройство + "
-        "1 обход БС) на месяц, 3 месяца, полгода и год.</i>",
+        "1 резервное подключение) на месяц, 3 месяца, полгода и год.</i>",
         reply_markup=deposit_amounts_kb(_deposit_amounts()),
     )
     await call.answer()
@@ -465,13 +465,13 @@ async def _render_extend(edit, user, devices: int, bypass: int) -> None:
     )
     text = (
         "🔁 <b>Продление подписки</b>\n\n"
-        f"Считаем просто: первая позиция (устройство или обход БС) — "
-        f"<b>{first_rub} ₽/мес</b>, каждая следующая — "
-        f"<b>+{settings.price_extra_device_rub} ₽/мес</b>. Не нужны устройства "
-        "или обходы — смело ставь 0.\n\n"
+        f"Считаем просто: первая позиция (устройство или резервное "
+        f"подключение) — <b>{first_rub} ₽/мес</b>, каждая следующая — "
+        f"<b>+{settings.price_extra_device_rub} ₽/мес</b>. Что-то из этого не "
+        "нужно — смело ставь 0.\n\n"
         "Твой тариф:\n"
         f"📱 Устройств: <b>{devices}</b>\n"
-        f"🛡 Обходов БС: <b>{bypass}</b>\n"
+        f"⚡ Резервных подключений: <b>{bypass}</b>\n"
         f"Цена: <b>{fmt_rub(monthly)}/мес</b>\n"
         f"💰 На балансе: <b>{fmt_rub(user.balance_kopeks)}</b>\n\n"
         "Настрой количество кнопками − и +, потом выбери срок — чем дольше, "
@@ -531,9 +531,9 @@ async def cb_bal_buy(call: CallbackQuery, session: AsyncSession) -> None:
     used_byp = await repo.count_active_wdtt_for_user(session, user.id)
     if devices < used_dev or bypass < used_byp:
         await call.answer(
-            f"У тебя сейчас активно {used_dev} устр. и {used_byp} обход(а) — "
-            "тариф не может быть меньше. Сначала удали лишнее в «📱 Мои "
-            "устройства» / «🛡 Обход БС».",
+            f"У тебя сейчас активно {used_dev} устр. и {used_byp} рез. "
+            "подключ. — тариф не может быть меньше. Сначала удали лишнее в "
+            "«📱 Мои устройства» / «⚡ Резервное подключение».",
             show_alert=True,
         )
         return

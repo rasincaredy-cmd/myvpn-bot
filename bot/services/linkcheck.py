@@ -84,10 +84,12 @@ async def run_check() -> list[str]:
 async def notify_admins(problems: list[str]) -> None:
     from bot.loader import bot
 
+    # Сообщение уходит только админам (settings.admin_ids) — формулировки
+    # внутренние, чистка стоп-слов их не касается (часть 3 дизайна).
     text = (
         "🔗 <b>Проверка ссылок на обход-приложения</b>\n\n"
         "Часть ссылок из раздела «Обход БС» не отвечает — юзеры упрутся "
-        "в тупик при установке:\n\n" + "\n".join(problems) +
+        "в тупик при установке:\n\n" + "\n".join(problems) +  # wording: ok
         "\n\nПоправить: <code>_PLATFORMS</code> в <code>bot/handlers/wdtt.py</code>."
     )
     for admin_id in settings.admin_ids:

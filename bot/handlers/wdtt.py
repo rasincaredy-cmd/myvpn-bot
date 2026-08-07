@@ -148,16 +148,16 @@ async def cb_wdtt_my(call: CallbackQuery, state: FSMContext, session: AsyncSessi
     text = t.wdtt_intro.format(used=active_total, limit=user.sub_max_bypass)
     if not _sub_active(user):
         text += (
-            "\n<i>Подписка закончилась — добавить обход пока нельзя. Твои "
-            "обходы сохраняются 30 дней и оживут при продлении сами.</i>"
+            "\n<i>Подписка закончилась — добавить резервное подключение пока "
+            "нельзя. Доступы сохраняются 30 дней и оживут при продлении сами.</i>"
         )
     elif user.sub_max_bypass == 0 and not accesses:
         text += (
-            "\nВ твоём тарифе сейчас нет обходов БС. Понадобится — добавь "
-            "в «🎫 Моя подписка» → «🔁 Продлить / купить»."
+            "\nВ твоём тарифе сейчас нет резервных подключений. Понадобится — "
+            "добавь в «🎫 Моя подписка» → «🔁 Продлить / купить»."
         )
     elif not accesses:
-        text += "\nПока пусто. Жми «➕ Добавить обход»."
+        text += "\nПока пусто. Жми «➕ Добавить»."
 
     await call.message.edit_text(
         text,
@@ -217,8 +217,8 @@ async def cb_wdtt_my_link(call: CallbackQuery, session: AsyncSession) -> None:
     # остаётся общее перечисление.
     app = _PLATFORMS.get(access.platform, ("", "", None))[1] if access.platform else ""
     app_line = (
-        f"Импортируй её в приложение обхода — <b>{app}</b>." if app
-        else "Импортируй её в приложение обхода (WDTT — Android, VK Turn Proxy — iOS, PWDTT — ПК)."
+        f"Импортируй её в приложение резервного подключения — <b>{app}</b>." if app
+        else "Импортируй её в приложение резервного подключения (WDTT — Android, VK Turn Proxy — iOS, PWDTT — ПК)."
     )
     await call.message.answer(t.wdtt_link.format(link=decrypt(access.uri_enc), app_line=app_line))
     await call.answer("Отправил ссылку")
@@ -235,7 +235,7 @@ async def cb_wdtt_my_revoke(call: CallbackQuery, session: AsyncSession) -> None:
     await teardown.revoke_bypass(
         session, access,
         actor_tg_id=user.tg_id,
-        details=f"Обход БС «{access.label}» удалён юзером",
+        details=f"Обход БС «{access.label}» удалён юзером",  # wording: ok — аудит-лог админа
     )
     await session.commit()
     # Удаление необратимо (ревайв невозможен) — фиксируем в лог.
@@ -287,23 +287,26 @@ async def cb_wdtt_new(call: CallbackQuery, state: FSMContext, session: AsyncSess
     if used >= user.sub_max_bypass:
         if user.sub_max_bypass == 0:
             await call.answer(
-                "В твоём тарифе нет обходов БС. Добавить их можно в «🎫 Моя "
-                "подписка» → «🔁 Продлить / купить».",
+                "В твоём тарифе нет резервных подключений. Добавить их можно в "
+                "«🎫 Моя подписка» → «🔁 Продлить / купить».",
                 show_alert=True,
             )
         else:
             await call.answer(
-                f"Достигнут лимит доступов обхода ({used}/{user.sub_max_bypass}).",
+                f"Достигнут лимит резервных подключений ({used}/{user.sub_max_bypass}).",
                 show_alert=True,
             )
         return
     groups, load, any_wdtt = await _wdtt_location_groups(session, user)
     if not any_wdtt:
-        await call.answer("Обход БС пока недоступен ни в одной локации — попробуй позже.", show_alert=True)
+        await call.answer(
+            "Резервное подключение пока недоступно ни в одной локации — попробуй позже.",
+            show_alert=True,
+        )
         return
     if not groups:
         await call.answer(
-            "Свободные места для обхода закончились — попробуй чуть позже.", show_alert=True
+            "Свободные места закончились — попробуй чуть позже.", show_alert=True
         )
         return
     if len(groups) == 1:
@@ -417,7 +420,7 @@ async def cb_wdtt_platform(call: CallbackQuery, state: FSMContext, session: Asyn
         load = await repo.count_active_wdtt_by_server(session)
         if load.get(server.id, 0) >= server.wdtt_max_accesses:
             await call.message.edit_text(
-                "Свободные места для обхода только что закончились — "
+                "Свободные места только что закончились — "
                 "попробуй ещё раз чуть позже.",
                 reply_markup=back_to_menu(),
             )
@@ -441,7 +444,8 @@ async def cb_wdtt_platform(call: CallbackQuery, state: FSMContext, session: Asyn
         # Сырой exc юзеру не показываем — техножаргон на английском пугает.
         logger.warning("wdtt create failed: {}", exc)
         await call.message.edit_text(
-            "😔 Не получилось создать обход — на сервере какая-то заминка.\n"
+            "😔 Не получилось создать резервное подключение — на сервере "
+            "какая-то заминка.\n"
             "Попробуй ещё раз через пару минут. Если не поможет — жми "
             "«🆘 Поддержка» в меню, разберёмся.",
             reply_markup=back_to_menu(),
@@ -481,7 +485,7 @@ async def cb_wdtt_platform(call: CallbackQuery, state: FSMContext, session: Asyn
         target_user_id=user.id,
         target_type="wdtt",
         target_id=access.id,
-        details=f"Обход БС «{device.label}» на сервере «{server.name}» ({platform})",
+        details=f"Обход БС «{device.label}» на сервере «{server.name}» ({platform})",  # wording: ok — аудит-лог админа
     )
     await session.commit()
 
@@ -520,7 +524,8 @@ async def cb_wdtt_toggle(call: CallbackQuery, session: AsyncSession) -> None:
         reply_markup=server_card(server_id, server.wdtt_enabled, server.is_private)
     )
     await call.answer(
-        ("Обход БС включён" if server.wdtt_enabled else "Обход БС выключен") + note,
+        # Админская карточка сервера — формулировки остаются (часть 3 дизайна).
+        ("Обход БС включён" if server.wdtt_enabled else "Обход БС выключен") + note,  # wording: ok
         show_alert=bool(note),
     )
 

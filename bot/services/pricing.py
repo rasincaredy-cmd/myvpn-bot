@@ -34,7 +34,7 @@ def monthly_price_kopeks(max_devices: int, max_bypass: int) -> int:
     при изменении цен в конфиге держать base >= сумме доплат.
     """
     if max_devices + max_bypass < 1:
-        raise ValueError("тариф без устройств и обходов не продаётся")
+        raise ValueError("тариф без устройств и обходов не продаётся")  # wording: ok
     rub = (
         settings.price_base_rub
         + (max_devices - 1) * settings.price_extra_device_rub

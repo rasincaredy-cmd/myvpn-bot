@@ -214,7 +214,7 @@ async def revive_devices_for_user(session: AsyncSession, user: User) -> ReviveRe
                 continue
             server = await repo.get_server(session, acc.server_id)
             if server is None:
-                res.errors.append(f"обход {acc.label}: сервер удалён")
+                res.errors.append(f"обход {acc.label}: сервер удалён")  # wording: ok
                 continue
             password = decrypt(acc.password_enc)
             parsed = _parse_wdtt_uri(decrypt(acc.uri_enc))
@@ -232,14 +232,14 @@ async def revive_devices_for_user(session: AsyncSession, user: User) -> ReviveRe
                     )
             except SSHError as exc:
                 logger.warning("Revive wdtt {} ssh err: {}", acc.id, exc)
-                res.errors.append(f"обход {acc.label}: SSH-ошибка")
+                res.errors.append(f"обход {acc.label}: SSH-ошибка")  # wording: ok
                 continue
             if got["password"] != password:
                 # Старый бинарь wdtt-сервера проигнорировал -password и сгенерил
                 # новый — прежняя ссылка юзера мертва. Откатываем лишний пароль,
                 # доступ оставляем REVOKED: чинить надо деплоем сервера.
                 logger.error("Revive wdtt {}: сервер вернул другой пароль (старый бинарь?)", acc.id)
-                res.errors.append(f"обход {acc.label}: wdtt-сервер не поддерживает restore")
+                res.errors.append(f"обход {acc.label}: wdtt-сервер не поддерживает restore")  # wording: ok
                 try:
                     async with SSHClient(repo.creds_from_server(server)) as ssh:
                         await wdtt_svc.remove_access(
@@ -258,7 +258,7 @@ async def revive_devices_for_user(session: AsyncSession, user: User) -> ReviveRe
                 target_user_id=user.id,
                 target_type="wdtt",
                 target_id=acc.id,
-                details=f"Обход БС «{acc.label}» на сервере «{server.name}» ожил после оплаты",
+                details=f"Обход БС «{acc.label}» на сервере «{server.name}» ожил после оплаты",  # wording: ok
             )
             bypass_budget -= 1
             res.bypass_restored += 1

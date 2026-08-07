@@ -174,7 +174,10 @@ async def charge_and_extend(
 
     await repo.add_balance_tx(
         session, user.id, -price, "charge",
-        note=f"Подписка {months} мес (устройств: {devices}, обходов: {bypass})",
+        note=(
+            f"Подписка {months} мес (устройств: {devices}, "
+            f"рез. подключений: {bypass})"
+        ),
     )
     new_expiry, rv = await _extend(session, user, months, devices, bypass)
     logger.info(
@@ -188,7 +191,7 @@ async def charge_and_extend(
         amount_kopeks=price,
         details=(
             f"{'Автопродление' if by_autopay else 'Подписка'} {months} мес "
-            f"(устройств: {devices}, обходов: {bypass})"
+            f"(устройств: {devices}, обходов: {bypass})"  # wording: ok — аудит-лог админа
         ),
     )
     return ChargeResult(

@@ -40,3 +40,36 @@ def test_tariffs_text_follows_price_changes(monkeypatch) -> None:
     text = build_tariffs_text()
     assert "150 ₽" in text, "база из конфига не попала на экран"
     assert fmt_rub(term_price_kopeks(monthly_price_kopeks(1, 1), 12)) in text
+
+
+def test_menu_has_legal_buttons(monkeypatch) -> None:
+    """Кнопки документов появляются, когда адреса заданы — банк требует
+    постоянного доступа к ним из бота."""
+    from bot.config import settings
+    from bot.keyboards.inline import main_menu
+
+    monkeypatch.setattr(settings, "legal_privacy_url", "https://telegra.ph/p")
+    monkeypatch.setattr(settings, "legal_terms_url", "https://telegra.ph/t")
+
+    urls = [
+        b.url
+        for row in main_menu(is_admin=False).inline_keyboard
+        for b in row
+        if b.url
+    ]
+    assert "https://telegra.ph/p" in urls
+    assert "https://telegra.ph/t" in urls
+
+
+def test_menu_without_legal_urls_has_no_dead_buttons(monkeypatch) -> None:
+    """Адреса не заданы — кнопок нет: пустая ссылка ломает отправку меню."""
+    from bot.config import settings
+    from bot.keyboards.inline import main_menu
+
+    monkeypatch.setattr(settings, "legal_privacy_url", "")
+    monkeypatch.setattr(settings, "legal_terms_url", "")
+
+    assert not [
+        b for row in main_menu(is_admin=False).inline_keyboard for b in row if b.url
+    ]
+

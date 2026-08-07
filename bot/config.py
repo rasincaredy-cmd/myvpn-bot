@@ -76,6 +76,19 @@ class Settings(BaseSettings):
     # Час UTC для ночного бэкапа (планировщик пошлёт файл админам раз в день).
     backup_hour_utc: int = 3
 
+    # ── Юридические документы (требование платёжного провайдера) ─────────────
+    # Адреса страниц на telegra.ph. Пусто = кнопки в меню не показываются.
+    legal_privacy_url: str = ""
+    legal_terms_url: str = ""
+    # Токен telegra.ph: нужен, чтобы ПРАВИТЬ уже опубликованные страницы (без
+    # него правка создаёт новый адрес, а старый висит с устаревшим текстом).
+    telegraph_token: str = ""
+    # Премиум-эмодзи в текстах и на кнопках. Работают ТОЛЬКО если у владельца
+    # бота активен Telegram Premium (правило Bot API от 09.02.2026); без него
+    # Telegram молча выбрасывает их. Проверено 05.08.2026: прав нет, поэтому
+    # по умолчанию выключено.
+    premium_emoji_enabled: bool = False
+
     @field_validator("admin_ids", mode="before")
     @classmethod
     def _parse_admin_ids(cls, v: object) -> object:

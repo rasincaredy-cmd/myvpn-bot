@@ -7,6 +7,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from bot.keyboards.inline.prefixes import (
     CB_BAL,
     CB_DEVICE,
+    CB_LEGAL,
     CB_MENU,
     CB_PANEL,
     CB_SERVERS,
@@ -16,11 +17,16 @@ from bot.keyboards.inline.prefixes import (
 
 
 def main_menu(is_admin: bool) -> InlineKeyboardMarkup:
+    # settings импортируем внутри функции: иначе конфиг тянется в момент
+    # импорта клавиатур (как это уже сделано в common.py).
+    from bot.config import settings
+
     kb = InlineKeyboardBuilder()
     kb.button(text="📱 Мои устройства", callback_data=f"{CB_DEVICE}:list")
     kb.button(text="⚡ Резервное подключение", callback_data=f"{CB_WDTT}:my")
     kb.button(text="🎫 Моя подписка", callback_data=f"{CB_SUB}:my")
     kb.button(text="💰 Баланс", callback_data=f"{CB_BAL}:my")
+    kb.button(text="💳 Тарифы", callback_data=f"{CB_LEGAL}:tariffs")
     kb.button(text="🌍 Локации", callback_data=f"{CB_MENU}:locations")
     # У админа то же меню, что у юзера, плюс ОДНА кнопка — вход в админ-панель.
     # Всё управление сервисом (установка VPN, серверы, выдача конфигов/инвайтов)
@@ -29,6 +35,12 @@ def main_menu(is_admin: bool) -> InlineKeyboardMarkup:
         kb.button(text="👮 Админ-панель", callback_data=f"{CB_PANEL}:main")
     kb.button(text="🔔 Оповещения", callback_data=f"{CB_MENU}:notify")
     kb.button(text="🆘 Поддержка", callback_data=f"{CB_MENU}:help")
+    # Документы — требование платёжного провайдера: должны быть в постоянном
+    # доступе. Пустой url ломает отправку меню, поэтому кнопка только с адресом.
+    if settings.legal_privacy_url:
+        kb.button(text="📄 Политика конфиденциальности", url=settings.legal_privacy_url)
+    if settings.legal_terms_url:
+        kb.button(text="📜 Пользовательское соглашение", url=settings.legal_terms_url)
     kb.adjust(1)
     return kb.as_markup()
 

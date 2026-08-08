@@ -383,7 +383,19 @@ if __name__ == "__main__":
 Run: `cd /root/myvpn-bot && python -m pytest tests/test_check_server_ssh.py -v`
 Expected: PASS, оба теста.
 
-- [ ] **Step 5: Проверить на боевом сервере, что бот сейчас ходит паролем**
+- [ ] **Step 5: Доставить скрипт на сервер**
+
+На сервере репозиторий стоит на `main`, где этого файла нет, — копируем явно.
+Путь важен: скрипт вычисляет корень проекта как родителя своей папки.
+
+Run:
+```bash
+scp /root/myvpn-bot/scripts/check_server_ssh.py klopas:/root/myvpn-bot/scripts/check_server_ssh.py
+ssh klopas 'ls -l /root/myvpn-bot/scripts/check_server_ssh.py'
+```
+Expected: файл на месте.
+
+- [ ] **Step 6: Проверить на боевом сервере, что бот сейчас ходит паролем**
 
 Run:
 ```bash
@@ -391,7 +403,7 @@ ssh klopas 'cd /root/myvpn-bot && python scripts/check_server_ssh.py 1'
 ```
 Expected: `OK 31.77.157.162: вход по паролю`
 
-- [ ] **Step 6: Коммит**
+- [ ] **Step 7: Коммит**
 
 ```bash
 cd /root/myvpn-bot
@@ -613,10 +625,13 @@ ssh klopas 'ssh -i /root/.ssh/bot_server1 -o StrictHostKeyChecking=no -o Passwor
 Expected: `вход-по-ключу-работает`
 **Если не сработало — остановиться. Дальше идти нельзя.**
 
-- [ ] **Step 8: Записать ключ в базу бота**
+- [ ] **Step 8: Доставить скрипт на сервер и записать ключ в базу бота**
+
+На сервере репозиторий стоит на `main`, где этого файла нет, — копируем явно.
 
 Run:
 ```bash
+scp /root/myvpn-bot/scripts/set_server_key.py klopas:/root/myvpn-bot/scripts/set_server_key.py
 ssh klopas 'cd /root/myvpn-bot && python scripts/set_server_key.py 1 /root/.ssh/bot_server1'
 ```
 Expected: `ключ записан для сервера id=1; пароль оставлен как был`

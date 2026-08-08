@@ -62,6 +62,25 @@ def _deposit_amounts() -> list[tuple[int, str]]:
 # Пределы тарифа на экране продления.
 _MAX_DEVICES, _MAX_BYPASS = 10, 10
 
+# Стартовое положение конструктора — типовой тариф, а не витринный. Два
+# устройства с подключением стоят 160 ₽, это выше рыночной медианы ~150 ₽, и
+# первым числом юзеру его показывать не стоит.
+_START_DEVICES, _START_BYPASS = 1, 1
+
+
+def _extend_intro() -> str:
+    """Как считается цена — словами. Отдельной функцией, чтобы тест сверял
+    названные цифры с настройками, а не с копией текста: доплаты за устройство
+    и за подключение теперь разные, и одна цифра на обе была бы враньём."""
+    return (
+        f"Считаем просто: первая позиция (устройство или резервное "
+        f"подключение) — <b>{settings.price_first_rub} ₽/мес</b>. Каждое "
+        f"следующее устройство — <b>+{settings.price_extra_device_rub} ₽/мес</b>, "
+        f"каждое следующее подключение — "
+        f"<b>+{settings.price_extra_bypass_rub} ₽/мес</b>. Что-то из этого не "
+        "нужно — смело ставь 0."
+    )
+
 _bot_username: str | None = None  # кеш для реф-ссылки
 
 
@@ -459,13 +478,9 @@ async def _render_extend(edit, user, devices: int, bypass: int) -> None:
     devices, bypass = _clamp_tariff(user, devices, bypass)
     max_dev, max_byp = _tariff_bounds(user)
     monthly = monthly_price_kopeks(devices, bypass)
-    first_rub = settings.price_first_rub  # цена тарифа из одной позиции (1+0/0+1)
     text = (
         "🔁 <b>Продление подписки</b>\n\n"
-        f"Считаем просто: первая позиция (устройство или резервное "
-        f"подключение) — <b>{first_rub} ₽/мес</b>, каждая следующая — "
-        f"<b>+{settings.price_extra_device_rub} ₽/мес</b>. Что-то из этого не "
-        "нужно — смело ставь 0.\n\n"
+        f"{_extend_intro()}\n\n"
         "Твой тариф:\n"
         f"📱 Устройств: <b>{devices}</b>\n"
         f"⚡ Резервных подключений: <b>{bypass}</b>\n"
@@ -486,7 +501,13 @@ async def cb_bal_extend(call: CallbackQuery, session: AsyncSession) -> None:
     if user.sub_expires_at is None and not user.is_trial:
         await call.answer("У тебя бессрочная подписка — продлевать нечего 🙂", show_alert=True)
         return
-    await _render_extend(call.message.edit_text, user, user.sub_max_devices, user.sub_max_bypass)
+    # Нулевые лимиты — это юзер, который ещё ничего не покупал: показываем ему
+    # типовой тариф, а не пустой конструктор.
+    await _render_extend(
+        call.message.edit_text, user,
+        user.sub_max_devices or _START_DEVICES,
+        user.sub_max_bypass or _START_BYPASS,
+    )
     await call.answer()
 
 

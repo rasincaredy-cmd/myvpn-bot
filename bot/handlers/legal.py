@@ -28,8 +28,8 @@ router = Router(name="legal")
 def build_tariffs_text() -> str:
     """Экран тарифов. Все суммы считаются из pricing: поменяются цены в .env —
     экран обновится сам, без правки текстов."""
-    base = monthly_price_kopeks(1, 1)
-    first = monthly_price_kopeks(1, 0)
+    base = monthly_price_kopeks(1, 1)   # типовой тариф: устройство + подключение
+    first = monthly_price_kopeks(1, 0)  # пол тарифа: одна позиция
 
     lines = []
     for months in (3, 6, 12):
@@ -41,7 +41,8 @@ def build_tariffs_text() -> str:
 
     return t.tariffs.format(
         first=fmt_rub(first),
-        extra=fmt_rub(settings.price_extra_device_rub * 100),
+        extra_device=fmt_rub(settings.price_extra_device_rub * 100),
+        extra_bypass=fmt_rub(settings.price_extra_bypass_rub * 100),
         base=fmt_rub(base),
         terms="\n".join(lines),
         trial_days=settings.trial_days,

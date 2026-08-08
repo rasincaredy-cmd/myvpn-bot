@@ -267,6 +267,38 @@ class TestDeleteDeviceKeepsBypass:
         assert await repo.get_device(session, device_id) is None
         assert await repo.list_peers_for_user(session, user_id) == []
 
+    async def test_user_is_told_where_the_bypass_went(
+        self, session: AsyncSession, monkeypatch
+    ) -> None:
+        """Молча оставленное подключение выглядит как пропавшее: в карточке
+        устройства юзер видел его числом, а карточки больше нет."""
+        from bot.handlers import devices as dev_h
+
+        _mute_teardown_ssh(monkeypatch)
+        user, _server_, device, _access = await _device_with_bypass(session, tg_id=3203)
+
+        call = _FakeCall(f"{dev_h.CB_DEVICE}:revoke:{device.id}", user.tg_id)
+        await dev_h.cb_dev_revoke(call, session)
+
+        assert "Резервное подключение" in call.message.texts[-1]
+
+    async def test_no_bypass_no_promise(
+        self, session: AsyncSession, monkeypatch
+    ) -> None:
+        """У устройства без подключений про них не пишем — юзер решил бы, что
+        где-то есть оплаченный доступ, которого нет."""
+        from bot.handlers import devices as dev_h
+
+        _mute_teardown_ssh(monkeypatch)
+        user = await _user(session, tg_id=3204)
+        device = await repo.create_device(session, user_id=user.id, label="Ноутбук")
+        await session.commit()
+
+        call = _FakeCall(f"{dev_h.CB_DEVICE}:revoke:{device.id}", user.tg_id)
+        await dev_h.cb_dev_revoke(call, session)
+
+        assert "Резервное подключение" not in call.message.texts[-1]
+
 
 # ============ Задача 3: жизненный цикл отвязанного подключения ==============
 

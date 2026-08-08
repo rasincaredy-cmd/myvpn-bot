@@ -401,6 +401,10 @@ async def cb_dev_revoke(call: CallbackQuery, session: AsyncSession) -> None:
     # Снимаем всё с серверов и удаляем устройство из БД целиком (освобождает IP).
     from bot.services import teardown
     label = device.label
+    # Резервные подключения устройство переживают (решение Влада 4.08) — но
+    # молча это выглядит как их пропажа: юзер видел их числом в карточке
+    # устройства, а после удаления карточки нет. Говорим, куда они делись.
+    kept = len(await repo.list_wdtt_for_device(session, device_id))
     # Журнал пишет сама delete_device, одной транзакцией с удалением: иначе при
     # сбое ниже (например, Telegram не принял edit_text) устройство осталось бы
     # снесённым, а следа в истории юзера не осталось. Врезки здесь больше нет —
@@ -414,9 +418,10 @@ async def cb_dev_revoke(call: CallbackQuery, session: AsyncSession) -> None:
     # Удаление необратимо (ревайв невозможен) — фиксируем в лог, кто и что снёс.
     logger.info("User {} deleted device {} ({})", user.id, device_id, label)
     # Возврат в список устройств, а не в меню (Блок «Мелочи 2»).
-    await call.message.edit_text(
-        t.device_revoked.format(label=label), reply_markup=back_to_devices_kb()
-    )
+    text = t.device_revoked.format(label=label)
+    if kept:
+        text += "\n\n" + t.device_revoked_bypass_kept
+    await call.message.edit_text(text, reply_markup=back_to_devices_kb())
     await call.answer()
 
 

@@ -33,3 +33,6 @@ Thumbs.db
 # --- Logs ---
 *.log
 logs/
+
+# Служебные worktree Claude Code — не часть проекта
+.claude/worktrees/

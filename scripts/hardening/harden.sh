@@ -2,8 +2,9 @@
 # Эталон безопасного сервера проекта. Идемпотентен: повторный запуск
 # приводит сервер к нужному состоянию и ничего не ломает.
 #
-#   harden.sh check     — проверить соответствие эталону, ничего не менять
-#   harden.sh plan      — показать, что изменится
+#   harden.sh check         — проверить соответствие эталону, ничего не менять
+#   harden.sh plan          — показать, что изменится
+#   harden.sh apply-journal — поставить потолок журналу и обрезать его
 #
 # Спека: docs/superpowers/specs/2026-08-08-zashchita-serverov-design.md
 set -uo pipefail
@@ -102,6 +103,14 @@ check_firewall() {
 }
 
 check_journal() {
+  # Одного правильного конфига мало: конфиг мог примениться, а сама
+  # служба после этого не подняться — тогда журналирование мертво, а
+  # проверка конфига этого не увидит и соврёт "OK".
+  if systemctl is-active --quiet systemd-journald; then
+    ok "служба журнала (systemd-journald) активна"
+  else
+    fail "служба журнала (systemd-journald) НЕ активна — журналирование мертво"
+  fi
   if grep -qE "^SystemMaxUse=${JOURNAL_CAP}" /etc/systemd/journald.conf 2>/dev/null; then
     ok "у журнала есть потолок ${JOURNAL_CAP}"
   else
@@ -147,13 +156,29 @@ cmd_plan() {
 cmd_apply_journal() {
   echo "=== потолок журнала ${JOURNAL_CAP} ==="
   local conf=/etc/systemd/journald.conf
-  cp -n "$conf" "${conf}.bak" 2>/dev/null || true
+  # "Копии ещё нет" — норма (идемпотентность, ничего не делаем повторно).
+  # А вот если файл уже есть, но cp реально не смог скопировать (нет
+  # места, нет прав) — это настоящая ошибка, и молчать нельзя: дальше
+  # конфиг правился бы без возможности откатиться.
+  if [ ! -f "${conf}.bak" ]; then
+    if ! cp "$conf" "${conf}.bak"; then
+      fail "не удалось сделать резервную копию ${conf} — конфиг НЕ трогаю"
+      return 1
+    fi
+  fi
   if grep -qE "^#?SystemMaxUse=" "$conf"; then
     sed -i "s/^#\?SystemMaxUse=.*/SystemMaxUse=${JOURNAL_CAP}/" "$conf"
   else
     printf '\nSystemMaxUse=%s\n' "$JOURNAL_CAP" >> "$conf"
   fi
-  systemctl restart systemd-journald
+  if ! systemctl restart systemd-journald; then
+    fail "служба журнала (systemd-journald) не перезапустилась после правки конфига"
+    return 1
+  fi
+  # vacuum-size не учитывает активный, ещё не заротированный файл —
+  # без принудительной ротации потолок не достигается за один проход
+  # и на сервере остаётся немного выше JOURNAL_CAP.
+  journalctl --rotate 2>&1 | tail -2
   journalctl --vacuum-size="$JOURNAL_CAP" 2>&1 | tail -2
   echo "стало: $(journalctl --disk-usage 2>/dev/null)"
 }

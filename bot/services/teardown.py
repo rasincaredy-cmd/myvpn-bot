@@ -25,8 +25,13 @@ async def delete_device(
     actor_is_admin: bool = False,
     details: str | None = None,
 ) -> None:
-    """Снимает все активные пиры и доступы обхода устройства с серверов, затем
-    полностью удаляет устройство из БД (пиры+обходы+запись), освобождая IP.
+    """Снимает все активные пиры устройства с серверов, затем удаляет устройство
+    из БД (пиры + запись), освобождая IP.
+
+    Резервные подключения устройства остаются работать: они продаются отдельной
+    позицией тарифа, и удаление телефона из списка не должно уносить оплаченное
+    подключение. Устройство для них — метка (решение Влада 4.08), её снимает
+    `repo.delete_device`; на сервере обхода снимать нечего.
 
     Событие журнала пишется здесь же, а не врезкой у вызывающего: удалять
     устройство умеют и юзер, и админ из карточки, и каждый новый экран — ещё
@@ -45,10 +50,6 @@ async def delete_device(
                 await amnezia.remove_peer_on_server(ssh, public_key=peer.public_key)
         except SSHError as exc:
             logger.warning("Teardown device {} peer {} ssh err: {}", device_id, peer.id, exc)
-    for acc in await repo.list_wdtt_for_device(session, device_id):
-        if acc.status != PeerStatus.ACTIVE:
-            continue
-        await _remove_bypass_on_server(session, acc)
     await repo.delete_device(session, device_id)
     await repo.log_action(
         session, AuditAction.CONFIG_REVOKED,

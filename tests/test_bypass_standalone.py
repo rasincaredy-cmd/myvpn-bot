@@ -185,3 +185,84 @@ class TestIssueWithoutDevice:
         await session.commit()
 
         assert await h._standalone_label(session, user.id) == "Резервное подключение 2"
+
+
+# ============ Задача 2: удаление устройства не уносит подключение ===========
+
+async def _device_with_bypass(session: AsyncSession, *, tg_id: int):
+    user = await _user(session, tg_id=tg_id)
+    server = await _server(session, tg_id=tg_id)
+    device = await repo.create_device(session, user_id=user.id, label="Телефон")
+    session.add(Peer(
+        server_id=server.id, user_id=user.id, device_id=device.id,
+        label="Телефон", ip="10.8.0.2", public_key="pp",
+        private_key_enc=encrypt("priv"), status=PeerStatus.ACTIVE,
+    ))
+    await session.flush()
+    access = await repo.create_wdtt_access(
+        session, server_id=server.id, user_id=user.id, device_id=device.id,
+        label="Телефон", uri_enc=encrypt("wdtt://1.1.1.1:1:2:3:PASS1:hx"),
+        password_enc=encrypt("PASS1"), expires_at=None, platform="android",
+    )
+    await session.commit()
+    return user, server, device, access
+
+
+def _mute_teardown_ssh(monkeypatch) -> list[str]:
+    """Возвращает список снятых с сервера паролей резервных подключений."""
+    from bot.services import teardown
+
+    removed: list[str] = []
+
+    async def noop(*args, **kwargs) -> None:
+        return None
+
+    async def fake_remove(ssh, *, password, binary) -> None:
+        removed.append(password)
+
+    monkeypatch.setattr(teardown, "SSHClient", lambda creds: _FakeSSH())
+    monkeypatch.setattr(teardown.repo, "creds_from_server", lambda s: None)
+    monkeypatch.setattr(teardown.amnezia, "remove_peer_on_server", noop)
+    monkeypatch.setattr(teardown.wdtt_svc, "remove_access", fake_remove)
+    return removed
+
+
+class TestDeleteDeviceKeepsBypass:
+    async def test_bypass_survives_device_deletion(
+        self, session: AsyncSession, monkeypatch
+    ) -> None:
+        """Юзер убрал из списка старый телефон — оплаченная отдельной позицией
+        тарифа строка резервного подключения уходила вместе с ним молча."""
+        from bot.services import teardown
+
+        removed = _mute_teardown_ssh(monkeypatch)
+        user, _server_, device, access = await _device_with_bypass(session, tg_id=3201)
+        user_id, access_id = user.id, access.id
+
+        await teardown.delete_device(session, device, actor_tg_id=user.tg_id)
+        await session.commit()
+        session.expunge_all()
+
+        rows = await repo.list_wdtt_for_user(session, user_id)
+        assert [r.id for r in rows] == [access_id], "подключение удалено вместе с устройством"
+        assert rows[0].status == PeerStatus.ACTIVE
+        assert rows[0].device_id is None, "метка устройства не снята — строка ссылается на удалённое"
+        assert removed == [], "пароль сняли с сервера обхода, хотя подключение остаётся"
+
+    async def test_device_and_its_peers_are_still_gone(
+        self, session: AsyncSession, monkeypatch
+    ) -> None:
+        """Устройство и его конфиги удаляются как раньше — иначе IP не
+        освободится, а строка повиснет в списке."""
+        from bot.services import teardown
+
+        _mute_teardown_ssh(monkeypatch)
+        user, _server_, device, _access = await _device_with_bypass(session, tg_id=3202)
+        user_id, device_id = user.id, device.id
+
+        await teardown.delete_device(session, device, actor_tg_id=user.tg_id)
+        await session.commit()
+        session.expunge_all()
+
+        assert await repo.get_device(session, device_id) is None
+        assert await repo.list_peers_for_user(session, user_id) == []

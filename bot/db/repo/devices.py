@@ -66,12 +66,20 @@ async def revoke_device(session: AsyncSession, device_id: int) -> None:
 
 
 async def delete_device(session: AsyncSession, device_id: int) -> None:
-    """Полностью удаляет устройство из БД: его wdtt-доступы и пиры (освобождает
-    их IP) + саму запись устройства. Снятие пиров с сервера по SSH — на вызывающем.
-    Отозванный/удалённый девайс не оставляем мусором (в отличие от 30-дн retention
-    у одиночных пиров — тут юзер явно удаляет своё устройство)."""
+    """Удаляет устройство из БД: его пиры (освобождает их IP) + саму запись.
+    Снятие пиров с сервера по SSH — на вызывающем. Отозванный/удалённый девайс
+    не оставляем мусором (в отличие от 30-дн retention у одиночных пиров — тут
+    юзер явно удаляет своё устройство).
+
+    Резервные подключения устройства при этом НЕ удаляются: они продаются
+    отдельной позицией тарифа, и удаление телефона из списка не должно уносить
+    оплаченное подключение. Устройство для них — метка, а не владелец (решение
+    Влада 4.08), поэтому метка снимается ЯВНО: внешние ключи в базе выключены
+    намеренно (на этом держится стирание юзера), и SET NULL сам не сработает."""
     await session.execute(
-        delete(WdttAccess).where(WdttAccess.device_id == device_id)
+        update(WdttAccess)
+        .where(WdttAccess.device_id == device_id)
+        .values(device_id=None)
     )
     await session.execute(delete(Peer).where(Peer.device_id == device_id))
     await session.execute(delete(Device).where(Device.id == device_id))

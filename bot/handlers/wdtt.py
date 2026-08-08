@@ -249,14 +249,35 @@ async def cb_wdtt_my_revoke(call: CallbackQuery, session: AsyncSession) -> None:
 
 # ======================= Создание доступа (FSM) =============================
 
+async def _standalone_label(session: AsyncSession, user_id: int) -> str:
+    """Имя обхода, выданного без устройства.
+
+    Пустым оно быть не может: уходит на сервер обхода в `ctl add -label`, стоит
+    заголовком карточки и подставляется в суффикс ПК-ссылки. Номер берём
+    наименьший свободный, а не «сколько всего + 1», — иначе после удаления
+    второго из трёх обходов новый снова назвался бы вторым.
+    """
+    taken = {a.label for a in await repo.list_wdtt_for_user(session, user_id)}
+    n = 1
+    while f"Резервное подключение {n}" in taken:
+        n += 1
+    return f"Резервное подключение {n}"
+
+
 async def _ask_device(call: CallbackQuery, state: FSMContext, session: AsyncSession, user) -> None:
+    """Шаг «к какому устройству привязать» — если привязывать не к чему, шага нет.
+
+    Устройство для обхода — метка, а не владелец (решение Влада 4.08): тариф
+    продаёт устройства и резервные подключения отдельными позициями, и «0
+    устройств + 1 подключение» — покупаемый тариф. Прежний тупик «Сначала
+    создай устройство» на таком тарифе не проходился вообще: устройство не
+    создать, лимит 0, а деньги уже списаны.
+    """
     devices = await repo.list_devices_for_user(session, user.id, active_only=True)
     if not devices:
-        await state.clear()
-        await call.message.edit_text(
-            "Сначала создай устройство в разделе «📱 Мои устройства».",
-            reply_markup=back_to_menu(),
-        )
+        await state.update_data(device_id=None)
+        await state.set_state(WdttStates.vk)
+        await call.message.edit_text(t.wdtt_ask_vk, reply_markup=wdtt_vk_choice_kb())
         await call.answer()
         return
     await state.set_state(WdttStates.pick_device)
@@ -409,11 +430,14 @@ async def cb_wdtt_platform(call: CallbackQuery, state: FSMContext, session: Asyn
         full_name=call.from_user.full_name,
     )
     server = await repo.get_server(session, data["server_id"])
-    device = await repo.get_device(session, data["device_id"])
-    if server is None or device is None or not server.wdtt_enabled:
+    # device_id пуст, когда устройств у юзера нет вовсе, — шага выбора не было.
+    device_id = data.get("device_id")
+    device = await repo.get_device(session, device_id) if device_id is not None else None
+    if server is None or not server.wdtt_enabled or (device_id is not None and device is None):
         await call.message.edit_text("Сервер или устройство недоступны.", reply_markup=back_to_menu())
         await call.answer()
         return
+    label = device.label if device is not None else await _standalone_label(session, user.id)
     # Ёмкость перепроверяем в момент создания: пока юзер шёл по шагам,
     # последний слот на сервере мог занять кто-то другой.
     if server.wdtt_max_accesses is not None:
@@ -435,7 +459,7 @@ async def cb_wdtt_platform(call: CallbackQuery, state: FSMContext, session: Asyn
             res = await wdtt_svc.create_access(
                 ssh,
                 days=_sub_days_left(user),
-                label=device.label,
+                label=label,
                 vk_hashes=vk_hashes,
                 ports=server.wdtt_ports,
                 binary=settings.wdtt_binary_path,
@@ -460,13 +484,13 @@ async def cb_wdtt_platform(call: CallbackQuery, state: FSMContext, session: Asyn
 
     link = res["link"]
     if platform == "pc":
-        link = f"{link}#{device.label}"
+        link = f"{link}#{label}"
     access = await repo.create_wdtt_access(
         session,
         server_id=server.id,
         user_id=user.id,
-        device_id=device.id,
-        label=device.label,
+        device_id=device.id if device is not None else None,
+        label=label,
         uri_enc=encrypt(link),
         password_enc=encrypt(res["password"]),
         expires_at=None,  # срок гейтит подписка на уровне устройства
@@ -485,7 +509,7 @@ async def cb_wdtt_platform(call: CallbackQuery, state: FSMContext, session: Asyn
         target_user_id=user.id,
         target_type="wdtt",
         target_id=access.id,
-        details=f"Обход БС «{device.label}» на сервере «{server.name}» ({platform})",  # wording: ok — аудит-лог админа
+        details=f"Обход БС «{label}» на сервере «{server.name}» ({platform})",  # wording: ok — аудит-лог админа
     )
     await session.commit()
 
@@ -493,7 +517,7 @@ async def cb_wdtt_platform(call: CallbackQuery, state: FSMContext, session: Asyn
     app_name = _PLATFORMS[platform][1]
     await call.message.edit_text(
         t.wdtt_created.format(
-            label=device.label, server=labels.get(server.id, server.name),
+            label=label, server=labels.get(server.id, server.name),
             app=app_name, app_block=_app_block(platform), link=link,
         ),
         reply_markup=back_to_menu(),

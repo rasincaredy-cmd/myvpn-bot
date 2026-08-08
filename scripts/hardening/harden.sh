@@ -144,8 +144,23 @@ cmd_plan() {
   echo "потолок журнала: ${JOURNAL_CAP} (сейчас $(journalctl --disk-usage 2>/dev/null | grep -oE '[0-9.]+[MG]' | tail -1))"
 }
 
+cmd_apply_journal() {
+  echo "=== потолок журнала ${JOURNAL_CAP} ==="
+  local conf=/etc/systemd/journald.conf
+  cp -n "$conf" "${conf}.bak" 2>/dev/null || true
+  if grep -qE "^#?SystemMaxUse=" "$conf"; then
+    sed -i "s/^#\?SystemMaxUse=.*/SystemMaxUse=${JOURNAL_CAP}/" "$conf"
+  else
+    printf '\nSystemMaxUse=%s\n' "$JOURNAL_CAP" >> "$conf"
+  fi
+  systemctl restart systemd-journald
+  journalctl --vacuum-size="$JOURNAL_CAP" 2>&1 | tail -2
+  echo "стало: $(journalctl --disk-usage 2>/dev/null)"
+}
+
 case "${1:-}" in
   check) cmd_check ;;
   plan)  cmd_plan ;;
-  *) echo "использование: $0 {check|plan}" >&2; exit 2 ;;
+  apply-journal) cmd_apply_journal ;;
+  *) echo "использование: $0 {check|plan|apply-journal}" >&2; exit 2 ;;
 esac

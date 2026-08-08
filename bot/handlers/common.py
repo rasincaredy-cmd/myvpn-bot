@@ -28,10 +28,14 @@ router = Router(name="common")
 
 def build_sub_status_line(user) -> str:
     """Строка о подписке для главного меню: раньше за сроком нужно было идти
-    в отдельный раздел «Моя подписка»."""
+    в отдельный раздел «Моя подписка».
+
+    NULL в sub_expires_at — БЕССРОЧНАЯ подписка (грандфазер, спец-юзеры, админ),
+    а не отсутствие подписки: так это поле трактует весь остальной код
+    (devices._sub_active, wdtt, billing, revive)."""
     expires = user.sub_expires_at
     if expires is None:
-        return "🎫 Подписка: <b>не активна</b>"
+        return "🎫 Подписка: <b>бессрочно</b>"
     # SQLite отдаёт naive datetime — сравнивать с aware нельзя.
     if expires.tzinfo is None:
         expires = expires.replace(tzinfo=timezone.utc)

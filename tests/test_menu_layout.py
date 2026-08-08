@@ -51,3 +51,18 @@ def test_sub_status_line_expired() -> None:
         tg_id=1, sub_expires_at=datetime.now(timezone.utc) - timedelta(days=1)
     )
     assert "не активна" in build_sub_status_line(user).lower()
+
+
+def test_sub_status_line_perpetual() -> None:
+    """NULL в sub_expires_at — БЕССРОЧНАЯ подписка, а не отсутствие её.
+
+    Так заведено во всём коде (devices._sub_active, wdtt, billing), и у Влада
+    в проде стоит именно NULL. Первая версия строки статуса читала NULL как
+    «нет подписки» и показывала админу «не активна» при работающем VPN.
+    """
+    from bot.db.models import User
+    from bot.handlers.common import build_sub_status_line
+
+    line = build_sub_status_line(User(tg_id=1, sub_expires_at=None)).lower()
+    assert "не активна" not in line, "бессрочная подписка показана как отсутствующая"
+    assert "бессрочно" in line

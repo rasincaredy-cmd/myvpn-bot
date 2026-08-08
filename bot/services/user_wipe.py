@@ -120,13 +120,12 @@ async def wipe_user(session: AsyncSession, user: User) -> WipeResult:
         if a.status == PeerStatus.REVOKED and a.revoked_at is not None
     }
     await revive_svc.revoke_devices_for_user(session, user.id, cleared=cleared)
-    # Легаси-строки без device_id (revoke идёт по устройствам) — отзываем адресно.
+    # Легаси-пиры без device_id (отзыв пиров идёт по устройствам) — адресно.
+    # Резервные подключения без устройства отзыв берёт на себя сам: он ходит по
+    # юзеру, снимает их с сервера и кладёт в `cleared`, — повторять не нужно.
     for p in peers:
         if p.device_id is None and p.status == PeerStatus.ACTIVE:
             await repo.revoke_peer(session, p.id)
-    for a in accesses:
-        if a.device_id is None and a.status == PeerStatus.ACTIVE:
-            await repo.revoke_wdtt_access(session, a.id)
 
     # 1a. Удаляем строки, чей конфиг снят с сервера: стирание должно стирать, а
     #     оставленные REVOKED-строки прилипали к новому юзеру с тем же id (см.

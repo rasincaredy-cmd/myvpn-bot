@@ -117,8 +117,31 @@ async def revoke_devices_for_user(
     удалять из БД сразу — в остальных лежат единственные ключи, которыми
     ретеншн повторит снятие."""
     devices = await repo.list_devices_for_user(session, user_id, active_only=True)
-    if not devices:
+    # Резервные подключения перебираем ПО ЮЗЕРУ, а не внутри устройств: с 8.08
+    # подключение живёт и без устройства (тариф «0 устройств», удалённый
+    # телефон), и обход по устройствам такое подключение не видел вовсе —
+    # подписка кончилась, а доступ продолжал бы работать на сервере бесплатно.
+    # Снимаем ДО revoke_device: он метит строки устройства REVOKED, и после
+    # него активных здесь уже не осталось бы.
+    accesses = [
+        a for a in await repo.list_wdtt_for_user(session, user_id)
+        if a.status == PeerStatus.ACTIVE
+    ]
+    if not devices and not accesses:
         return False
+    for acc in accesses:
+        server = await repo.get_server(session, acc.server_id)
+        if server:
+            try:
+                async with SSHClient(repo.creds_from_server(server)) as ssh:
+                    await wdtt_svc.remove_access(
+                        ssh, password=decrypt(acc.password_enc),
+                        binary=settings.wdtt_binary_path,
+                    )
+                if cleared is not None:
+                    cleared.wdtt.add(acc.id)
+            except SSHError as exc:
+                logger.warning("Revoke-all wdtt remove err {}: {}", acc.id, exc)
     for device in devices:
         for peer in await repo.list_peers_for_device(session, device.id):
             if peer.status != PeerStatus.ACTIVE:
@@ -132,21 +155,6 @@ async def revoke_devices_for_user(
                         cleared.peers.add(peer.id)
                 except SSHError as exc:
                     logger.warning("Revoke-all peer remove err {}: {}", peer.id, exc)
-        for acc in await repo.list_wdtt_for_device(session, device.id):
-            if acc.status != PeerStatus.ACTIVE:
-                continue
-            server = await repo.get_server(session, acc.server_id)
-            if server:
-                try:
-                    async with SSHClient(repo.creds_from_server(server)) as ssh:
-                        await wdtt_svc.remove_access(
-                            ssh, password=decrypt(acc.password_enc),
-                            binary=settings.wdtt_binary_path,
-                        )
-                    if cleared is not None:
-                        cleared.wdtt.add(acc.id)
-                except SSHError as exc:
-                    logger.warning("Revoke-all wdtt remove err {}: {}", acc.id, exc)
         await repo.revoke_device(session, device.id)
         await repo.log_action(
             session, AuditAction.CONFIG_REVOKED,
@@ -161,6 +169,85 @@ async def revoke_devices_for_user(
             ),
         )
         logger.info("Revoked device {} (user {})", device.id, user_id)
+    # Подключения без устройства: revoke_device метит только строки СВОЕГО
+    # устройства, отвязанные надо погасить адресно — и написать про них в
+    # журнал, иначе у юзера, у которого кроме подключения ничего нет, в истории
+    # не осталось бы следа, почему всё встало.
+    for acc in accesses:
+        if acc.device_id is not None:
+            continue
+        await repo.revoke_wdtt_access(session, acc.id)
+        await repo.log_action(
+            session, AuditAction.CONFIG_REVOKED,
+            actor_tg_id=actor_tg_id,
+            actor_is_admin=actor_is_admin,
+            target_user_id=user_id,
+            target_type="wdtt",
+            target_id=acc.id,
+            details=(
+                f"Резервное подключение «{acc.label}» отозвано: {reason}" if reason
+                else f"Резервное подключение «{acc.label}» отозвано"
+            ),
+        )
+        logger.info("Revoked standalone wdtt {} (user {})", acc.id, user_id)
+    return True
+
+
+async def _revive_access(
+    session: AsyncSession, user: User, acc, res: ReviveResult
+) -> bool:
+    """Возвращает прежний пароль резервного подключения на сервер обхода.
+
+    Вынесено из цикла по устройствам: подключение оживает и без устройства,
+    и вызывать это надо из общего прохода по юзеру."""
+    server = await repo.get_server(session, acc.server_id)
+    if server is None:
+        res.errors.append(f"обход {acc.label}: сервер удалён")  # wording: ok
+        return False
+    password = decrypt(acc.password_enc)
+    parsed = _parse_wdtt_uri(decrypt(acc.uri_enc))
+    ports, vk_hashes = parsed if parsed else (server.wdtt_ports, settings.wdtt_vk_hashes)
+    try:
+        async with SSHClient(repo.creds_from_server(server)) as ssh:
+            got = await wdtt_svc.create_access(
+                ssh,
+                days=_sub_days_left(user),
+                label=acc.label,
+                vk_hashes=vk_hashes,
+                ports=ports,
+                binary=settings.wdtt_binary_path,
+                password=password,
+            )
+    except SSHError as exc:
+        logger.warning("Revive wdtt {} ssh err: {}", acc.id, exc)
+        res.errors.append(f"обход {acc.label}: SSH-ошибка")  # wording: ok
+        return False
+    if got["password"] != password:
+        # Старый бинарь wdtt-сервера проигнорировал -password и сгенерил
+        # новый — прежняя ссылка юзера мертва. Откатываем лишний пароль,
+        # доступ оставляем REVOKED: чинить надо деплоем сервера.
+        logger.error("Revive wdtt {}: сервер вернул другой пароль (старый бинарь?)", acc.id)
+        res.errors.append(f"обход {acc.label}: wdtt-сервер не поддерживает restore")  # wording: ok
+        try:
+            async with SSHClient(repo.creds_from_server(server)) as ssh:
+                await wdtt_svc.remove_access(
+                    ssh, password=got["password"], binary=settings.wdtt_binary_path
+                )
+        except SSHError:
+            pass
+        return False
+    await repo.revive_wdtt_access(session, acc.id)
+    # Симметрично оживлению пира: юзер платит один раз, а обратно у него
+    # включаются две разные вещи, и в истории должно быть видно обе. Актора-
+    # человека нет — возвращает бот после оплаты.
+    await repo.log_action(
+        session, AuditAction.CONFIG_REVIVED,
+        actor_tg_id=None,
+        target_user_id=user.id,
+        target_type="wdtt",
+        target_id=acc.id,
+        details=f"Обход БС «{acc.label}» на сервере «{server.name}» ожил после оплаты",  # wording: ok
+    )
     return True
 
 
@@ -181,7 +268,15 @@ async def revive_devices_for_user(session: AsyncSession, user: User) -> ReviveRe
         d for d in await repo.list_devices_for_user(session, user.id)
         if d.status == PeerStatus.REVOKED
     ]
-    if not devices:
+    # Подключения — тоже по юзеру и тоже независимо от устройств: подключение
+    # без устройства ниоткуда больше не достать, а подключение, чьё устройство
+    # не влезло в лимит устройств, юзер оплатил отдельной позицией тарифа и
+    # терять его из-за соседней позиции не должен.
+    accesses = [
+        a for a in await repo.list_wdtt_for_user(session, user.id)
+        if a.status == PeerStatus.REVOKED
+    ]
+    if not devices and not accesses:
         return res
 
     device_budget = max(0, user.sub_max_devices - await repo.count_active_devices(session, user.id))
@@ -228,66 +323,26 @@ async def revive_devices_for_user(session: AsyncSession, user: User) -> ReviveRe
             res.peers_restored += 1
             revived_any = True
 
-        # --- Обходы БС: восстанавливаем прежний пароль на wdtt-сервере -------
-        for acc in await repo.list_wdtt_for_device(session, device.id):
-            if acc.status != PeerStatus.REVOKED:
-                continue
-            if bypass_budget <= 0:
-                res.bypass_skipped_limit += 1
-                continue
-            server = await repo.get_server(session, acc.server_id)
-            if server is None:
-                res.errors.append(f"обход {acc.label}: сервер удалён")  # wording: ok
-                continue
-            password = decrypt(acc.password_enc)
-            parsed = _parse_wdtt_uri(decrypt(acc.uri_enc))
-            ports, vk_hashes = parsed if parsed else (server.wdtt_ports, settings.wdtt_vk_hashes)
-            try:
-                async with SSHClient(repo.creds_from_server(server)) as ssh:
-                    got = await wdtt_svc.create_access(
-                        ssh,
-                        days=_sub_days_left(user),
-                        label=acc.label,
-                        vk_hashes=vk_hashes,
-                        ports=ports,
-                        binary=settings.wdtt_binary_path,
-                        password=password,
-                    )
-            except SSHError as exc:
-                logger.warning("Revive wdtt {} ssh err: {}", acc.id, exc)
-                res.errors.append(f"обход {acc.label}: SSH-ошибка")  # wording: ok
-                continue
-            if got["password"] != password:
-                # Старый бинарь wdtt-сервера проигнорировал -password и сгенерил
-                # новый — прежняя ссылка юзера мертва. Откатываем лишний пароль,
-                # доступ оставляем REVOKED: чинить надо деплоем сервера.
-                logger.error("Revive wdtt {}: сервер вернул другой пароль (старый бинарь?)", acc.id)
-                res.errors.append(f"обход {acc.label}: wdtt-сервер не поддерживает restore")  # wording: ok
-                try:
-                    async with SSHClient(repo.creds_from_server(server)) as ssh:
-                        await wdtt_svc.remove_access(
-                            ssh, password=got["password"], binary=settings.wdtt_binary_path
-                        )
-                except SSHError:
-                    pass
-                continue
-            await repo.revive_wdtt_access(session, acc.id)
-            # Симметрично оживлению пира выше: юзер платит один раз, а обратно
-            # у него включаются две разные вещи, и в истории должно быть видно
-            # обе. Актора-человека нет — возвращает бот после оплаты.
-            await repo.log_action(
-                session, AuditAction.CONFIG_REVIVED,
-                actor_tg_id=None,
-                target_user_id=user.id,
-                target_type="wdtt",
-                target_id=acc.id,
-                details=f"Обход БС «{acc.label}» на сервере «{server.name}» ожил после оплаты",  # wording: ok
-            )
-            bypass_budget -= 1
-            res.bypass_restored += 1
-            revived_any = True
-
         if revived_any:
+            device.status = PeerStatus.ACTIVE
+            res.devices_restored += 1
+            logger.info("Revived device {} (user {})", device.id, user.id)
+
+    # --- Резервные подключения: прежний пароль обратно на сервер обхода ------
+    # Общим проходом по юзеру. Устройство, у которого пиров нет вовсе (READY-
+    # локаций не было в момент создания), оживает вместе со своим подключением —
+    # иначе висело бы 🚫 при работающем доступе.
+    revivable_devices = {d.id: d for d in devices[:device_budget]}
+    for acc in accesses:
+        if bypass_budget <= 0:
+            res.bypass_skipped_limit += 1
+            continue
+        if not await _revive_access(session, user, acc, res):
+            continue
+        bypass_budget -= 1
+        res.bypass_restored += 1
+        device = revivable_devices.get(acc.device_id) if acc.device_id else None
+        if device is not None and device.status != PeerStatus.ACTIVE:
             device.status = PeerStatus.ACTIVE
             res.devices_restored += 1
             logger.info("Revived device {} (user {})", device.id, user.id)

@@ -266,3 +266,145 @@ class TestDeleteDeviceKeepsBypass:
 
         assert await repo.get_device(session, device_id) is None
         assert await repo.list_peers_for_user(session, user_id) == []
+
+
+# ============ Задача 3: жизненный цикл отвязанного подключения ==============
+
+def _mute_revive_ssh(monkeypatch) -> dict[str, list]:
+    """Сервер обхода замокан: `ctl add -password` отдаёт тот же пароль (иначе
+    ревайв считает бинарь старым и оставляет доступ отозванным)."""
+    from bot.services import revive
+
+    log: dict[str, list] = {"removed": [], "restored": []}
+
+    async def noop(*args, **kwargs) -> None:
+        return None
+
+    async def fake_remove(ssh, *, password, binary) -> None:
+        log["removed"].append(password)
+
+    async def fake_create(ssh, *, days, label, vk_hashes, ports, binary, password=None):
+        log["restored"].append(password)
+        return {"password": password, "link": "wdtt://x"}
+
+    monkeypatch.setattr(revive, "SSHClient", lambda creds: _FakeSSH())
+    monkeypatch.setattr(revive.repo, "creds_from_server", lambda s: None)
+    monkeypatch.setattr(revive.amnezia, "remove_peer_on_server", noop)
+    monkeypatch.setattr(revive.amnezia, "add_peer_on_server", noop)
+    monkeypatch.setattr(revive.wdtt_svc, "remove_access", fake_remove)
+    monkeypatch.setattr(revive.wdtt_svc, "create_access", fake_create)
+    return log
+
+
+async def _standalone_bypass(session: AsyncSession, *, tg_id: int):
+    """Юзер без устройств, с одним отвязанным резервным подключением."""
+    user = await _user(session, tg_id=tg_id)
+    server = await _server(session, tg_id=tg_id)
+    access = await repo.create_wdtt_access(
+        session, server_id=server.id, user_id=user.id, device_id=None,
+        label="Резервное подключение 1",
+        uri_enc=encrypt("wdtt://1.1.1.1:1:2:3:PASS1:hx"),
+        password_enc=encrypt("PASS1"), expires_at=None, platform="android",
+    )
+    await session.commit()
+    return user, access
+
+
+class TestStandaloneLifecycle:
+    async def test_expiry_takes_the_bypass_down(
+        self, session: AsyncSession, monkeypatch
+    ) -> None:
+        """Отзыв ходил по устройствам — подключение без устройства он не видел
+        вовсе и продолжал бы работать на сервере бесплатно."""
+        from bot.services import revive
+
+        log = _mute_revive_ssh(monkeypatch)
+        user, access = await _standalone_bypass(session, tg_id=3301)
+        user_id, access_id = user.id, access.id
+
+        touched = await revive.revoke_devices_for_user(
+            session, user_id, reason="истекла подписка"
+        )
+        await session.commit()
+        session.expunge_all()
+
+        assert touched is True, "отзыв доложил, что отзывать было нечего"
+        assert log["removed"] == ["PASS1"], "пароль не снят с сервера"
+        rows = await repo.list_wdtt_for_user(session, user_id)
+        assert rows[0].status == PeerStatus.REVOKED
+        history = [
+            r for r in await repo.list_audit_for_user(session, user_id)
+            if r.target_type == "wdtt" and r.target_id == access_id
+        ]
+        assert history, "в истории юзера нет следа, почему подключение встало"
+
+    async def test_renewal_brings_the_bypass_back(
+        self, session: AsyncSession, monkeypatch
+    ) -> None:
+        """Ревайв тоже ходил по устройствам: юзер платил, а подключение без
+        устройства оставалось отозванным навсегда."""
+        from bot.services import revive
+
+        log = _mute_revive_ssh(monkeypatch)
+        user, _access = await _standalone_bypass(session, tg_id=3302)
+        user_id = user.id
+
+        await revive.revoke_devices_for_user(session, user_id)
+        res = await revive.revive_devices_for_user(session, user)
+        await session.commit()
+        session.expunge_all()
+
+        assert res.bypass_restored == 1
+        assert log["restored"] == ["PASS1"], "восстановлен не прежний пароль"
+        rows = await repo.list_wdtt_for_user(session, user_id)
+        assert rows[0].status == PeerStatus.ACTIVE
+
+    async def test_bypass_survives_a_device_limit_cut(
+        self, session: AsyncSession, monkeypatch
+    ) -> None:
+        """Подключение — отдельная позиция тарифа: урезанный лимит устройств
+        его не касается, иначе юзер терял бы оплаченное из-за соседней позиции."""
+        from bot.services import revive
+
+        _mute_revive_ssh(monkeypatch)
+        user, _server_, _device, _access = await _device_with_bypass(session, tg_id=3303)
+        user_id = user.id
+        await revive.revoke_devices_for_user(session, user_id)
+        user.sub_max_devices = 0          # тариф урезан до нуля устройств
+        user.sub_max_bypass = 1
+        await session.commit()
+
+        res = await revive.revive_devices_for_user(session, user)
+        await session.commit()
+        session.expunge_all()
+
+        assert res.devices_restored == 0, "устройство ожило вопреки лимиту"
+        assert res.bypass_restored == 1, "оплаченное подключение не вернулось"
+        rows = await repo.list_wdtt_for_user(session, user_id)
+        assert rows[0].status == PeerStatus.ACTIVE
+
+    async def test_bypass_limit_is_still_respected(
+        self, session: AsyncSession, monkeypatch
+    ) -> None:
+        """Лимит подключений считается по юзеру и после отвязки: два отозванных
+        при лимите 1 возвращают только одно."""
+        from bot.services import revive
+
+        _mute_revive_ssh(monkeypatch)
+        user, _access = await _standalone_bypass(session, tg_id=3304)
+        server = (await repo.list_ready_servers(session))[0]
+        await repo.create_wdtt_access(
+            session, server_id=server.id, user_id=user.id, device_id=None,
+            label="Резервное подключение 2",
+            uri_enc=encrypt("wdtt://1.1.1.1:1:2:3:PASS2:hx"),
+            password_enc=encrypt("PASS2"), expires_at=None, platform="pc",
+        )
+        await session.commit()
+
+        await revive.revoke_devices_for_user(session, user.id)
+        user.sub_max_bypass = 1
+        res = await revive.revive_devices_for_user(session, user)
+        await session.commit()
+
+        assert res.bypass_restored == 1
+        assert res.bypass_skipped_limit == 1

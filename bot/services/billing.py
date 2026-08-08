@@ -18,7 +18,9 @@ from bot.db.models import AuditAction, CryptoInvoice, User
 from bot.services import revive as revive_svc
 from bot.services.pricing import (
     DAYS_PER_MONTH,
+    DEPOSIT_BONUS_PERCENT,
     TERM_DISCOUNTS,
+    deposit_bonus_kopeks,
     monthly_price_kopeks,
     term_price_kopeks,
 )
@@ -55,6 +57,18 @@ async def apply_paid_invoice(
         "Deposit: user {} +{} kopeks (invoice {})",
         inv.user_id, inv.amount_kopeks, inv.invoice_id,
     )
+    # Бонус за способ — ОТДЕЛЬНАЯ строка, а не надбавка внутри пополнения: в
+    # статистике «пополнений за 30 дней» должны стоять деньги, которые сервис
+    # правда получил, а не они же плюс подарок.
+    bonus = deposit_bonus_kopeks(inv.amount_kopeks, "cryptobot")
+    if bonus:
+        await repo.add_balance_tx(
+            session, inv.user_id, bonus, "bonus",
+            note=(
+                f"Бонус {DEPOSIT_BONUS_PERCENT['cryptobot']}% "
+                "за пополнение через CryptoBot"
+            ),
+        )
     # Журнал пишем здесь, а не в хендлере: сюда же приходит поллинг планировщика,
     # и оплата, увиденная им (а не кнопкой «Проверить»), обязана попасть в
     # историю. Задвоения нет — выше стоит ранний выход по уже paid-инвойсу.

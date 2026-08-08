@@ -88,10 +88,10 @@ class TestDeposit:
         dep = await billing.apply_paid_invoice(session, inv)
         await session.commit()
         assert dep.credited and dep.user.id == user.id
-        assert user.balance_kopeks == 90_00
+        assert user.balance_kopeks == 93_60      # 90 ₽ + бонус 4 % за CryptoBot
         assert inv.status == "paid" and inv.paid_at is not None
         txs = await repo.list_balance_txs(session, user.id)
-        assert [tx.kind for tx in txs] == ["deposit"]
+        assert [tx.kind for tx in txs] == ["bonus", "deposit"]
 
     async def test_deposit_is_idempotent(self, session: AsyncSession) -> None:
         """Кнопка «Проверить» и поллинг наперегонки не задваивают зачисление."""
@@ -101,8 +101,8 @@ class TestDeposit:
         dep2 = await billing.apply_paid_invoice(session, inv)
         await session.commit()
         assert not dep2.credited
-        assert user.balance_kopeks == 90_00
-        assert len(await repo.list_balance_txs(session, user.id)) == 1
+        assert user.balance_kopeks == 93_60          # 90 ₽ + бонус, ровно один раз
+        assert len(await repo.list_balance_txs(session, user.id)) == 2
 
     async def test_referral_reward(self, session: AsyncSession) -> None:
         referrer = await _make_user(session, tg_id=100)
@@ -123,6 +123,51 @@ class TestDeposit:
         inv = await _make_invoice(session, user, 100_00)
         dep = await billing.apply_paid_invoice(session, inv)
         assert dep.referrer is None and dep.ref_reward_kopeks == 0
+
+
+class TestDepositBonus:
+    """Бонус за способ пополнения (этап D): надбавка к зачислению, ведущая
+    юзера к способу, который дешевле обходится сервису."""
+
+    def test_cryptobot_gives_four_percent(self) -> None:
+        from bot.services.pricing import deposit_bonus_kopeks
+
+        assert deposit_bonus_kopeks(100_00, "cryptobot") == 4_00
+        assert deposit_bonus_kopeks(1000_00, "cryptobot") == 40_00
+
+    def test_expensive_methods_give_nothing(self) -> None:
+        """Карта и СБП обходятся сервису в 9 и 8 % — доплачивать юзеру за
+        самый невыгодный способ нельзя. У звёзд своя наценка 25 %, бонус
+        поверх неё был бы взаимоисключающим."""
+        from bot.services.pricing import deposit_bonus_kopeks
+
+        assert deposit_bonus_kopeks(100_00, "platega") == 0
+        assert deposit_bonus_kopeks(100_00, "stars") == 0
+
+    def test_unknown_method_gives_nothing(self) -> None:
+        """Новый провайдер не должен начать раздавать бонусы по умолчанию."""
+        from bot.services.pricing import deposit_bonus_kopeks
+
+        assert deposit_bonus_kopeks(100_00, "нет такого") == 0
+
+    async def test_bonus_lands_as_its_own_row(self, session: AsyncSession) -> None:
+        """Бонус — отдельная строка, а не надбавка внутри пополнения.
+
+        Иначе статистика «пополнений за 30 дней» показывала бы сумму, которой
+        сервис никогда не получал.
+        """
+        user = await _make_user(session, tg_id=4101)
+        inv = await _make_invoice(session, user, 100_00)
+
+        res = await billing.apply_paid_invoice(session, inv)
+        await session.commit()
+
+        assert res.credited
+        assert user.balance_kopeks == 104_00
+        rows = await repo.list_balance_txs(session, user.id)
+        kinds = {r.kind: r.amount_kopeks for r in rows}
+        assert kinds["deposit"] == 100_00, "пополнение раздуто бонусом"
+        assert kinds["bonus"] == 4_00
 
 
 class TestCharge:
@@ -279,13 +324,13 @@ class TestInstantAutopay:
         )
         inv = await _make_invoice(session, user, 120_00)
         dep = await billing.apply_paid_invoice(session, inv)
-        assert dep.credited and user.balance_kopeks == 120_00
+        assert dep.credited and user.balance_kopeks == 124_80  # 120 ₽ + бонус 4 %
         res = await billing.autopay_if_expired(session, user)
         await session.commit()
         assert res is not None and res.ok
-        assert user.balance_kopeks == 0
+        assert user.balance_kopeks == 4_80        # бонус остался на балансе
         txs = await repo.list_balance_txs(session, user.id)
-        assert [tx.kind for tx in txs] == ["charge", "deposit"]
+        assert [tx.kind for tx in txs] == ["charge", "bonus", "deposit"]
 
 
 class TestAutopayTerm:

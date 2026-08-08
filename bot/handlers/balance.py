@@ -31,6 +31,7 @@ from bot.keyboards.inline import (
 from bot.loader import bot
 from bot.services import billing, cryptopay
 from bot.services.pricing import (
+    DEPOSIT_BONUS_PERCENT,
     TERM_DISCOUNTS,
     TERM_LABELS,
     fmt_rub,
@@ -132,6 +133,9 @@ async def cb_bal_deposit(call: CallbackQuery, session: AsyncSession) -> None:
         "➕ <b>Пополнение баланса</b>\n\n"
         "Платёж проходит через @CryptoBot — платёжный бот прямо в Telegram. "
         "Сумма — в обычных рублях.\n\n"
+        f"✨ Начислим <b>+{DEPOSIT_BONUS_PERCENT['cryptobot']}%</b> сверху: "
+        "этот способ дешевле для нас, чем остальные, и разницу мы возвращаем "
+        "тебе.\n\n"
         "<i>Крипты нет? Не страшно: её можно купить с банковской карты прямо "
         "в @CryptoBot за пару минут (раздел «Купить») и сразу оплатить счёт.</i>\n\n"
         "Выбери сумму:\n"
@@ -387,7 +391,9 @@ async def notify_autopay(user, res: billing.ChargeResult) -> None:
 
 # ── История ──────────────────────────────────────────────────────────────────
 
-_KIND_ICONS = {"deposit": "➕", "charge": "🎫", "ref": "🎁", "admin": "🛠"}
+_KIND_ICONS = {
+    "deposit": "➕", "charge": "🎫", "ref": "🎁", "admin": "🛠", "bonus": "✨",
+}
 
 
 @router.callback_query(F.data == f"{CB_BAL}:hist")

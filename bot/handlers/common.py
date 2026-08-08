@@ -140,6 +140,7 @@ async def _send_main_menu(message: Message, is_admin: bool) -> None:
             name=message.from_user.full_name or "друг",
             trial_days=settings.trial_days,
             trial_devices=settings.trial_devices,
+            trial_bypass=settings.trial_bypass,
             trial_gb=settings.trial_traffic_gb,
             base_price=fmt_rub(monthly_price_kopeks(1, 1)),
         )

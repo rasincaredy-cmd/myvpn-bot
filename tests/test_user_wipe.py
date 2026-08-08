@@ -1,11 +1,12 @@
 """Тесты стирания юзера (services/user_wipe.py).
 
-Главный инвариант, который тут защищается: после стирания строка `users`
-исчезает, а REVOKED-пиры и wdtt-доступы ОСТАЮТСЯ висеть с несуществующим
-user_id. Это не недосмотр — в этих строках лежат ключи, по которым ретеншн
-планировщика повторяет SSH-снятие, если при отзыве сервер был недоступен.
-Включить `PRAGMA foreign_keys` (каскад) = снести их = оставить живой пир
-удалённого юзера на VPS навсегда. Тест ловит такую «оптимизацию».
+Инвариант, который тут защищается: стирание должно стирать. После wipe'а не
+остаётся REVOKED-строк, которые могли бы «прилипнуть» к новому юзеру с тем же
+id — ровно это происходило с Владом на проде (см. докстринг user_wipe).
+
+НО: строку с ключами можно удалять, только если конфиг реально снят с
+сервера. Если SSH не поднялся — строка остаётся, чтобы ретеншн планировщика
+повторил снятие по ключам и потом удалил сам.
 """
 from __future__ import annotations
 
@@ -23,7 +24,7 @@ from bot.services.ssh import SSHError
 
 
 class FakeSSH:
-    """Асинхронный контекст-менеджер вместо SSHClient — соединения нет."""
+    """Асинхронный контекст-менеджер вместо SSHClient — соединение есть."""
 
     def __init__(self, *args, **kwargs) -> None:
         pass
@@ -116,72 +117,62 @@ class TestWipeRemovesUser:
         assert res.revoked_items == 2
 
 
-class TestWipeKeepsConfigRowsForRetention:
-    """Ключевой инвариант: ключи переживают юзера, иначе пир не снять."""
+class TestWipeDeletesClearedConfigs:
+    """Снятые с сервера конфиги удаляются сразу — стирание должно стирать."""
 
     @pytest.mark.asyncio
-    async def test_peer_and_wdtt_rows_survive_as_revoked(
+    async def test_cleared_peer_and_wdtt_rows_are_deleted(
         self, session: AsyncSession, monkeypatch
     ) -> None:
         _patch_ssh(monkeypatch)
-        user, _server, _device, peer, access = await _make_user(session)
-        peer_id, access_id = peer.id, access.id
+        user, _server, device, peer, access = await _make_user(session)
+        peer_id, access_id, device_id = peer.id, access.id, device.id
 
-        await user_wipe.wipe_user(session, user)
+        res = await user_wipe.wipe_user(session, user)
         await session.commit()
 
-        left_peer = (await session.execute(
-            select(Peer).where(Peer.id == peer_id)
-        )).scalar_one_or_none()
-        left_acc = (await session.execute(
-            select(WdttAccess).where(WdttAccess.id == access_id)
-        )).scalar_one_or_none()
-
-        assert left_peer is not None, "пир снесён — ретеншну нечем снять его с VPS"
-        assert left_acc is not None, "wdtt-строка снесена — пароль не отозвать"
-        assert left_peer.status == PeerStatus.REVOKED
-        assert left_acc.status == PeerStatus.REVOKED
-        # Ключи на месте — именно ими ретеншн добьёт пир на сервере.
-        assert left_peer.public_key == "pp"
-        assert left_acc.password_enc
+        assert (await session.get(Peer, peer_id)) is None, "снятый пир остался в БД"
+        assert (await session.get(WdttAccess, access_id)) is None, "снятый обход остался в БД"
+        assert (await session.get(Device, device_id)) is None, "пустое устройство осталось в БД"
+        assert res.deleted_configs == 2, f"ожидали 2 удалённых конфига, получили {res.deleted_configs}"
 
     @pytest.mark.asyncio
-    async def test_rows_survive_even_when_ssh_was_down(
+    async def test_device_row_survives_if_peer_was_left(
         self, session: AsyncSession, monkeypatch
     ) -> None:
-        """Сервер недоступен → снять не удалось → строки тем более нужны."""
+        """SSH не прошёл → пир остался → устройство тоже остаётся (не пустышка).
+        Зомби-чистка планировщика уберёт его после ретеншна."""
         _patch_ssh(monkeypatch, DeadSSH)
-        user, _server, _device, peer, access = await _make_user(session)
-        peer_id, access_id = peer.id, access.id
+        user, _server, device, peer, access = await _make_user(session)
+        peer_id, access_id, device_id = peer.id, access.id, device.id
 
         await user_wipe.wipe_user(session, user)
         await session.commit()
 
-        left_peer = (await session.execute(
-            select(Peer).where(Peer.id == peer_id)
-        )).scalar_one_or_none()
-        left_acc = (await session.execute(
-            select(WdttAccess).where(WdttAccess.id == access_id)
-        )).scalar_one_or_none()
-
+        left_peer = await session.get(Peer, peer_id)
+        left_acc = await session.get(WdttAccess, access_id)
+        left_dev = await session.get(Device, device_id)
         assert left_peer is not None and left_peer.status == PeerStatus.REVOKED
         assert left_acc is not None and left_acc.status == PeerStatus.REVOKED
         assert left_peer.revoked_at is not None, "без revoked_at ретеншн строку не найдёт"
-        assert left_acc.revoked_at is not None
+        assert left_dev is not None, "устройство с живым содержимым снесено"
 
     @pytest.mark.asyncio
-    async def test_device_row_survives_for_zombie_cleanup(
+    async def test_already_revoked_rows_are_deleted(
         self, session: AsyncSession, monkeypatch
     ) -> None:
+        """Строки, отозванные ДО стирания (например, по истечению подписки), тоже
+        удаляются: их снятие случилось при том отзыве."""
         _patch_ssh(monkeypatch)
-        user, _server, device, _peer, _access = await _make_user(session)
-        device_id = device.id
+        user, _server, _device, peer, access = await _make_user(session)
+        # Имитируем отзыв до стирания: ревайв-путь, которым планировщик гасит
+        # устройства по истечению.
+        await revive.revoke_devices_for_user(session, user.id)
+        await session.commit()
+        peer_id, access_id = peer.id, access.id
 
         await user_wipe.wipe_user(session, user)
         await session.commit()
 
-        left_dev = (await session.execute(
-            select(Device).where(Device.id == device_id)
-        )).scalar_one_or_none()
-        assert left_dev is not None
-        assert left_dev.status == PeerStatus.REVOKED
+        assert (await session.get(Peer, peer_id)) is None
+        assert (await session.get(WdttAccess, access_id)) is None

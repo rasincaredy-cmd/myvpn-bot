@@ -34,7 +34,8 @@ async def session() -> AsyncSession:
     """Свежий in-memory engine на каждый тест — никакого общего state.
 
     FK здесь, как и в проде, НЕ enforce'атся (см. комментарий в bot/db/base.py):
-    стирание юзера намеренно оставляет REVOKED-строки для повторного SSH-снятия.
+    стирание юзера оставляет REVOKED-строки тех конфигов, которые не удалось
+    снять с сервера, — по их ключам ретеншн повторит снятие.
     """
     engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
     async with engine.begin() as conn:

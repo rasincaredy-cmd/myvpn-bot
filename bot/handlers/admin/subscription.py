@@ -486,6 +486,7 @@ async def cb_panel_sub_trial(call: CallbackQuery, session: AsyncSession) -> None
     await repo.set_subscription(
         session, user.id,
         max_devices=settings.trial_devices,
+        max_bypass=settings.trial_bypass,
         expires_at=expires, touch_expires=True,
         traffic_limit_bytes=(
             settings.trial_traffic_gb * 1024**3 if settings.trial_traffic_gb else None

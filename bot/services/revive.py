@@ -34,6 +34,19 @@ from bot.services.ssh import SSHClient, SSHError
 
 
 @dataclass
+class ClearedFromServer:
+    """Что удалось снять с сервера при отзыве — id пиров и wdtt-доступов.
+
+    Отзыв снимает конфиги best-effort: сервер может быть недоступен. Строку с
+    ключами удалять можно ТОЛЬКО если снятие прошло, иначе пир останется на VPS
+    навсегда — снять его будет нечем. Этот набор и отделяет одни от других.
+    """
+
+    peers: set[int] = field(default_factory=set)
+    wdtt: set[int] = field(default_factory=set)
+
+
+@dataclass
 class ReviveResult:
     devices_restored: int = 0
     peers_restored: int = 0
@@ -77,6 +90,7 @@ async def revoke_devices_for_user(
     actor_tg_id: int | None = None,
     actor_is_admin: bool = False,
     reason: str | None = None,
+    cleared: ClearedFromServer | None = None,
 ) -> bool:
     """Отзывает ВСЕ активные устройства юзера: снимает WG-пиры и wdtt-доступы с
     серверов (best-effort), затем метит устройства/пиры/wdtt-строки REVOKED
@@ -96,7 +110,12 @@ async def revoke_devices_for_user(
     Строка пишется на КАЖДОЕ устройство — как и оживление ниже пишется на каждый
     пир: в карточке юзера должно быть видно, что именно встало. Поэтому счётчику
     устройств в тексте не место — сколько погасло, видно по числу строк, а
-    повторённый в каждой из них счётчик читался бы как задвоение."""
+    повторённый в каждой из них счётчик читался бы как задвоение.
+
+    `cleared` (если передан) заполняется id тех пиров и обходов, которые
+    ФАКТИЧЕСКИ сняты с сервера. Нужен стиранию юзера: только такие строки можно
+    удалять из БД сразу — в остальных лежат единственные ключи, которыми
+    ретеншн повторит снятие."""
     devices = await repo.list_devices_for_user(session, user_id, active_only=True)
     if not devices:
         return False
@@ -109,6 +128,8 @@ async def revoke_devices_for_user(
                 try:
                     async with SSHClient(repo.creds_from_server(server)) as ssh:
                         await amnezia.remove_peer_on_server(ssh, public_key=peer.public_key)
+                    if cleared is not None:
+                        cleared.peers.add(peer.id)
                 except SSHError as exc:
                     logger.warning("Revoke-all peer remove err {}: {}", peer.id, exc)
         for acc in await repo.list_wdtt_for_device(session, device.id):
@@ -122,6 +143,8 @@ async def revoke_devices_for_user(
                             ssh, password=decrypt(acc.password_enc),
                             binary=settings.wdtt_binary_path,
                         )
+                    if cleared is not None:
+                        cleared.wdtt.add(acc.id)
                 except SSHError as exc:
                     logger.warning("Revoke-all wdtt remove err {}: {}", acc.id, exc)
         await repo.revoke_device(session, device.id)

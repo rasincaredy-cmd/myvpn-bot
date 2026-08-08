@@ -46,6 +46,7 @@ def build_tariffs_text() -> str:
         terms="\n".join(lines),
         trial_days=settings.trial_days,
         trial_devices=settings.trial_devices,
+        trial_bypass=settings.trial_bypass,
         trial_gb=settings.trial_traffic_gb,
     )
 

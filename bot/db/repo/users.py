@@ -18,13 +18,16 @@ async def get_or_create_user(
 ) -> User:
     user = (await session.execute(select(User).where(User.tg_id == tg_id))).scalar_one_or_none()
     if user is None:
-        # Авто-триал новым юзерам (Блок 9): лимит устройств + срок из конфига.
+        # Авто-триал новым юзерам (Блок 9): лимиты устройств/обходов + срок
+        # из конфига. Обход задаём явно: умолчание модели (2) сделало бы триал
+        # щедрее платной базы 1+1.
         user = User(
             tg_id=tg_id,
             username=username,
             full_name=full_name,
             is_admin=tg_id in settings.admin_ids,
             sub_max_devices=settings.trial_devices,
+            sub_max_bypass=settings.trial_bypass,
             sub_expires_at=datetime.now(timezone.utc)
             + timedelta(days=settings.trial_days),
             sub_traffic_limit_bytes=(

@@ -53,6 +53,29 @@ def test_sub_status_line_expired() -> None:
     assert "не активна" in build_sub_status_line(user).lower()
 
 
+def test_sub_status_line_rounds_down_to_full_days() -> None:
+    """5 суток и 1 час — это «5 дней», а не 6.
+
+    Влад поймал на живом юзере: подписка выдана 06.08, истекает 13.08, а бот
+    8-го писал 6 дней. Округление вверх обещало день, которого нет.
+    """
+    from bot.db.models import User
+    from bot.handlers.common import build_sub_status_line
+
+    exp = datetime.now(timezone.utc) + timedelta(days=5, hours=1)
+    assert "<b>5</b>" in build_sub_status_line(User(tg_id=1, sub_expires_at=exp))
+
+
+def test_sub_status_line_last_day_is_not_zero() -> None:
+    """Меньше суток — всё ещё «1 день»: сервис работает, «0» читалось бы как
+    «уже отключено». Ради этого случая округление вверх и делалось."""
+    from bot.db.models import User
+    from bot.handlers.common import build_sub_status_line
+
+    exp = datetime.now(timezone.utc) + timedelta(hours=12)
+    assert "<b>1</b>" in build_sub_status_line(User(tg_id=1, sub_expires_at=exp))
+
+
 def test_sub_status_line_perpetual() -> None:
     """NULL в sub_expires_at — БЕССРОЧНАЯ подписка, а не отсутствие её.
 

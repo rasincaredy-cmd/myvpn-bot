@@ -336,7 +336,7 @@ class TestAuditMoney:
         user = await repo.get_or_create_user(
             session, tg_id=1007, username="auto", full_name="Auto"
         )
-        user.balance_kopeks = 100_00
+        user.balance_kopeks = 200_00
         user.sub_max_devices = 1
         user.sub_max_bypass = 1
         user.autopay = True
@@ -365,7 +365,7 @@ class TestAuditMoney:
         user = await repo.get_or_create_user(
             session, tg_id=1008, username="manual", full_name="Manual"
         )
-        user.balance_kopeks = 100_00
+        user.balance_kopeks = 200_00
         user.sub_max_devices = 1
         user.sub_max_bypass = 1
         await session.flush()

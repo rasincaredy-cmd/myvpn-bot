@@ -459,10 +459,7 @@ async def _render_extend(edit, user, devices: int, bypass: int) -> None:
     devices, bypass = _clamp_tariff(user, devices, bypass)
     max_dev, max_byp = _tariff_bounds(user)
     monthly = monthly_price_kopeks(devices, bypass)
-    first_rub = (
-        settings.price_base_rub
-        - settings.price_extra_device_rub  # цена тарифа из одной позиции (1+0/0+1)
-    )
+    first_rub = settings.price_first_rub  # цена тарифа из одной позиции (1+0/0+1)
     text = (
         "🔁 <b>Продление подписки</b>\n\n"
         f"Считаем просто: первая позиция (устройство или резервное "

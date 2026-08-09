@@ -145,10 +145,13 @@ class SSHClient:
         Через шелл (`printf '%s' '...'`) большой текст с кавычками обоих
         видов передать надёжно нельзя — экранирование ломается. SFTP
         передаёт байты как есть.
+
+        Права выставляются в том же SFTP-сеансе при создании файла, чтобы
+        избежать окна уязвимости между созданием и изменением прав.
         """
         if self._conn is None:
             raise SSHError("нет соединения")
         async with self._conn.start_sftp_client() as sftp:  # type: ignore[union-attr]
-            async with sftp.open(path, "w") as f:
+            attrs = asyncssh.SFTPAttrs(permissions=mode)
+            async with sftp.open(path, "w", attrs=attrs) as f:
                 await f.write(content)
-        await self.run(f"chmod {mode:o} {path}", check=True)

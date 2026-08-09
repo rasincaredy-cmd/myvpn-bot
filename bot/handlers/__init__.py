@@ -14,6 +14,7 @@ from bot.handlers import (
     install,
     legal,
     servers,
+    stars,
     support,
     wdtt,
 )
@@ -30,6 +31,7 @@ def register_handlers(dp: Dispatcher) -> None:
     dp.include_router(admin.router)
     dp.include_router(wdtt.router)
     dp.include_router(balance.router)
+    dp.include_router(stars.router)
     dp.include_router(legal.router)
     # Сапорт-чат — СТРОГО последним: его реплай-хендлер без state-фильтра
     # ловит только сообщения, не забранные FSM-сценариями выше.

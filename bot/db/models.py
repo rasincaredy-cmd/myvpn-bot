@@ -461,6 +461,30 @@ class CryptoInvoice(Base):
     paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class StarPayment(Base):
+    """Оплата звёздами Telegram. Хранится ради двух вещей: защиты от двойного
+    зачисления (Telegram может доставить событие оплаты повторно) и возврата —
+    charge_id это единственное, чем звёзды возвращаются юзеру.
+
+    Первичный ключ — сам charge_id, а не суррогатный id: идемпотентность тогда
+    держится базой, а не аккуратностью вызывающего."""
+
+    __tablename__ = "star_payments"
+
+    charge_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    # Сколько зачислили на баланс и сколько звёзд за это отдал юзер: курс и
+    # наценка со временем поменяются, а по старой строке должно быть видно,
+    # сколько звёзд возвращать.
+    amount_kopeks: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    stars: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class AuditAction(StrEnum):
     """Коды событий журнала. Значение пишется в базу — не переименовывать
     задним числом, иначе старые записи потеряют смысл."""

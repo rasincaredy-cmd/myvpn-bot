@@ -28,8 +28,10 @@ from bot.keyboards.inline.admin import (
 from bot.keyboards.inline.balance import (
     balance_kb,
     deposit_amounts_kb,
+    deposit_methods_kb,
     extend_kb,
     invoice_kb,
+    star_amounts_kb,
     topup_kb,
 )
 from bot.keyboards.inline.devices import (
@@ -141,6 +143,7 @@ __all__ = [
     "config_format_kb",
     "consent_kb",
     "deposit_amounts_kb",
+    "deposit_methods_kb",
     "device_card_kb",
     "device_created_kb",
     "devices_list_kb",
@@ -165,6 +168,7 @@ __all__ = [
     "server_wdtt_card_kb",
     "server_wdtt_list_kb",
     "servers_list",
+    "star_amounts_kb",
     "stats_nav",
     "subscription_kb",
     "support_dialog_kb",

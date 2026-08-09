@@ -229,7 +229,7 @@ async def cb_panel_user_delete_confirm(call: CallbackQuery, session: AsyncSessio
         f"🗑 Юзер <code>{res.tg_id}</code> стёрт из БД.",
         f"• Конфигов отозвано и снято с серверов: {res.revoked_items}",
         f"• Удалено записей: платежи {res.purged.get('balance_txs', 0)}, "
-        f"счета {res.purged.get('invoices', 0)}, "
+        f"счета {res.purged.get('invoices', 0) + res.purged.get('star_payments', 0)}, "
         f"поддержка {res.purged.get('support_msgs', 0)}, "
         f"журнал {res.history_rows}",
     ]

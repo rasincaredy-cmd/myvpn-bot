@@ -33,6 +33,14 @@ DEPOSIT_BONUS_PERCENT: dict[str, int] = {
     "stars": 0,
 }
 
+# Способ человеческими словами — для истории операций. Юзер видит «через
+# CryptoBot», а не служебный ключ, которым способ называется в коде.
+DEPOSIT_METHOD_LABELS: dict[str, str] = {
+    "cryptobot": "через CryptoBot",
+    "platega": "картой",
+    "stars": "звёздами",
+}
+
 
 def deposit_bonus_kopeks(amount_kopeks: int, method: str) -> int:
     """Надбавка к зачислению за способ пополнения.
@@ -41,6 +49,16 @@ def deposit_bonus_kopeks(amount_kopeks: int, method: str) -> int:
     бонусы просто потому, что его забыли внести в таблицу.
     """
     return amount_kopeks * DEPOSIT_BONUS_PERCENT.get(method, 0) // 100
+
+
+def stars_for_kopeks(kopeks: int) -> int:
+    """Во сколько звёзд обходится сумма в копейках, с наценкой за способ.
+
+    Округление ВВЕРХ до целой звезды: дробной звезды не бывает, а округление
+    вниз дарило бы юзеру долю звезды на каждой покупке.
+    """
+    with_markup = kopeks * (100 + settings.star_markup_percent)
+    return -(-with_markup // (100 * settings.star_price_kopeks))
 
 
 def monthly_price_kopeks(max_devices: int, max_bypass: int) -> int:

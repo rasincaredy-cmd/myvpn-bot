@@ -40,3 +40,43 @@ def test_nonzero_exit_is_not_compliant_even_without_fail_lines() -> None:
     # соответствием нельзя.
     report = parse_check("что-то пошло не так\n", 2)
     assert report.compliant is False
+
+
+def test_ensure_bot_key_does_not_touch_password() -> None:
+    # Пароль — единственный путь на сервер, пока ключ не доказан.
+    # Его стирание на этом шаге лишает возможности откатиться.
+    import inspect
+
+    from bot.services.hardening import ensure_bot_key
+
+    src = inspect.getsource(ensure_bot_key)
+    assert "ssh_password_enc" not in src, (
+        "пароль нельзя трогать до подтверждённого входа по ключу"
+    )
+
+
+def test_ensure_bot_key_clears_stale_passphrase() -> None:
+    import inspect
+
+    from bot.services.hardening import ensure_bot_key
+
+    src = inspect.getsource(ensure_bot_key)
+    assert "ssh_key_passphrase_enc" in src, (
+        "фраза-пароль от старого ключа должна зануляться"
+    )
+
+
+def test_ensure_bot_key_commits_before_returning() -> None:
+    """Ключ обязан лежать в базе ДО того, как гасится пароль.
+
+    Следующим шагом `harden` выключает вход по паролю. Если ключ к этому
+    моменту записан только в память сессии и бот упадёт (или сессия
+    откатится) — пароль уже выключен, а ключа в базе нет: сервер потерян
+    для бота навсегда.
+    """
+    import inspect
+
+    from bot.services.hardening import ensure_bot_key
+
+    src = inspect.getsource(ensure_bot_key)
+    assert "commit" in src, "ключ не фиксируется в базе до выключения пароля"

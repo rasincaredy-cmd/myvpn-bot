@@ -138,3 +138,17 @@ class SSHClient:
         async with self._conn.start_sftp_client() as sftp:  # type: ignore[union-attr]
             async with sftp.open(path, "r") as f:
                 return await f.read()
+
+    async def write_file(self, path: str, content: str, *, mode: int = 0o600) -> None:
+        """Записать файл на сервер через SFTP.
+
+        Через шелл (`printf '%s' '...'`) большой текст с кавычками обоих
+        видов передать надёжно нельзя — экранирование ломается. SFTP
+        передаёт байты как есть.
+        """
+        if self._conn is None:
+            raise SSHError("нет соединения")
+        async with self._conn.start_sftp_client() as sftp:  # type: ignore[union-attr]
+            async with sftp.open(path, "w") as f:
+                await f.write(content)
+        await self.run(f"chmod {mode:o} {path}", check=True)

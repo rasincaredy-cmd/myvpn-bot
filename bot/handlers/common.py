@@ -154,7 +154,10 @@ async def _send_main_menu(message: Message, is_admin: bool) -> None:
             trial_devices=settings.trial_devices,
             trial_bypass=settings.trial_bypass,
             trial_gb=settings.trial_traffic_gb,
-            base_price=fmt_rub(monthly_price_kopeks(1, 1)),
+            # «от» — значит от САМОГО дешёвого тарифа, а это одна позиция
+            # (90 ₽). Подставлять сюда типовой 1+1 за 120 ₽ значит обещать
+            # «от 120», когда есть тариф за 90.
+            base_price=fmt_rub(monthly_price_kopeks(1, 0)),
         )
     await message.answer(text, reply_markup=main_menu(is_admin))
 

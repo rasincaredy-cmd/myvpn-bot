@@ -18,7 +18,10 @@ from bot.db.models import AuditAction, CryptoInvoice, User
 from bot.services import revive as revive_svc
 from bot.services.pricing import (
     DAYS_PER_MONTH,
+    DEPOSIT_BONUS_PERCENT,
+    DEPOSIT_METHOD_LABELS,
     TERM_DISCOUNTS,
+    deposit_bonus_kopeks,
     monthly_price_kopeks,
     term_price_kopeks,
 )
@@ -34,42 +37,47 @@ class DepositResult:
     ref_reward_kopeks: int = 0
 
 
-async def apply_paid_invoice(
-    session: AsyncSession, inv: CryptoInvoice
+async def credit_deposit(
+    session: AsyncSession, *, user_id: int, amount_kopeks: int,
+    method: str, note: str, audit_details: str = "Пополнение баланса",
 ) -> DepositResult:
-    """Зачисляет ОПЛАЧЕННЫЙ инвойс: баланс юзеру + реф-награда пригласившему.
+    """Зачисляет пополнение любым способом: баланс, бонус за способ, журнал,
+    реф-награда пригласившему.
 
-    Идемпотентно: повторный вызов по уже paid-строке — no-op (кнопка «Проверить»
-    и поллинг планировщика могут наперегонки увидеть одну оплату)."""
-    if inv.status == "paid":
-        return DepositResult(credited=False)
-    inv.status = "paid"
-    inv.paid_at = datetime.now(timezone.utc)
-
-    user = await repo.get_user_by_id(session, inv.user_id)
-    await repo.add_balance_tx(
-        session, inv.user_id, inv.amount_kopeks, "deposit",
-        note=f"Пополнение (инвойс {inv.invoice_id})",
-    )
-    logger.info(
-        "Deposit: user {} +{} kopeks (invoice {})",
-        inv.user_id, inv.amount_kopeks, inv.invoice_id,
-    )
+    Общая для CryptoBot и звёзд (этап D). Проверку «не зачисляли ли уже» делает
+    вызывающий — она у каждого способа своя: у инвойса это его статус, у звёзд
+    строка платежа по charge_id. Коммит — тоже на вызывающем.
+    """
+    user = await repo.get_user_by_id(session, user_id)
+    await repo.add_balance_tx(session, user_id, amount_kopeks, "deposit", note=note)
+    logger.info("Deposit ({}): user {} +{} kopeks", method, user_id, amount_kopeks)
+    # Бонус за способ — ОТДЕЛЬНАЯ строка, а не надбавка внутри пополнения: в
+    # статистике «пополнений за 30 дней» должны стоять деньги, которые сервис
+    # правда получил, а не они же плюс подарок.
+    bonus = deposit_bonus_kopeks(amount_kopeks, method)
+    if bonus:
+        await repo.add_balance_tx(
+            session, user_id, bonus, "bonus",
+            note=(
+                f"Бонус {DEPOSIT_BONUS_PERCENT[method]}% за пополнение "
+                f"{DEPOSIT_METHOD_LABELS.get(method, method)}"
+            ),
+        )
     # Журнал пишем здесь, а не в хендлере: сюда же приходит поллинг планировщика,
     # и оплата, увиденная им (а не кнопкой «Проверить»), обязана попасть в
-    # историю. Задвоения нет — выше стоит ранний выход по уже paid-инвойсу.
+    # историю. Задвоения нет — выше стоит проверка вызывающего.
     await repo.log_action(
         session, AuditAction.BALANCE_TOPUP,
         actor_tg_id=user.tg_id if user is not None else None,
-        target_user_id=inv.user_id,
-        amount_kopeks=inv.amount_kopeks,
-        details="Пополнение баланса",
+        target_user_id=user_id,
+        amount_kopeks=amount_kopeks,
+        details=audit_details,
     )
 
     referrer = None
     reward = 0
     if user is not None and user.referrer_id is not None:
-        reward = inv.amount_kopeks * settings.referral_percent // 100
+        reward = amount_kopeks * settings.referral_percent // 100
         referrer = await repo.get_user_by_id(session, user.referrer_id)
         if referrer is not None and reward > 0:
             await repo.add_balance_tx(
@@ -94,8 +102,25 @@ async def apply_paid_invoice(
     if user is not None:
         await session.refresh(user)
     return DepositResult(
-        credited=True, user=user, amount_kopeks=inv.amount_kopeks,
+        credited=True, user=user, amount_kopeks=amount_kopeks,
         referrer=referrer, ref_reward_kopeks=reward,
+    )
+
+
+async def apply_paid_invoice(
+    session: AsyncSession, inv: CryptoInvoice
+) -> DepositResult:
+    """Зачисляет ОПЛАЧЕННЫЙ инвойс: баланс юзеру + реф-награда пригласившему.
+
+    Идемпотентно: повторный вызов по уже paid-строке — no-op (кнопка «Проверить»
+    и поллинг планировщика могут наперегонки увидеть одну оплату)."""
+    if inv.status == "paid":
+        return DepositResult(credited=False)
+    inv.status = "paid"
+    inv.paid_at = datetime.now(timezone.utc)
+    return await credit_deposit(
+        session, user_id=inv.user_id, amount_kopeks=inv.amount_kopeks,
+        method="cryptobot", note=f"Пополнение (инвойс {inv.invoice_id})",
     )
 
 

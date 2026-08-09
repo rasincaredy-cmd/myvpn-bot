@@ -1,9 +1,12 @@
-"""Баланс, пополнение через Crypto Pay, рефералка, покупка подписки (Блок «Баланс»).
+"""Баланс, пополнение, рефералка, покупка подписки (Блок «Баланс»).
 
-Деньги: копейки в БД, движение только через repo.add_balance_tx. Пополнение —
-RUB-инвойс @CryptoBot (клиент bot/services/cryptopay.py), зачисление идемпотентно
-(billing.apply_paid_invoice) — кнопка «Проверить» и поллинг планировщика не
-задвоят депозит. Продление — с баланса, тариф выбирается в момент покупки.
+Деньги: копейки в БД, движение только через repo.add_balance_tx. Пополнять
+можно двумя способами (этап D): RUB-инвойс @CryptoBot (клиент
+bot/services/cryptopay.py) и звёзды Telegram (bot/handlers/stars.py) — экраны
+выбора и сумм для обоих живут здесь, зачисление у обоих идёт через
+billing.credit_deposit и идемпотентно (кнопка «Проверить», поллинг планировщика
+и повторно доставленный платёж не задвоят депозит). Продление — с баланса,
+тариф выбирается в момент покупки.
 """
 from __future__ import annotations
 
@@ -18,23 +21,28 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
 from bot.db import repo
+from bot.handlers.stars import send_star_invoice
 from bot.keyboards.inline import (
     CB_BAL,
     balance_kb,
     back_to_menu,
     cancel_only,
     deposit_amounts_kb,
+    deposit_methods_kb,
     extend_kb,
     invoice_kb,
+    star_amounts_kb,
     topup_kb,
 )
 from bot.loader import bot
 from bot.services import billing, cryptopay
 from bot.services.pricing import (
+    DEPOSIT_BONUS_PERCENT,
     TERM_DISCOUNTS,
     TERM_LABELS,
     fmt_rub,
     monthly_price_kopeks,
+    stars_for_kopeks,
     term_price_kopeks,
 )
 from bot.states.install import BalanceStates
@@ -59,8 +67,38 @@ def _deposit_amounts() -> list[tuple[int, str]]:
         )
         for months, word in _DEPOSIT_TERMS
     ]
+
+
+def _star_amounts() -> list[tuple[int, str]]:
+    """Те же суммы, что и у CryptoBot, но подпись — «сколько звёзд = сколько
+    рублей»: юзер платит в одной валюте, а на баланс получает другую."""
+    return [
+        (rub, f"{stars_for_kopeks(rub * 100)} ⭐ = {rub} ₽")
+        for rub, _label in _deposit_amounts()
+    ]
+
+
 # Пределы тарифа на экране продления.
 _MAX_DEVICES, _MAX_BYPASS = 10, 10
+
+# Стартовое положение конструктора — типовой тариф, а не витринный. Два
+# устройства с подключением стоят 160 ₽, это выше рыночной медианы ~150 ₽, и
+# первым числом юзеру его показывать не стоит.
+_START_DEVICES, _START_BYPASS = 1, 1
+
+
+def _extend_intro() -> str:
+    """Как считается цена — словами. Отдельной функцией, чтобы тест сверял
+    названные цифры с настройками, а не с копией текста: доплаты за устройство
+    и за подключение теперь разные, и одна цифра на обе была бы враньём."""
+    return (
+        f"Считаем просто: первая позиция (устройство или резервное "
+        f"подключение) — <b>{settings.price_first_rub} ₽/мес</b>. Каждое "
+        f"следующее устройство — <b>+{settings.price_extra_device_rub} ₽/мес</b>, "
+        f"каждое следующее подключение — "
+        f"<b>+{settings.price_extra_bypass_rub} ₽/мес</b>. Что-то из этого не "
+        "нужно — смело ставь 0."
+    )
 
 _bot_username: str | None = None  # кеш для реф-ссылки
 
@@ -90,8 +128,10 @@ async def _render_balance(edit_or_answer, session: AsyncSession, user) -> None:
         "тоже падают сюда."
     )
     if not cryptopay.enabled():
-        text += "\n\n<i>Пополнение временно недоступно — напиши в поддержку.</i>"
-    await edit_or_answer(text, reply_markup=balance_kb(cryptopay.enabled()))
+        text += "\n\n<i>Оплата через @CryptoBot временно недоступна — остаются звёзды.</i>"
+    # Кнопка пополнения теперь есть всегда: звёздам не нужен ни токен, ни
+    # настройка, поэтому раздел не исчезает даже с выключенным CryptoBot.
+    await edit_or_answer(text, reply_markup=balance_kb(True))
 
 
 @router.callback_query(F.data == f"{CB_BAL}:my")
@@ -106,13 +146,40 @@ async def cb_bal_my(call: CallbackQuery, state: FSMContext, session: AsyncSessio
 
 @router.callback_query(F.data == f"{CB_BAL}:dep")
 async def cb_bal_deposit(call: CallbackQuery, session: AsyncSession) -> None:
-    if not cryptopay.enabled():
-        await call.answer("Пополнение временно недоступно.", show_alert=True)
-        return
+    """Экран выбора способа (этап D). Раньше здесь сразу были суммы: способ был
+    ровно один. Про долю Apple сказано прямо — юзер, купивший звёзды в iPhone,
+    иначе решит, что лишние проценты забрал сервис."""
     await call.message.edit_text(
         "➕ <b>Пополнение баланса</b>\n\n"
+        f"💎 <b>@CryptoBot</b> — оплата в рублях, крипту можно купить с карты "
+        f"прямо там. Начислим <b>+{DEPOSIT_BONUS_PERCENT['cryptobot']}%</b> "
+        "сверху.\n\n"
+        f"⭐ <b>Звёзды Telegram</b> — оплата в два касания, не выходя из "
+        f"Telegram. Дороже на {settings.star_markup_percent}%: звёзды доходят "
+        "до нас через вывод с комиссиями и трёхнедельной задержкой, наценка "
+        "это и покрывает.\n"
+        "<i>Отдельно: Apple и Google берут свою долю при покупке самих звёзд "
+        "в приложении — это не наша комиссия, мы её не получаем. Дешевле "
+        "покупать звёзды не через приложение.</i>",
+        reply_markup=deposit_methods_kb(
+            DEPOSIT_BONUS_PERCENT["cryptobot"], cryptobot=cryptopay.enabled()
+        ),
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data == f"{CB_BAL}:dep:cb")
+async def cb_bal_deposit_cryptobot(call: CallbackQuery) -> None:
+    if not cryptopay.enabled():
+        await call.answer("Этот способ временно недоступен.", show_alert=True)
+        return
+    await call.message.edit_text(
+        "💎 <b>Пополнение через @CryptoBot</b>\n\n"
         "Платёж проходит через @CryptoBot — платёжный бот прямо в Telegram. "
         "Сумма — в обычных рублях.\n\n"
+        f"✨ Начислим <b>+{DEPOSIT_BONUS_PERCENT['cryptobot']}%</b> сверху: "
+        "этот способ дешевле для нас, чем остальные, и разницу мы возвращаем "
+        "тебе.\n\n"
         "<i>Крипты нет? Не страшно: её можно купить с банковской карты прямо "
         "в @CryptoBot за пару минут (раздел «Купить») и сразу оплатить счёт.</i>\n\n"
         "Выбери сумму:\n"
@@ -123,10 +190,38 @@ async def cb_bal_deposit(call: CallbackQuery, session: AsyncSession) -> None:
     await call.answer()
 
 
+@router.callback_query(F.data == f"{CB_BAL}:dep:stars")
+async def cb_bal_deposit_stars(call: CallbackQuery) -> None:
+    await call.message.edit_text(
+        "⭐ <b>Пополнение звёздами</b>\n\n"
+        f"Курс: <b>{stars_for_kopeks(100_00)} ⭐ = 100 ₽</b> на балансе "
+        f"(наценка {settings.star_markup_percent}% за способ уже в цене).\n"
+        "Звёзд не хватит — Telegram предложит докупить прямо на экране оплаты.\n\n"
+        "Выбери сумму:\n"
+        "<i>Рубли на кнопках — стоимость базового тарифа (1 устройство + "
+        "1 резервное подключение) на месяц, 3 месяца, полгода и год.</i>",
+        reply_markup=star_amounts_kb(_star_amounts()),
+    )
+    await call.answer()
+
+
 @router.callback_query(F.data == f"{CB_BAL}:dep:custom")
 async def cb_bal_deposit_custom(call: CallbackQuery, state: FSMContext) -> None:
+    await _ask_custom_amount(call, state, method="cryptobot")
+
+
+@router.callback_query(F.data == f"{CB_BAL}:star:custom")
+async def cb_bal_star_custom(call: CallbackQuery, state: FSMContext) -> None:
+    await _ask_custom_amount(call, state, method="stars")
+
+
+async def _ask_custom_amount(
+    call: CallbackQuery, state: FSMContext, *, method: str
+) -> None:
+    """Своя сумма — общий экран для обоих способов. Способ едет в state: без
+    него ввод «300» после выбора звёзд молча выставил бы счёт в @CryptoBot."""
     await state.set_state(BalanceStates.custom_amount)
-    await state.update_data(cancel_to="bal")
+    await state.update_data(cancel_to="bal", method=method)
     await call.message.edit_text(
         f"✏️ Введи сумму пополнения в рублях "
         f"({_CUSTOM_MIN_RUB}–{_CUSTOM_MAX_RUB}):",
@@ -145,9 +240,44 @@ async def step_bal_custom_amount(
             f"Сумма — целое число {_CUSTOM_MIN_RUB}–{_CUSTOM_MAX_RUB} ₽. Ещё раз:"
         )
         return
+    method = (await state.get_data()).get("method", "cryptobot")
     await state.clear()
     user = await _get_user(session, message)
+    if method == "stars":
+        await send_star_invoice(message, user, int(raw) * 100)
+        return
     await _create_and_show_invoice(message.answer, session, user, int(raw) * 100)
+
+
+@router.callback_query(F.data == f"{CB_BAL}:starx")
+async def cb_bal_star_cancel(call: CallbackQuery, session: AsyncSession) -> None:
+    """Отмена счёта в звёздах.
+
+    Счёт УДАЛЯЕМ, а не перерисовываем: сообщение-счёт Telegram редактировать
+    не даёт, и обычный «« К балансу» здесь свалился бы с ошибкой. Баланс
+    поэтому уходит новым сообщением.
+    """
+    user = await _get_user(session, call)
+    try:
+        await call.message.delete()
+    except TelegramBadRequest:
+        # Счёт старше 48 часов или уже удалён — экран баланса всё равно нужен.
+        pass
+    await _render_balance(call.message.answer, session, user)
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith(f"{CB_BAL}:star:"))
+async def cb_bal_star_amount(call: CallbackQuery, session: AsyncSession) -> None:
+    # Сюда падают только "star:<число>" — star:custom перехвачен выше.
+    raw = call.data.rsplit(":", 1)[-1]
+    if not raw.isdigit() or not (_CUSTOM_MIN_RUB <= int(raw) <= _CUSTOM_MAX_RUB):
+        await call.answer("Некорректная сумма.", show_alert=True)
+        return
+    user = await _get_user(session, call)
+    await session.commit()
+    await send_star_invoice(call.message, user, int(raw) * 100)
+    await call.answer()
 
 
 @router.callback_query(F.data.startswith(f"{CB_BAL}:dep:"))
@@ -177,7 +307,7 @@ async def _create_and_show_invoice(
         logger.warning("CryptoPay create_invoice failed: {}", exc)
         await send(
             "❌ Не получилось создать счёт — попробуй позже.",
-            reply_markup=balance_kb(cryptopay.enabled()),
+            reply_markup=balance_kb(True),
         )
         return
     row = await repo.create_crypto_invoice(
@@ -235,7 +365,7 @@ async def cb_bal_check(call: CallbackQuery, session: AsyncSession) -> None:
         await session.commit()
         await call.message.edit_text(
             "⌛ Счёт истёк (не оплачен за час). Создай новый.",
-            reply_markup=balance_kb(cryptopay.enabled()),
+            reply_markup=balance_kb(True),
         )
         await call.answer()
         return
@@ -357,9 +487,7 @@ async def notify_autopay(user, res: billing.ChargeResult) -> None:
     """Уведомление об автопродлении с баланса. Общая для планировщика и
     мгновенного продления после пополнения; ошибки Telegram глотаем."""
     text, need_topup = autopay_notice(user, res)
-    # Кнопку пополнения даём, только если пополнять есть чем: без Crypto Pay
-    # она приведёт к «временно недоступно».
-    kb = topup_kb() if (need_topup and cryptopay.enabled()) else None
+    kb = topup_kb() if need_topup else None
     try:
         await bot.send_message(user.tg_id, text, reply_markup=kb)
     except Exception:
@@ -368,7 +496,9 @@ async def notify_autopay(user, res: billing.ChargeResult) -> None:
 
 # ── История ──────────────────────────────────────────────────────────────────
 
-_KIND_ICONS = {"deposit": "➕", "charge": "🎫", "ref": "🎁", "admin": "🛠"}
+_KIND_ICONS = {
+    "deposit": "➕", "charge": "🎫", "ref": "🎁", "admin": "🛠", "bonus": "✨",
+}
 
 
 @router.callback_query(F.data == f"{CB_BAL}:hist")
@@ -459,16 +589,9 @@ async def _render_extend(edit, user, devices: int, bypass: int) -> None:
     devices, bypass = _clamp_tariff(user, devices, bypass)
     max_dev, max_byp = _tariff_bounds(user)
     monthly = monthly_price_kopeks(devices, bypass)
-    first_rub = (
-        settings.price_base_rub
-        - settings.price_extra_device_rub  # цена тарифа из одной позиции (1+0/0+1)
-    )
     text = (
         "🔁 <b>Продление подписки</b>\n\n"
-        f"Считаем просто: первая позиция (устройство или резервное "
-        f"подключение) — <b>{first_rub} ₽/мес</b>, каждая следующая — "
-        f"<b>+{settings.price_extra_device_rub} ₽/мес</b>. Что-то из этого не "
-        "нужно — смело ставь 0.\n\n"
+        f"{_extend_intro()}\n\n"
         "Твой тариф:\n"
         f"📱 Устройств: <b>{devices}</b>\n"
         f"⚡ Резервных подключений: <b>{bypass}</b>\n"
@@ -489,7 +612,13 @@ async def cb_bal_extend(call: CallbackQuery, session: AsyncSession) -> None:
     if user.sub_expires_at is None and not user.is_trial:
         await call.answer("У тебя бессрочная подписка — продлевать нечего 🙂", show_alert=True)
         return
-    await _render_extend(call.message.edit_text, user, user.sub_max_devices, user.sub_max_bypass)
+    # Нулевые лимиты — это юзер, который ещё ничего не покупал: показываем ему
+    # типовой тариф, а не пустой конструктор.
+    await _render_extend(
+        call.message.edit_text, user,
+        user.sub_max_devices or _START_DEVICES,
+        user.sub_max_bypass or _START_BYPASS,
+    )
     await call.answer()
 
 

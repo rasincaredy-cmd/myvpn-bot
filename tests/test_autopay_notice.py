@@ -33,7 +33,7 @@ def _user(**kw):
     defaults = dict(
         autopay=True, sub_expires_at=datetime.now(timezone.utc),
         sub_max_devices=1, sub_max_bypass=1, sub_term_months=12,
-        balance_kopeks=810_00,
+        balance_kopeks=1080_00,
     )
     return type("U", (), {**defaults, **kw})()
 
@@ -43,10 +43,10 @@ class TestPlanAutopay:
     самого автопродления, и для предупреждения «скоро истечёт»."""
 
     def test_full_term_when_money_enough(self) -> None:
-        assert billing.plan_autopay(_user()) == (12, 810_00, 12, 810_00)
+        assert billing.plan_autopay(_user()) == (12, 1080_00, 12, 1080_00)
 
     def test_largest_affordable_term(self) -> None:
-        assert billing.plan_autopay(_user(balance_kopeks=500_00)) == (6, 450_00, 12, 810_00)
+        assert billing.plan_autopay(_user(balance_kopeks=700_00)) == (6, 610_00, 12, 1080_00)
 
     def test_none_when_not_even_month(self) -> None:
         assert billing.plan_autopay(_user(balance_kopeks=10_00)) is None
@@ -61,7 +61,7 @@ class TestPlanAutopay:
         assert billing.plan_autopay(_user(sub_max_devices=0, sub_max_bypass=0)) is None
 
     def test_unknown_term_plans_month(self) -> None:
-        assert billing.plan_autopay(_user(sub_term_months=None)) == (1, 90_00, 1, 90_00)
+        assert billing.plan_autopay(_user(sub_term_months=None)) == (1, 120_00, 1, 120_00)
 
 
 class TestExpiryForecast:
@@ -70,15 +70,15 @@ class TestExpiryForecast:
 
     def test_names_sum_and_term(self) -> None:
         line = autopay_forecast_line(_user())
-        assert "810 ₽" in line and "год" in line
+        assert "1080 ₽" in line and "год" in line
 
     def test_warns_about_shorter_term_and_shortfall(self) -> None:
-        line = autopay_forecast_line(_user(balance_kopeks=500_00))
-        assert "полгода" in line and "810 ₽" in line and "310 ₽" in line
+        line = autopay_forecast_line(_user(balance_kopeks=700_00))
+        assert "полгода" in line and "1080 ₽" in line and "380 ₽" in line
 
     def test_warns_when_money_not_enough_at_all(self) -> None:
         line = autopay_forecast_line(_user(balance_kopeks=10_00))
-        assert "90 ₽" in line and "пауз" in line.lower()
+        assert "120 ₽" in line and "пауз" in line.lower()
 
     def test_silent_when_autopay_off(self) -> None:
         assert autopay_forecast_line(_user(autopay=False)) is None
@@ -86,28 +86,28 @@ class TestExpiryForecast:
 
 class TestFullTerm:
     def test_names_actual_term_not_always_month(self) -> None:
-        text, topup = autopay_notice(_User(), _res(12, 810_00, 12, 810_00, 0))
-        assert "год" in text and "810 ₽" in text
+        text, topup = autopay_notice(_User(), _res(12, 1080_00, 12, 1080_00, 0))
+        assert "год" in text and "1080 ₽" in text
         assert "месяц" not in text          # раньше писало «на месяц» всегда
         assert topup is False
 
     def test_monthly_renewal_still_says_month(self) -> None:
-        text, topup = autopay_notice(_User(), _res(1, 90_00, 1, 90_00, 0))
-        assert "месяц" in text and "90 ₽" in text
+        text, topup = autopay_notice(_User(), _res(1, 120_00, 1, 120_00, 0))
+        assert "месяц" in text and "120 ₽" in text
         assert topup is False
 
 
 class TestShortenedTerm:
     def test_says_term_is_shorter_than_bought(self) -> None:
-        text, topup = autopay_notice(_User(), _res(6, 450_00, 12, 810_00, 310_00))
+        text, topup = autopay_notice(_User(), _res(6, 610_00, 12, 1080_00, 380_00))
         # Юзер должен понять три вещи: срок НЕ тот, какой был, какой стал,
         # и сколько денег не хватило.
         assert "меньш" in text.lower()
         assert "полгода" in text        # на сколько продлили на самом деле
-        assert "810 ₽" in text          # сколько стоил бы полный срок
-        assert "310 ₽" in text          # сколько не хватило
+        assert "1080 ₽" in text         # сколько стоил бы полный срок
+        assert "380 ₽" in text          # сколько не хватило
         assert topup is True
 
     def test_offers_topup_button(self) -> None:
-        _, topup = autopay_notice(_User(), _res(1, 90_00, 12, 810_00, 720_00))
+        _, topup = autopay_notice(_User(), _res(1, 120_00, 12, 1080_00, 960_00))
         assert topup is True

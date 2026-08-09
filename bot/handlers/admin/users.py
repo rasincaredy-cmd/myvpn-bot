@@ -51,7 +51,10 @@ async def cb_panel_user_open(call: CallbackQuery, session: AsyncSession) -> None
 
     await call.message.edit_text(
         await user_card_text(session, user),
-        reply_markup=user_card_kb(user.id, user.is_blocked, page, is_vip=user.is_vip),
+        reply_markup=user_card_kb(
+            user.id, user.is_blocked, page,
+            is_vip=user.is_vip, is_staff=user.is_staff,
+        ),
     )
     await call.answer()
 
@@ -76,7 +79,40 @@ async def cb_panel_toggle_vip(call: CallbackQuery, session: AsyncSession) -> Non
     )
     await call.message.edit_text(
         await user_card_text(session, user),
-        reply_markup=user_card_kb(user.id, user.is_blocked, page, is_vip=user.is_vip),
+        reply_markup=user_card_kb(
+            user.id, user.is_blocked, page,
+            is_vip=user.is_vip, is_staff=user.is_staff,
+        ),
+    )
+
+
+# --- «Служебный» (не считать в статистике, этап D) ---------------------------
+
+@router.callback_query(F.data.startswith(f"{CB_PANEL}:staff:"))
+async def cb_panel_toggle_staff(call: CallbackQuery, session: AsyncSession) -> None:
+    parts = call.data.split(":")
+    user_id, page = int(parts[2]), int(parts[3])
+    user = await repo.get_user_by_id(session, user_id)
+    if user is None:
+        await call.answer("Не найдено", show_alert=True)
+        return
+    user.is_staff = not user.is_staff
+    await session.commit()
+    # Для самого юзера не меняется ничего: он о пометке не знает и видит бота
+    # ровно таким же. Это только про то, кого считать в статистике.
+    await call.answer(
+        "🧰 Служебный: покупки и пополнения этого аккаунта больше не попадают "
+        "в конверсию и в деньги за 30 дней."
+        if user.is_staff else
+        "Обычный юзер: снова считается в статистике наравне со всеми.",
+        show_alert=True,
+    )
+    await call.message.edit_text(
+        await user_card_text(session, user),
+        reply_markup=user_card_kb(
+            user.id, user.is_blocked, page,
+            is_vip=user.is_vip, is_staff=user.is_staff,
+        ),
     )
 
 
@@ -116,7 +152,9 @@ async def cb_panel_toggle_block(call: CallbackQuery, session: AsyncSession) -> N
 
     await call.message.edit_text(
         await user_card_text(session, user),
-        reply_markup=user_card_kb(user.id, block, page, is_vip=user.is_vip),
+        reply_markup=user_card_kb(
+            user.id, block, page, is_vip=user.is_vip, is_staff=user.is_staff,
+        ),
     )
     await call.answer("✅ Готово")
 
@@ -191,7 +229,7 @@ async def cb_panel_user_delete_confirm(call: CallbackQuery, session: AsyncSessio
         f"🗑 Юзер <code>{res.tg_id}</code> стёрт из БД.",
         f"• Конфигов отозвано и снято с серверов: {res.revoked_items}",
         f"• Удалено записей: платежи {res.purged.get('balance_txs', 0)}, "
-        f"счета {res.purged.get('invoices', 0)}, "
+        f"счета {res.purged.get('invoices', 0) + res.purged.get('star_payments', 0)}, "
         f"поддержка {res.purged.get('support_msgs', 0)}, "
         f"журнал {res.history_rows}",
     ]

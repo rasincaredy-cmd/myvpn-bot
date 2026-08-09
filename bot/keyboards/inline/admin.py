@@ -176,7 +176,8 @@ def users_list_kb(
 
 
 def user_card_kb(
-    user_id: int, is_blocked: bool, page: int, is_vip: bool = False
+    user_id: int, is_blocked: bool, page: int,
+    is_vip: bool = False, is_staff: bool = False,
 ) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="📱 Устройства", callback_data=f"{CB_PANEL}:udev:{user_id}:{page}")
@@ -190,13 +191,21 @@ def user_card_kb(
         text="⭐ Друг: ВКЛ" if is_vip else "⭐ Друг: выкл",
         callback_data=f"{CB_PANEL}:vip:{user_id}:{page}",
     )
+    # «Служебный» — не считать в статистике (свои, проверяющие). Не путать с
+    # «Другом»: тот про доступ к приватным серверам, и друг может ещё и платить.
+    kb.button(
+        text="🧰 Служебный: ВКЛ" if is_staff else "🧰 Служебный: выкл",
+        callback_data=f"{CB_PANEL}:staff:{user_id}:{page}",
+    )
     if is_blocked:
         kb.button(text="✅ Разблокировать", callback_data=f"{CB_PANEL}:unblock:{user_id}:{page}")
     else:
         kb.button(text="🚫 Заблокировать",  callback_data=f"{CB_PANEL}:block:{user_id}:{page}")
     kb.button(text="🗑 Стереть из БД", callback_data=f"{CB_PANEL}:udel:{user_id}:{page}")
     kb.button(text="« К списку", callback_data=f"{CB_PANEL}:users:{page}")
-    kb.adjust(2, 2, 2, 1, 1)
+    # Пар стало четыре: два флага юзера встали в одну строку, блокировка и
+    # стирание — в следующую.
+    kb.adjust(2, 2, 2, 2, 1)
     return kb.as_markup()
 
 

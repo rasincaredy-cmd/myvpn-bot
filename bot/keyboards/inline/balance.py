@@ -28,6 +28,26 @@ def topup_kb() -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
+def deposit_methods_kb(
+    bonus_percent: int, cryptobot: bool = True
+) -> InlineKeyboardMarkup:
+    """Выбор способа пополнения (этап D). Бонус за способ — прямо на кнопке:
+    выбирают из двух строк, а не из абзаца текста над ними.
+
+    cryptobot=False — токен Crypto Pay не настроен; звёздам настройка не нужна,
+    поэтому пополнение живо и без него."""
+    kb = InlineKeyboardBuilder()
+    if cryptobot:
+        kb.button(
+            text=f"💎 CryptoBot  +{bonus_percent}%",
+            callback_data=f"{CB_BAL}:dep:cb", style="success",
+        )
+    kb.button(text="⭐ Звёзды Telegram", callback_data=f"{CB_BAL}:dep:stars")
+    kb.button(text="« К балансу", callback_data=f"{CB_BAL}:my")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
 def deposit_amounts_kb(amounts: list[tuple[int, str]]) -> InlineKeyboardMarkup:
     """amounts: (рубли, подпись кнопки) — подписи считаются из прайсинга
     («90 ₽ — месяц»), чтобы суммы не выглядели случайными числами."""
@@ -35,8 +55,38 @@ def deposit_amounts_kb(amounts: list[tuple[int, str]]) -> InlineKeyboardMarkup:
     for rub, label in amounts:
         kb.button(text=label, callback_data=f"{CB_BAL}:dep:{rub}")
     kb.button(text="✏️ Своя сумма", callback_data=f"{CB_BAL}:dep:custom")
-    kb.button(text="« К балансу", callback_data=f"{CB_BAL}:my")
+    kb.button(text="« Назад", callback_data=f"{CB_BAL}:dep")
     kb.adjust(2, 2, 1, 1)
+    return kb.as_markup()
+
+
+def star_amounts_kb(amounts: list[tuple[int, str]]) -> InlineKeyboardMarkup:
+    """То же, что и суммы CryptoBot, но платят звёздами: на кнопке обе цифры —
+    сколько звёзд спишется и сколько рублей придёт на баланс. Одна цифра без
+    другой означала бы, что курс юзер узнаёт только на экране оплаты."""
+    kb = InlineKeyboardBuilder()
+    for rub, label in amounts:
+        kb.button(text=label, callback_data=f"{CB_BAL}:star:{rub}")
+    kb.button(text="✏️ Своя сумма", callback_data=f"{CB_BAL}:star:custom")
+    kb.button(text="« Назад", callback_data=f"{CB_BAL}:dep")
+    kb.adjust(2, 2, 1, 1)
+    return kb.as_markup()
+
+
+def star_invoice_kb(stars: int) -> InlineKeyboardMarkup:
+    """Клавиатура счёта в звёздах: кнопка оплаты и выход.
+
+    Без своей клавиатуры Telegram рисует у счёта ОДНУ кнопку «Оплатить», и
+    передумавший юзер остаётся в тупике — у счёта @CryptoBot выход есть, а
+    здесь не было.
+
+    Кнопка оплаты обязана быть ПЕРВОЙ (Telegram не примет клавиатуру счёта,
+    где pay-кнопка не в начале), её подпись клиент подставляет сам.
+    """
+    kb = InlineKeyboardBuilder()
+    kb.button(text=f"⭐ Оплатить {stars}", pay=True)
+    kb.button(text="✖️ Отмена", callback_data=f"{CB_BAL}:starx")
+    kb.adjust(1)
     return kb.as_markup()
 
 

@@ -4,7 +4,14 @@ from __future__ import annotations
 from sqlalchemy import delete, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bot.db.models import AuditLog, BalanceTx, CryptoInvoice, SupportMsg, User
+from bot.db.models import (
+    AuditLog,
+    BalanceTx,
+    CryptoInvoice,
+    StarPayment,
+    SupportMsg,
+    User,
+)
 
 
 async def purge_user_records(session: AsyncSession, user_id: int) -> dict[str, int]:
@@ -32,6 +39,11 @@ async def purge_user_records(session: AsyncSession, user_id: int) -> dict[str, i
     )).rowcount or 0
     counts["invoices"] = (await session.execute(
         delete(CryptoInvoice).where(CryptoInvoice.user_id == user_id)
+    )).rowcount or 0
+    # Звёздные платежи уходят вместе с остальными деньгами: строка нужна была
+    # ради идемпотентности зачисления, а зачислять уже некому — юзера нет.
+    counts["star_payments"] = (await session.execute(
+        delete(StarPayment).where(StarPayment.user_id == user_id)
     )).rowcount or 0
     counts["support_msgs"] = (await session.execute(
         delete(SupportMsg).where(SupportMsg.user_id == user_id)

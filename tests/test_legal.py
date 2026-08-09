@@ -36,9 +36,9 @@ def test_tariffs_text_follows_price_changes(monkeypatch) -> None:
     """
     from bot.config import settings
 
-    monkeypatch.setattr(settings, "price_base_rub", 150)
+    monkeypatch.setattr(settings, "price_first_rub", 150)
     text = build_tariffs_text()
-    assert "150 ₽" in text, "база из конфига не попала на экран"
+    assert "150 ₽" in text, "цена первой позиции из конфига не попала на экран"
     assert fmt_rub(term_price_kopeks(monthly_price_kopeks(1, 1), 12)) in text
 
 

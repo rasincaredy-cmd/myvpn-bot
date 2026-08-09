@@ -89,8 +89,13 @@ async def ensure_bot_key(ssh: SSHClient, session, server_id: int) -> bool:
         logger.warning("ensure_bot_key: сервер id={} не найден в базе", server_id)
         return False
 
-    # 1. Ключ на сервере — генерируем, если ещё нет. Ошибку ssh-keygen не
-    # глушим: check=True поднимет SSHError с внятным stderr.
+    # 1. Ключ на сервере — генерируем, если ещё нет. /root/.ssh может не
+    # существовать вовсе на свежем сервере (бот зашёл паролем, каталог
+    # никто не создавал) — ssh-keygen сам родительскую директорию не
+    # создаёт и молча падает "No such file or directory", поэтому каталог
+    # готовим заранее, до генерации. Ошибку ssh-keygen не глушим:
+    # check=True поднимет SSHError с внятным stderr.
+    await ssh.run("mkdir -p /root/.ssh && chmod 700 /root/.ssh", check=True)
     gen = (
         f"[ -f {KEY_PATH} ] || ssh-keygen -t ed25519 -N '' "
         f"-C 'myvpn-bot' -f {KEY_PATH}"
@@ -108,7 +113,6 @@ async def ensure_bot_key(ssh: SSHClient, session, server_id: int) -> bool:
     # финального \n, "cat >>" склеит ботовый ключ с последней строкой и
     # сломает оба — и ботовый, и тот, что был последним (на боевом сервере
     # это чужой ключ "termux" телефона Влада, ломать его нельзя).
-    await ssh.run("mkdir -p /root/.ssh && chmod 700 /root/.ssh", check=True)
     await ssh.run(
         "touch /root/.ssh/authorized_keys && chmod 600 /root/.ssh/authorized_keys",
         check=True,
@@ -153,7 +157,7 @@ async def ensure_bot_key(ssh: SSHClient, session, server_id: int) -> bool:
     try:
         async with SSHClient(creds) as probe:
             result = await probe.run("echo ok")
-    except (SSHError, OSError) as exc:
+    except (SSHError, OSError, asyncssh.Error) as exc:
         logger.warning(
             "ensure_bot_key: вход по ключу не подтверждён на сервере id={}: {}",
             server_id,

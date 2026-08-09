@@ -25,7 +25,7 @@ from bot.keyboards.inline import (
     main_menu,
 )
 from bot.loader import bot
-from bot.services import amnezia
+from bot.services import amnezia, hardening
 from bot.services.crypto import encrypt
 from bot.services.ssh import SSHClient, SSHCredentials, SSHError
 from bot.states.install import InstallStates
@@ -356,6 +356,32 @@ async def step_run(
     server.last_error = None
     await session.commit()
 
+    # Новый сервер обязан подниматься уже защищённым: пароль выключен,
+    # фаервол включён, банилка работает. Вызывается ПОСЛЕ подъёма VPN —
+    # фаервол строится от портов, которые реально слушают, и порт VPN
+    # должен уже слушать к этому моменту.
+    #
+    # Отдельное подключение — не оплошность: блок `async with SSHClient`
+    # выше уже закрыт, а внутри `harden` бот заводит себе ключ и гасит
+    # пароль, так что тянуть старое соединение через полминуты работы
+    # смысла нет.
+    await progress("Привожу сервер к эталону безопасности...")
+    try:
+        async with SSHClient(creds) as ssh:
+            report = await hardening.harden(
+                ssh, session, server.id, wg_port=data["wg_port"], progress=progress
+            )
+        if report.compliant:
+            security_line = "🛡 Защита: сервер соответствует эталону"
+        else:
+            security_line = (
+                "⚠️ Защита: осталось несоответствий — "
+                f"{len(report.failed)} (см. кнопку «🛡 Защита» в карточке)"
+            )
+    except Exception as exc:  # noqa: BLE001 — сервер уже установлен, о проблеме сообщаем
+        logger.warning("Приведение к эталону сорвалось: {}", exc)
+        security_line = "⚠️ Защита: не удалась, проверь кнопкой «🛡 Защита»"
+
     user = await repo.get_or_create_user(
         session,
         tg_id=call.from_user.id,
@@ -364,6 +390,6 @@ async def step_run(
     )
     await bot.send_message(
         chat_id,
-        t.install_done.format(name=server.name),
+        t.install_done.format(name=server.name) + f"\n\n{security_line}",
         reply_markup=main_menu(user.is_admin),
     )

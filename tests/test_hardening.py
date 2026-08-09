@@ -70,6 +70,18 @@ def test_no_pipe_into_grep_q(text: str) -> None:
     assert not offenders, "конвейер в grep -q под pipefail:\n" + "\n".join(offenders)
 
 
+def test_panel_restricted_to_vpn(text: str) -> None:
+    # Панель x-ui открывается только из VPN, а не всему интернету.
+    assert '"$VPN_SUBNET" to any port "$PANEL_PORT"' in text
+    assert '"$BYPASS_SUBNET" to any port "$PANEL_PORT"' in text
+
+
+def test_firewall_built_from_listening_ports(text: str) -> None:
+    # Правила строятся от того, что реально слушает наружу. Список портов
+    # из головы — верный способ забыть нужный и обрезать живой сервис.
+    assert "listening_ports" in text
+
+
 def test_rollback_removes_the_file_it_created(text: str) -> None:
     # Пароль выключается отдельным файлом настроек, значит откат обязан
     # именно УДАЛИТЬ этот файл. Восстановление старого sshd_config его не

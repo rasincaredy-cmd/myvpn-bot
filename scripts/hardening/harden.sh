@@ -6,6 +6,7 @@
 #   harden.sh plan          — показать, что изменится
 #   harden.sh apply-journal  — поставить потолок журналу и обрезать его
 #   harden.sh apply-fail2ban — банилка перебора с белым списком
+#   harden.sh apply-firewall — фаервол от слушающих портов (с автооткатом)
 #
 # Спека: docs/superpowers/specs/2026-08-08-zashchita-serverov-design.md
 set -uo pipefail
@@ -234,6 +235,61 @@ CONF
   return 0
 }
 
+cmd_apply_firewall() {
+  echo "=== фаервол ==="
+  if ! command -v ufw >/dev/null 2>&1; then
+    DEBIAN_FRONTEND=noninteractive apt-get install -y ufw >/dev/null 2>&1 \
+      || { fail "не удалось установить ufw"; return 1; }
+  fi
+
+  local ports
+  ports="$(listening_ports)"
+  if [ -z "$ports" ]; then
+    fail "не удалось определить слушающие порты — включать фаервол вслепую НЕЛЬЗЯ"
+    return 1
+  fi
+
+  # Автооткат ДО любых изменений: если что-то пойдёт не так и связь
+  # пропадёт, сервер сам выключит фаервол через 10 минут.
+  arm_rollback rollback-ufw "ufw --force disable" || return 1
+
+  # Без этого ufw дропает транзитный трафик: VPN подключается, а интернета
+  # у клиента нет. Самая частая авария при включении фаервола на VPN-узле.
+  sed -i 's/^DEFAULT_FORWARD_POLICY=.*/DEFAULT_FORWARD_POLICY="ACCEPT"/' /etc/default/ufw
+  if ! grep -q '^DEFAULT_FORWARD_POLICY="ACCEPT"' /etc/default/ufw; then
+    echo 'DEFAULT_FORWARD_POLICY="ACCEPT"' >> /etc/default/ufw
+  fi
+
+  ufw --force reset >/dev/null 2>&1
+  ufw default deny incoming >/dev/null
+  ufw default allow outgoing >/dev/null
+  ufw default allow routed >/dev/null
+
+  # Открываем ровно то, что слушает наружу, кроме панели управления.
+  local port proto num
+  while read -r port; do
+    [ -z "$port" ] && continue
+    proto="${port%%/*}"
+    num="${port##*/}"
+    [ "$num" = "$PANEL_PORT" ] && continue
+    ufw allow "${num}/${proto}" >/dev/null && echo "  открыт ${num}/${proto}"
+  done <<<"$ports"
+
+  # Панель управления — только изнутри VPN и обхода.
+  ufw allow from "$VPN_SUBNET" to any port "$PANEL_PORT" proto tcp >/dev/null
+  ufw allow from "$BYPASS_SUBNET" to any port "$PANEL_PORT" proto tcp >/dev/null
+  echo "  панель ${PANEL_PORT} — только из ${VPN_SUBNET} и ${BYPASS_SUBNET}"
+
+  if ! ufw --force enable >/dev/null; then
+    fail "ufw не включился"
+    return 1
+  fi
+  ok "фаервол включён"
+  ufw status verbose 2>&1 | head -12 | sed 's/^/  /'
+  echo "Проверь связь и VPN у клиентов, затем вызови: $0 rollback-cancel"
+  return 0
+}
+
 # --- Выключение входа по паролю -------------------------------------------
 #
 # Пароль гасится ОТДЕЛЬНЫМ файлом настроек, а не правкой sshd_config.
@@ -324,7 +380,8 @@ case "${1:-}" in
   plan)  cmd_plan ;;
   apply-journal) cmd_apply_journal ;;
   apply-fail2ban) cmd_apply_fail2ban ;;
+  apply-firewall) cmd_apply_firewall ;;
   disable-password) shift; cmd_disable_password "${1:-}" ;;
   rollback-cancel)  cmd_rollback_cancel ;;
-  *) echo "использование: $0 {check|plan|apply-journal|apply-fail2ban|disable-password|rollback-cancel}" >&2; exit 2 ;;
+  *) echo "использование: $0 {check|plan|apply-journal|apply-fail2ban|apply-firewall|disable-password|rollback-cancel}" >&2; exit 2 ;;
 esac

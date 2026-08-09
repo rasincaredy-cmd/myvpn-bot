@@ -32,6 +32,7 @@ from bot.keyboards.inline.balance import (
     extend_kb,
     invoice_kb,
     star_amounts_kb,
+    star_invoice_kb,
     topup_kb,
 )
 from bot.keyboards.inline.devices import (
@@ -169,6 +170,7 @@ __all__ = [
     "server_wdtt_list_kb",
     "servers_list",
     "star_amounts_kb",
+    "star_invoice_kb",
     "stats_nav",
     "subscription_kb",
     "support_dialog_kb",

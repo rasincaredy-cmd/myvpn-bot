@@ -244,9 +244,27 @@ async def step_bal_custom_amount(
     await state.clear()
     user = await _get_user(session, message)
     if method == "stars":
-        await send_star_invoice(message.answer, user, int(raw) * 100)
+        await send_star_invoice(message, user, int(raw) * 100)
         return
     await _create_and_show_invoice(message.answer, session, user, int(raw) * 100)
+
+
+@router.callback_query(F.data == f"{CB_BAL}:starx")
+async def cb_bal_star_cancel(call: CallbackQuery, session: AsyncSession) -> None:
+    """Отмена счёта в звёздах.
+
+    Счёт УДАЛЯЕМ, а не перерисовываем: сообщение-счёт Telegram редактировать
+    не даёт, и обычный «« К балансу» здесь свалился бы с ошибкой. Баланс
+    поэтому уходит новым сообщением.
+    """
+    user = await _get_user(session, call)
+    try:
+        await call.message.delete()
+    except TelegramBadRequest:
+        # Счёт старше 48 часов или уже удалён — экран баланса всё равно нужен.
+        pass
+    await _render_balance(call.message.answer, session, user)
+    await call.answer()
 
 
 @router.callback_query(F.data.startswith(f"{CB_BAL}:star:"))

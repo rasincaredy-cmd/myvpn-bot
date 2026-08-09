@@ -73,6 +73,23 @@ def star_amounts_kb(amounts: list[tuple[int, str]]) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
+def star_invoice_kb(stars: int) -> InlineKeyboardMarkup:
+    """Клавиатура счёта в звёздах: кнопка оплаты и выход.
+
+    Без своей клавиатуры Telegram рисует у счёта ОДНУ кнопку «Оплатить», и
+    передумавший юзер остаётся в тупике — у счёта @CryptoBot выход есть, а
+    здесь не было.
+
+    Кнопка оплаты обязана быть ПЕРВОЙ (Telegram не примет клавиатуру счёта,
+    где pay-кнопка не в начале), её подпись клиент подставляет сам.
+    """
+    kb = InlineKeyboardBuilder()
+    kb.button(text=f"⭐ Оплатить {stars}", pay=True)
+    kb.button(text="✖️ Отмена", callback_data=f"{CB_BAL}:starx")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
 def invoice_kb(pay_url: str, row_id: int) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="💳 Оплатить в @CryptoBot", url=pay_url, style="success")

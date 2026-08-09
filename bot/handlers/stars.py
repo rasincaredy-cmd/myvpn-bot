@@ -12,6 +12,7 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
+from bot.keyboards.inline import star_invoice_kb
 from bot.services import billing, stars as stars_svc
 from bot.services.pricing import fmt_rub, stars_for_kopeks
 
@@ -42,6 +43,7 @@ async def send_star_invoice(message: Message, user, amount_kopeks: int) -> None:
         payload=f"{_PAYLOAD_PREFIX}:{user.id}:{amount_kopeks}",
         currency="XTR",
         prices=[LabeledPrice(label=fmt_rub(amount_kopeks), amount=stars)],
+        reply_markup=star_invoice_kb(stars),
     )
 
 

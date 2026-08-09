@@ -11,7 +11,10 @@
 #                              ssh обязателен всегда; доп. порты (например
 #                              ещё не поднятый на момент вызова VPN-порт)
 #                              передаются аргументами и тоже обязаны слушать
-#                              до включения фаервола.
+#                              до включения фаервола. Формат аргумента строго
+#                              `tcp/NNN` или `udp/NNN` — голое число (`585`)
+#                              не распознаётся и приведёт к отказу включать
+#                              фаервол.
 #   harden.sh apply-stats    — включить сбор статистики (sysstat)
 #   harden.sh disable-password [путь_к_ключу]
 #                            — выключить вход по паролю (с автооткатом)
@@ -458,7 +461,10 @@ cmd_apply_firewall() {
   if { systemctl is-active --quiet ssh 2>/dev/null || systemctl is-active --quiet sshd 2>/dev/null; } \
      && ss -tlnH 2>/dev/null | awk -v p=":${ssh_port}\$" '$4 ~ p {f=1} END{exit !f}'; then
     ok "ssh-порт в правилах фаервола, sshd жив — снимаю автооткат"
-    rollback_cancel_unit rollback-ufw
+    if ! rollback_cancel_unit rollback-ufw; then
+      fail "не удалось снять автооткат — через 10 минут он выключит фаервол"
+      return 1
+    fi
     echo "автооткат снят, фаервол применён"
   else
     fail "sshd не активен или не слушает ${ssh_port}/tcp после включения фаервола — автооткат ОСТАВЛЕН вооружённым, проверь вручную и вызови: $0 rollback-cancel"
@@ -618,8 +624,6 @@ cmd_disable_password() {
     return 1
   fi
 
-  [ -f "$SSHD_DROPIN_LEGACY" ] && rm -f "$SSHD_DROPIN_LEGACY"
-
   # Откат удаляет ровно то, что мы создаём, и поднимает sshd обратно.
   arm_rollback rollback-sshd "rm -f ${SSHD_DROPIN}; systemctl restart ssh 2>/dev/null || systemctl restart sshd" || return 1
 
@@ -664,10 +668,22 @@ CONF
   # авария при простом повторном прогоне на уже настроенном сервере.
   if verify_key_login "${1:-}"; then
     ok "вход по ключу подтверждён после изменения — снимаю автооткат"
-    rollback_cancel_unit rollback-sshd
+    if ! rollback_cancel_unit rollback-sshd; then
+      fail "не удалось снять автооткат — через 10 минут он вернёт вход по паролю"
+      return 1
+    fi
   else
     fail "вход по ключу НЕ подтверждён после изменения — автооткат ОСТАВЛЕН вооружённым"
     return 1
+  fi
+
+  # Старое имя файла из ранней версии сценария убираем ТОЛЬКО здесь —
+  # когда новый уже применён и подтверждён. Удали мы его раньше и споткнись
+  # на вооружении автоотката, сервер остался бы вообще без drop-in: пароль
+  # тихо вернулся бы при ближайшем рестарте sshd.
+  if [ -f "$SSHD_DROPIN_LEGACY" ]; then
+    rm -f "$SSHD_DROPIN_LEGACY"
+    echo "  убран старый файл настроек ${SSHD_DROPIN_LEGACY}"
   fi
   return 0
 }

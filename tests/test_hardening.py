@@ -64,7 +64,11 @@ def _closes_pipe_early(segment: str) -> bool:
     дочитает весь свой вывод (grep -q/-l и т.п., grep -m1, head -N)."""
     segment = segment.strip()
     return bool(
-        re.match(r"grep\s+(-\w*[qQlL]\b|--quiet\b|--silent\b)", segment)
+        # Границу слова после [qQlL] ставить НЕЛЬЗЯ: она ломает ловлю
+        # комбинированных флагов `-qE`, `-qF`, `-qx`, `-qi` — а именно ими
+        # написан весь сценарий. Проверено: с `\b` страж пропускал их все,
+        # то есть был слабее, чем до расширения.
+        re.match(r"grep\s+(-\w*[qQlL]\w*(\s|$)|--quiet\b|--silent\b)", segment)
         or re.match(r"grep\s+.*(-m\s*1\b|--max-count(=|\s+)1\b)", segment)
         or re.match(r"head\s+(-1\b|-n\s*1\b)", segment)
     )

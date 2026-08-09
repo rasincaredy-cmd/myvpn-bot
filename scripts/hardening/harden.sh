@@ -4,7 +4,8 @@
 #
 #   harden.sh check         — проверить соответствие эталону, ничего не менять
 #   harden.sh plan          — показать, что изменится
-#   harden.sh apply-journal — поставить потолок журналу и обрезать его
+#   harden.sh apply-journal  — поставить потолок журналу и обрезать его
+#   harden.sh apply-fail2ban — банилка перебора с белым списком
 #
 # Спека: docs/superpowers/specs/2026-08-08-zashchita-serverov-design.md
 set -uo pipefail
@@ -190,6 +191,49 @@ cmd_apply_journal() {
   echo "стало: $(journalctl --disk-usage 2>/dev/null)"
 }
 
+cmd_apply_fail2ban() {
+  echo "=== банилка перебора ==="
+  if ! systemctl is-active --quiet fail2ban; then
+    DEBIAN_FRONTEND=noninteractive apt-get install -y fail2ban >/dev/null 2>&1 \
+      || { fail "не удалось установить fail2ban"; return 1; }
+  fi
+
+  # Белый список — самое важное здесь. Без собственного адреса банилка
+  # забанит САМОГО БОТА: он ходит по SSH на сервер через его же внешний
+  # адрес. Подсети VPN и обхода — путь администратора внутрь, который
+  # должен выжить, даже если внешний адрес сменился.
+  if [ -z "$OWN_IP" ]; then
+    fail "не удалось определить собственный адрес — без него белый список опасен"
+    return 1
+  fi
+
+  cat > /etc/fail2ban/jail.local <<CONF
+[DEFAULT]
+ignoreip = 127.0.0.1/8 ::1 ${OWN_IP} ${VPN_SUBNET} ${BYPASS_SUBNET}
+bantime  = 1h
+findtime = 10m
+maxretry = 5
+backend  = systemd
+
+[sshd]
+enabled = true
+CONF
+
+  systemctl enable fail2ban >/dev/null 2>&1
+  if ! systemctl restart fail2ban; then
+    fail "fail2ban не запустился"
+    return 1
+  fi
+  sleep 3
+  if ! systemctl is-active --quiet fail2ban; then
+    fail "fail2ban не активен после запуска"
+    return 1
+  fi
+  ok "банилка запущена, белый список: ${OWN_IP} ${VPN_SUBNET} ${BYPASS_SUBNET}"
+  fail2ban-client status sshd 2>&1 | sed 's/^/  /'
+  return 0
+}
+
 # --- Выключение входа по паролю -------------------------------------------
 #
 # Пароль гасится ОТДЕЛЬНЫМ файлом настроек, а не правкой sshd_config.
@@ -279,7 +323,8 @@ case "${1:-}" in
   check) cmd_check ;;
   plan)  cmd_plan ;;
   apply-journal) cmd_apply_journal ;;
+  apply-fail2ban) cmd_apply_fail2ban ;;
   disable-password) shift; cmd_disable_password "${1:-}" ;;
   rollback-cancel)  cmd_rollback_cancel ;;
-  *) echo "использование: $0 {check|plan|apply-journal|disable-password|rollback-cancel}" >&2; exit 2 ;;
+  *) echo "использование: $0 {check|plan|apply-journal|apply-fail2ban|disable-password|rollback-cancel}" >&2; exit 2 ;;
 esac

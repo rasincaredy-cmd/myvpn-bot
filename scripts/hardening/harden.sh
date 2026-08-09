@@ -239,6 +239,20 @@ check_firewall() {
   else
     ok "панель x-ui не открыта наружу"
   fi
+  # Minor-8: до сих пор проверялось только «фаервол включён и по умолчанию
+  # запрещает». Но включённый ufw с политикой deny и НУЛЁМ разрешающих
+  # правил (например после ручной правки админом или неудавшегося
+  # `ufw --force reset`) — это запертый сервер: ssh закрыт, бот и админ
+  # внутрь не попадают, а check при этом рапортовал «соответствует
+  # эталону». Минимальная сверка: у порта, на котором реально слушает
+  # sshd, обязано быть правило ALLOW/LIMIT.
+  local ssh_port
+  ssh_port="$(current_ssh_port)"
+  if rule_present "$ufw_status" "$ssh_port" tcp; then
+    ok "ssh-порт ${ssh_port}/tcp разрешён в фаерволе"
+  else
+    fail "в фаерволе НЕТ разрешающего правила для ssh-порта ${ssh_port}/tcp — сервер заперт, подключиться нельзя"
+  fi
 }
 
 check_journal() {
@@ -265,6 +279,51 @@ check_stats() {
   fi
 }
 
+# Имена юнитов автоотката. Один список на весь сценарий: и вооружение, и
+# отмена, и проверка обязаны говорить об одних и тех же юнитах.
+ROLLBACK_UNITS="rollback-sshd rollback-ufw"
+
+# Сколько секунд осталось до срабатывания автоотката. Таймер заводится
+# через `systemd-run --on-active=`, то есть он МОНОТОННЫЙ: systemd отдаёт
+# время срабатывания в NextElapseUSecMonotonic — микросекундах от загрузки
+# машины, которые сравнивать надо с текущим uptime, а не с настенными
+# часами. Не смогли посчитать — не выдумываем, возвращаем ошибку.
+rollback_seconds_left() {
+  local unit="$1" next up
+  next="$(systemctl show "${unit}.timer" --property=NextElapseUSecMonotonic --value 2>/dev/null)"
+  next="${next//[!0-9]/}"
+  [ -n "$next" ] || return 1
+  up="$(awk '{print int($1)}' /proc/uptime 2>/dev/null)"
+  [ -n "$up" ] || return 1
+  echo $(( next / 1000000 - up ))
+}
+
+# Critical-1: сервер с вооружённым автооткатом ВЫГЛЯДИТ настроенным, но
+# через считанные минуты сам снимет защиту — удалит файл настроек sshd
+# (вход по паролю снова разрешён) или выключит фаервол. Опасный шаг мог
+# отработать наполовину: настройка применилась, самопроверка после неё не
+# прошла, автооткат честно оставлен вооружённым, а check видел только
+# применённую настройку и рапортовал «соответствует эталону». Проверяем
+# сами таймеры: пока хоть один взведён, соответствия эталону нет.
+check_rollback_disarmed() {
+  local unit armed=0 left mins
+  for unit in $ROLLBACK_UNITS; do
+    systemctl is-active --quiet "${unit}.timer" 2>/dev/null || continue
+    armed=1
+    left="$(rollback_seconds_left "$unit")" || left=""
+    if [ -n "$left" ] && [ "$left" -gt 0 ] 2>/dev/null; then
+      mins=$(( (left + 59) / 60 ))
+      fail "вооружён автооткат ${unit}: через ${mins} мин (${left} с) сервер САМ снимет эту защиту. Убедись, что доступ по ключу жив, и сними: $0 rollback-cancel"
+    else
+      fail "вооружён автооткат ${unit}: сработает с минуты на минуту и САМ снимет эту защиту. Убедись, что доступ по ключу жив, и сними: $0 rollback-cancel"
+    fi
+  done
+  if [ "$armed" -eq 0 ]; then
+    ok "вооружённых автооткатов нет — защита сама не снимется"
+  fi
+  return 0
+}
+
 cmd_check() {
   echo "=== проверка соответствия эталону ==="
   echo "собственный адрес: ${OWN_IP:-НЕ ОПРЕДЕЛЁН}"
@@ -273,6 +332,7 @@ cmd_check() {
   check_firewall
   check_journal
   check_stats
+  check_rollback_disarmed
   echo
   if [ "$FAILED" -eq 0 ]; then
     echo "ИТОГ: сервер соответствует эталону"
@@ -628,6 +688,14 @@ SSHD_DROPIN=/etc/ssh/sshd_config.d/00-hardening.conf
 # согласны в содержимом, так что сама по себе не опасна).
 SSHD_DROPIN_LEGACY=/etc/ssh/sshd_config.d/99-hardening.conf
 
+# Minor-5: любой откат обязан убирать ОБА файла. Оставить легаси — значит
+# не вернуть вход по паролю: содержимое у него то же самое, sshd прочитает
+# его и оставит пароль выключенным. Это касается и немедленных откатов
+# внутри cmd_disable_password, и отложенного (см. arm_rollback ниже).
+remove_password_dropins() {
+  rm -f "$SSHD_DROPIN" "$SSHD_DROPIN_LEGACY"
+}
+
 # I8: юнит ssh называется по-разному (ssh на Debian/Ubuntu, sshd на
 # большинстве прочих дистрибутивов). Раньше рестарт был прибит к одному
 # имени — на системе с другим юнитом рестарт молча не случался бы, и
@@ -676,7 +744,9 @@ rollback_cancel_unit() {
 
 cmd_rollback_cancel() {
   local n=0
-  for unit in rollback-sshd rollback-ufw; do
+  # Тот же список, что проверяет check_rollback_disarmed — иначе проверка
+  # и отмена разъедутся, и «снятый» автооткат останется взведённым.
+  for unit in $ROLLBACK_UNITS; do
     rollback_cancel_unit "$unit" && n=$((n+1))
   done
   [ "$n" -eq 0 ] && echo "активных автооткатов не было"
@@ -684,16 +754,26 @@ cmd_rollback_cancel() {
 }
 
 # Доказать вход по ключу ДО того, как гасить пароль.
+#
+# Important-3: ни порт, ни пользователь не хардкодятся. Порт берём из
+# эффективного конфига sshd (current_ssh_port) — на сервере с ssh на 2222
+# проба в порт 22 всегда падала бы, и пароль остался бы включённым
+# навсегда. Пользователь — текущий (`id -un`): сценарий запускается тем
+# же пользователем, которым бот заходит на сервер, а «root» на сервере с
+# другим пользователем — это гарантированный отказ.
 verify_key_login() {
-  local key="${1:-/root/.ssh/bot_server1}"
+  local key="${1:-/root/.ssh/bot_server1}" port user
   [ -f "$key" ] || { echo "нет файла ключа $key"; return 1; }
+  port="$(current_ssh_port)"
+  user="$(id -un 2>/dev/null)"
+  [ -n "$user" ] || user="root"
   # Тот же капкан, что в check_password_off: под pipefail `... | grep -q`
   # ломается от SIGPIPE. Здесь это особенно опасно — от результата зависит,
   # можно ли гасить пароль. Поэтому забираем вывод в переменную.
   local out
   out="$(ssh -n -i "$key" -o StrictHostKeyChecking=no -o PasswordAuthentication=no \
       -o PubkeyAuthentication=yes -o BatchMode=yes -o ConnectTimeout=10 \
-      root@127.0.0.1 'echo ok' 2>/dev/null)"
+      -p "$port" "${user}@127.0.0.1" 'echo ok' 2>/dev/null)"
   [ "$out" = "ok" ]
 }
 
@@ -713,8 +793,14 @@ cmd_disable_password() {
     return 1
   fi
 
-  # Откат удаляет ровно то, что мы создаём, и поднимает sshd обратно.
-  arm_rollback rollback-sshd "rm -f ${SSHD_DROPIN}; systemctl restart ssh 2>/dev/null || systemctl restart sshd" || return 1
+  # Откат удаляет ОБА файла настроек и поднимает sshd обратно.
+  #
+  # Minor-5: легаси-файл 99-hardening.conf с тем же содержимым лежит на
+  # боевом сервере и удаляется только в самом конце УСПЕШНОГО прогона.
+  # Откат, который сносит лишь 00-, не вернул бы вход по паролю вовсе:
+  # sshd прочитал бы 99- и оставил пароль выключенным. То есть страховка
+  # была фиктивной ровно в тот момент, когда она обязана спасать.
+  arm_rollback rollback-sshd "rm -f ${SSHD_DROPIN} ${SSHD_DROPIN_LEGACY}; systemctl restart ssh 2>/dev/null || systemctl restart sshd" || return 1
 
   mkdir -p /etc/ssh/sshd_config.d
   cat > "$SSHD_DROPIN" <<'CONF'
@@ -725,13 +811,13 @@ CONF
 
   if ! sshd -t 2>&1; then
     fail "конфиг sshd невалиден — откатываю немедленно"
-    rm -f "$SSHD_DROPIN"
+    remove_password_dropins
     cmd_rollback_cancel
     return 1
   fi
   if ! restart_ssh_service; then
     fail "sshd не перезапустился — откатываю немедленно"
-    rm -f "$SSHD_DROPIN"
+    remove_password_dropins
     restart_ssh_service || true
     cmd_rollback_cancel
     return 1
@@ -743,7 +829,7 @@ CONF
   # намерение.
   if ! password_actually_off; then
     fail "после рестарта sshd -T всё ещё показывает пароль включённым — откатываю немедленно"
-    rm -f "$SSHD_DROPIN"
+    remove_password_dropins
     restart_ssh_service || true
     cmd_rollback_cancel
     return 1

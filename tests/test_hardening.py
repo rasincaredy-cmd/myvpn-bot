@@ -3,6 +3,7 @@
 Каждая проверка здесь стоит за конкретной аварией, которая случается,
 если соответствующий кусок сценария потерять.
 """
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -15,6 +16,84 @@ SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "hardening" / "har
 @pytest.fixture(scope="module")
 def text() -> str:
     return SCRIPT.read_text(encoding="utf-8")
+
+
+# --- Общая оснастка поведенческих тестов сценария ---------------------------
+#
+# Сценарий гоняем по-настоящему (`bash harden.sh check`), подсовывая ему
+# поддельные systemctl/ufw/sshd в начало PATH. Так проверяется поведение, а
+# не наличие подстроки в исходнике: тест на тексте остался бы зелёным на
+# сломанной логике.
+
+
+def _fake_bin(tmp_path: Path, **scripts: str) -> Path:
+    """Каталог с подставными командами. Ключ — имя команды, значение — тело."""
+    d = tmp_path / "fakebin"
+    d.mkdir(exist_ok=True)
+    for name, body in scripts.items():
+        p = d / name
+        p.write_text("#!/usr/bin/env bash\n" + body, encoding="utf-8")
+        p.chmod(0o755)
+    return d
+
+
+_FAKE_SYSTEMCTL = """
+case "$1" in
+  is-active)
+    unit="$2"; [ "$unit" = "--quiet" ] && unit="$3"
+    for u in ${ACTIVE_UNITS:-}; do
+      [ "$u" = "$unit" ] && exit 0
+    done
+    exit 3 ;;
+  show)
+    echo "${NEXT_ELAPSE:-}"
+    exit 0 ;;
+esac
+exit 3
+"""
+
+_FAKE_SSHD = """
+if [ "${1:-}" = "-T" ]; then
+  echo "port ${FAKE_SSH_PORT:-22}"
+  echo "passwordauthentication no"
+  exit 0
+fi
+exit 0
+"""
+
+_FAKE_UFW = 'printf "%s" "${FAKE_UFW_STATUS:-}"\n'
+
+
+def _run_check(
+    tmp_path: Path,
+    *,
+    active_units: str = "",
+    ufw_status: str = "",
+    ssh_port: str = "22",
+    next_elapse: str = "",
+) -> subprocess.CompletedProcess:
+    binp = _fake_bin(
+        tmp_path,
+        systemctl=_FAKE_SYSTEMCTL,
+        sshd=_FAKE_SSHD,
+        ufw=_FAKE_UFW,
+        **{"fail2ban-client": "exit 0\n", "ss": "exit 0\n"},
+    )
+    env = {
+        **os.environ,
+        "PATH": f"{binp}:{os.environ.get('PATH', '')}",
+        "ACTIVE_UNITS": active_units,
+        "FAKE_UFW_STATUS": ufw_status,
+        "FAKE_SSH_PORT": ssh_port,
+        "NEXT_ELAPSE": next_elapse,
+    }
+    return subprocess.run(
+        ["bash", str(SCRIPT), "check"], capture_output=True, text=True, env=env
+    )
+
+
+def _fail_lines(out: str) -> list[str]:
+    return [ln for ln in out.splitlines() if ln.startswith("FAIL ")]
 
 
 def test_script_exists() -> None:
@@ -348,4 +427,210 @@ def test_firewall_checks_required_port_reachability_before_rollback(text: str) -
     assert check_idx < rollback_idx, (
         "проверка достижимости обязательного порта стоит после "
         "arm_rollback, а не до него"
+    )
+
+
+# --- Critical-1: вооружённый автооткат — это НЕ соответствие эталону -------
+
+
+_UFW_GOOD = (
+    "Status: active\n"
+    "Default: deny (incoming), allow (outgoing), allow (routed)\n"
+    "\n"
+    "To                         Action      From\n"
+    "--                         ------      ----\n"
+    "22/tcp                     ALLOW       Anywhere\n"
+    "585/udp                    ALLOW       Anywhere\n"
+)
+
+
+def test_check_fails_when_sshd_rollback_is_armed(tmp_path: Path) -> None:
+    """Сценарий А из ревью: пароль выключен и sshd -T это подтверждает, но
+    самопроверка после рестарта не прошла и автооткат оставлен вооружённым.
+    Через 10 минут файл настроек удалится и вход по паролю снова разрешён.
+    Пока таймер взведён, «сервер соответствует эталону» — враньё.
+    """
+    res = _run_check(
+        tmp_path,
+        active_units="rollback-sshd.timer",
+        ufw_status=_UFW_GOOD,
+    )
+    fails = "\n".join(_fail_lines(res.stdout))
+    assert "rollback-sshd" in fails, (
+        "check не заметил вооружённый автооткат sshd:\n" + res.stdout
+    )
+    assert "rollback-cancel" in fails, "в тексте FAIL не сказано, что делать"
+    assert res.returncode != 0, "check вернул успех при вооружённом автооткате"
+
+
+def test_check_fails_when_ufw_rollback_is_armed(tmp_path: Path) -> None:
+    """Сценарий Б: фаервол включён и выглядит правильным, но самопроверка
+    sshd не прошла (socket-активация: ssh.service неактивен) и автооткат
+    ufw остался вооружённым — через 10 минут фаервол выключится."""
+    res = _run_check(
+        tmp_path,
+        active_units="rollback-ufw.timer",
+        ufw_status=_UFW_GOOD,
+    )
+    fails = "\n".join(_fail_lines(res.stdout))
+    assert "rollback-ufw" in fails, (
+        "check не заметил вооружённый автооткат фаервола:\n" + res.stdout
+    )
+    assert res.returncode != 0
+
+
+def test_check_reports_no_armed_rollbacks_when_timers_are_down(tmp_path: Path) -> None:
+    """Обратная сторона: на честно настроенном сервере проверка автооткатов
+    не должна выдумывать несоответствие — иначе она бесполезна."""
+    res = _run_check(tmp_path, active_units="", ufw_status=_UFW_GOOD)
+    fails = "\n".join(_fail_lines(res.stdout))
+    assert "rollback-sshd" not in fails and "rollback-ufw" not in fails, (
+        "проверка автооткатов срабатывает на снятых таймерах:\n" + res.stdout
+    )
+    assert "автооткат" in res.stdout, "проверка автооткатов не выполнялась вовсе"
+
+
+def test_check_shows_time_left_of_armed_rollback(tmp_path: Path) -> None:
+    """Админ должен понимать, сколько у него осталось: «через N мин сервер
+    сам снимет защиту» — иначе FAIL не отличить от вечной проблемы."""
+    uptime = int(float(Path("/proc/uptime").read_text().split()[0]))
+    # таймер сработает через ~5 минут после «сейчас»
+    next_elapse = str((uptime + 300) * 1_000_000)
+    res = _run_check(
+        tmp_path,
+        active_units="rollback-ufw.timer",
+        ufw_status=_UFW_GOOD,
+        next_elapse=next_elapse,
+    )
+    fails = "\n".join(_fail_lines(res.stdout))
+    assert "5 мин" in fails, "в FAIL нет остатка времени до срабатывания:\n" + res.stdout
+
+
+# --- Minor-8: фаервол без разрешающего правила для ssh запирает сервер ------
+
+
+def test_check_fails_when_ssh_port_has_no_allow_rule(tmp_path: Path) -> None:
+    """Активный ufw с политикой deny и без единого allow-правила для ssh —
+    это запертый сервер: ни бот, ни админ внутрь не попадут. Раньше такой
+    сервер проходил проверку целиком."""
+    status = (
+        "Status: active\n"
+        "Default: deny (incoming), allow (outgoing), allow (routed)\n"
+        "\n"
+        "To                         Action      From\n"
+        "--                         ------      ----\n"
+        "585/udp                    ALLOW       Anywhere\n"
+    )
+    res = _run_check(tmp_path, ufw_status=status, ssh_port="2222")
+    fails = "\n".join(_fail_lines(res.stdout))
+    assert "2222/tcp" in fails, (
+        "check не заметил отсутствие разрешающего правила для ssh-порта:\n" + res.stdout
+    )
+    assert res.returncode != 0
+
+
+def test_check_accepts_allow_rule_on_nonstandard_ssh_port(tmp_path: Path) -> None:
+    """Порт берётся из sshd -T, а не из «наверняка 22»: на сервере с ssh на
+    2222 правило для 2222/tcp обязано считаться нормой, иначе проверка
+    вечно красная и кнопка «привести в порядок» ничего не чинит."""
+    status = (
+        "Status: active\n"
+        "Default: deny (incoming), allow (outgoing), allow (routed)\n"
+        "\n"
+        "To                         Action      From\n"
+        "--                         ------      ----\n"
+        "2222/tcp                   ALLOW       Anywhere\n"
+    )
+    res = _run_check(tmp_path, ufw_status=status, ssh_port="2222")
+    fails = "\n".join(_fail_lines(res.stdout))
+    assert "ssh-порт" not in fails, (
+        "правило для нестандартного ssh-порта не распознано:\n" + res.stdout
+    )
+    assert "OK   ssh-порт 2222/tcp" in res.stdout
+
+
+# --- Important-3: проба входа по ключу — по реальным порту и пользователю ---
+
+
+def _extract_func(text: str, name: str) -> str:
+    match = re.search(rf"^{name}\(\) \{{.*?\n\}}\n", text, re.MULTILINE | re.DOTALL)
+    assert match, f"функция {name} не найдена в сценарии"
+    return match.group(0)
+
+
+def test_verify_key_login_uses_real_port_and_current_user(
+    tmp_path: Path, text: str
+) -> None:
+    """На сервере с ssh на 2222 (мастер установки спрашивает порт у админа —
+    это штатный ввод) или с пользователем не root проба в root@127.0.0.1:22
+    падает всегда. А от неё зависит, гасить ли пароль: сервер навсегда
+    остаётся с включённым паролем, хотя вход по ключу уже доказан ботом.
+    """
+    argv_file = tmp_path / "ssh-argv.txt"
+    key = tmp_path / "bot_key"
+    key.write_text("не настоящий ключ, файл нужен лишь для существования\n")
+    binp = _fake_bin(
+        tmp_path,
+        sshd=_FAKE_SSHD,
+        ssh=f'printf "%s\\n" "$*" > "{argv_file}"\necho ok\n',
+        id="echo deploy\n",
+    )
+    script = (
+        "set -uo pipefail\n"
+        + _extract_func(text, "current_ssh_port")
+        + _extract_func(text, "verify_key_login")
+        + f'verify_key_login "{key}"\n'
+    )
+    env = {
+        **os.environ,
+        "PATH": f"{binp}:{os.environ.get('PATH', '')}",
+        "FAKE_SSH_PORT": "2222",
+    }
+    res = subprocess.run(
+        ["bash", "-c", script], capture_output=True, text=True, env=env
+    )
+    assert res.returncode == 0, f"проба провалилась: {res.stdout!r} {res.stderr!r}"
+    argv = argv_file.read_text()
+    assert "-p 2222" in argv, f"порт sshd не передан в пробу: {argv!r}"
+    assert "deploy@127.0.0.1" in argv, f"пользователь захардкожен: {argv!r}"
+
+
+# --- Minor-5: откат обязан убирать ОБА файла настроек ----------------------
+
+
+def test_rollback_removes_legacy_dropin_too(tmp_path: Path, text: str) -> None:
+    """На боевом сервере лежит легаси-файл 99-hardening.conf с тем же
+    содержимым, и удаляется он только в конце УСПЕШНОГО прогона. Откат,
+    сносящий лишь 00-, пароль не вернёт: sshd прочитает 99- и оставит вход
+    только по ключу — страховка фиктивна ровно тогда, когда нужна.
+
+    Тест выполняет ту самую строку команды, которая уходит в systemd-run.
+    """
+    line = next(
+        (ln for ln in text.splitlines() if "arm_rollback rollback-sshd" in ln), ""
+    )
+    assert line, "не нашёл вооружение автоотката sshd"
+
+    current = tmp_path / "00-hardening.conf"
+    legacy = tmp_path / "99-hardening.conf"
+    current.write_text("PasswordAuthentication no\n")
+    legacy.write_text("PasswordAuthentication no\n")
+
+    script = (
+        "set -uo pipefail\n"
+        f'SSHD_DROPIN="{current}"\n'
+        f'SSHD_DROPIN_LEGACY="{legacy}"\n'
+        "systemctl() { :; }\n"
+        # так поступит systemd через 10 минут: выполнит ровно эту строку
+        'arm_rollback() { shift; eval "$1"; }\n'
+        "run_it() {\n"
+        f"{line}\n"
+        "}\n"
+        "run_it\n"
+    )
+    res = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    assert res.returncode == 0, res.stderr
+    assert not current.exists(), "откат не удалил текущий файл настроек"
+    assert not legacy.exists(), (
+        "откат не удалил легаси-файл 99-hardening.conf — вход по паролю не вернётся"
     )

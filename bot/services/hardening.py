@@ -178,3 +178,57 @@ async def ensure_bot_key(ssh: SSHClient, session, server_id: int) -> bool:
     server.ssh_key_passphrase_enc = None
     await session.commit()
     return True
+
+
+async def harden(
+    ssh: SSHClient,
+    session,
+    server_id: int,
+    *,
+    wg_port: int,
+    progress,
+) -> HardeningReport:
+    """Привести сервер к эталону.
+
+    Порядок шагов менять нельзя: фаервол включается после того, как порты
+    уже слушают, ключ заводится до выключения пароля, пароль гасится
+    последним. Любая перестановка оставляет сервер без доступа.
+    """
+    from bot.db import repo
+
+    await upload(ssh)
+
+    await progress("Включаю сбор статистики...")
+    await ssh.run(f"{REMOTE_PATH} apply-stats")
+
+    await progress("Ограничиваю размер журнала...")
+    await ssh.run(f"{REMOTE_PATH} apply-journal")
+
+    await progress("Ставлю защиту от перебора паролей...")
+    await ssh.run(f"{REMOTE_PATH} apply-fail2ban")
+
+    await progress("Включаю фаервол...")
+    fw = await ssh.run(f"{REMOTE_PATH} apply-firewall tcp/22 udp/{wg_port}")
+    if not fw.ok:
+        await progress("⚠️ Фаервол включить не удалось, остальное продолжаю")
+        logger.warning("apply-firewall failed on server id={}: {}", server_id, fw.stdout)
+
+    await progress("Завожу ключ для бота...")
+    if await ensure_bot_key(ssh, session, server_id):
+        await progress("Выключаю вход по паролю...")
+        off = await ssh.run(f"{REMOTE_PATH} disable-password {KEY_PATH}")
+        if off.ok:
+            # Пароль больше не работает как способ входа — хранить его в базе
+            # смысла нет, а утечь он может. Стираем только после
+            # подтверждённого успеха.
+            server = await repo.get_server(session, server_id)
+            if server is not None:
+                server.ssh_password_enc = None
+                await session.commit()
+        else:
+            await progress("⚠️ Вход по паролю выключить не удалось")
+            logger.warning("disable-password failed on server id={}", server_id)
+    else:
+        await progress("⚠️ Вход по ключу не подтверждён — пароль оставлен включённым")
+
+    return await check(ssh)

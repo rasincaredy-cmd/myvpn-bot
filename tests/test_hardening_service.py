@@ -8,6 +8,41 @@ from bot.services.hardening import KEY_PATH, SCRIPT_PATH, ensure_bot_key, parse_
 from bot.services.ssh import CommandResult, SSHError
 
 
+def test_harden_order_password_last() -> None:
+    """Порядок шагов — это и есть безопасность.
+
+    Выключение пароля обязано идти после заведения ключа, а фаервол —
+    после того, как нужные порты уже разрешены. Перестановка любого из
+    этих шагов оставляет сервер без доступа.
+    """
+    import inspect
+
+    from bot.services.hardening import harden
+
+    src = inspect.getsource(harden)
+    order = [
+        src.index("apply-stats"),
+        src.index("apply-journal"),
+        src.index("apply-fail2ban"),
+        src.index("apply-firewall"),
+        src.index("ensure_bot_key"),
+        src.index("disable-password"),
+    ]
+    assert order == sorted(order), "порядок шагов приведения к эталону нарушен"
+
+
+def test_harden_passes_wg_port_in_required_format() -> None:
+    # apply-firewall принимает строго tcp/NNN и udp/NNN; голое число
+    # приведёт к отказу включать фаервол.
+    import inspect
+
+    from bot.services.hardening import harden
+
+    src = inspect.getsource(harden)
+    assert "udp/{" in src or 'udp/' in src
+    assert "tcp/22" in src
+
+
 def test_script_is_taken_from_repo() -> None:
     # Копия текста сценария в коде разъедется с самим сценарием.
     assert SCRIPT_PATH.is_file(), "сценарий-эталон не найден в репозитории"
@@ -307,3 +342,144 @@ async def test_happy_path_writes_encrypted_key_clears_passphrase_and_commits(
     assert creds.username == server.ssh_user
     assert creds.private_key == private
     assert creds.password is None
+
+
+# --- Поведенческие тесты оркестровки `harden`: без сети, на фейковом SSH.
+# Текстовый тест выше (`test_harden_order_password_last`) стережёт порядок
+# по исходнику, но останется зелёным и на сломанной логике вызова — эти
+# проверяют, что шаги реально вызываются в нужном порядке и с нужными
+# последствиями отказов.
+
+
+class _FakeHardenSSH:
+    """Фейковый SSH для `harden`: пишет команды в общий журнал `order`,
+    чтобы порядок вызова шагов (включая `ensure_bot_key`, который не
+    ходит через `ssh.run`) был виден в одном списке."""
+
+    def __init__(self, order: list[str], *, firewall_ok: bool = True, disable_password_ok: bool = True) -> None:
+        self.order = order
+        self.firewall_ok = firewall_ok
+        self.disable_password_ok = disable_password_ok
+
+    async def write_file(self, path: str, content: str, *, mode: int = 0o700) -> None:
+        pass
+
+    async def run(self, cmd: str, *, check: bool = False, timeout=None) -> CommandResult:
+        self.order.append(cmd)
+        if "apply-firewall" in cmd:
+            return CommandResult(cmd=cmd, exit_code=0 if self.firewall_ok else 1, stdout="", stderr="")
+        if "disable-password" in cmd:
+            return CommandResult(cmd=cmd, exit_code=0 if self.disable_password_ok else 1, stdout="", stderr="")
+        if cmd.endswith(" check"):
+            return CommandResult(
+                cmd=cmd, exit_code=0, stdout="ИТОГ: сервер соответствует эталону\n", stderr=""
+            )
+        return CommandResult(cmd=cmd, exit_code=0, stdout="", stderr="")
+
+
+async def _noop_progress(_text: str) -> None:
+    pass
+
+
+def _patch_get_server(monkeypatch, server) -> None:
+    async def fake_get_server(_session, _server_id):
+        return server
+
+    monkeypatch.setattr("bot.db.repo.get_server", fake_get_server)
+
+
+async def test_harden_calls_steps_in_order(monkeypatch) -> None:
+    """`ensure_bot_key` идёт после фаервола и до выключения пароля —
+    проверка не по тексту исходника, а по факту вызова."""
+    import bot.services.hardening as mod
+
+    order: list[str] = []
+    ssh = _FakeHardenSSH(order)
+    server = _fake_server()
+    _patch_get_server(monkeypatch, server)
+
+    async def fake_ensure_bot_key(_ssh, _session, _server_id):
+        order.append("ensure_bot_key")
+        return True
+
+    monkeypatch.setattr(mod, "ensure_bot_key", fake_ensure_bot_key)
+
+    session = SimpleNamespace(commit=AsyncMock())
+    await mod.harden(ssh, session, server.id, wg_port=51820, progress=_noop_progress)
+
+    steps = ["apply-stats", "apply-journal", "apply-fail2ban", "apply-firewall", "ensure_bot_key", "disable-password"]
+    positions = [next(i for i, c in enumerate(order) if step in c) for step in steps]
+    assert positions == sorted(positions), f"нарушен порядок вызовов: {order}"
+
+
+async def test_harden_skips_disable_password_when_key_not_proven(monkeypatch) -> None:
+    """Если `ensure_bot_key` вернул False, команда выключения пароля не
+    должна выполняться вовсе — иначе сервер останется без единого
+    рабочего способа входа."""
+    import bot.services.hardening as mod
+
+    order: list[str] = []
+    ssh = _FakeHardenSSH(order)
+    server = _fake_server()
+    _patch_get_server(monkeypatch, server)
+
+    async def fake_ensure_bot_key(_ssh, _session, _server_id):
+        return False
+
+    monkeypatch.setattr(mod, "ensure_bot_key", fake_ensure_bot_key)
+
+    messages: list[str] = []
+
+    async def capture_progress(text: str) -> None:
+        messages.append(text)
+
+    session = SimpleNamespace(commit=AsyncMock())
+    await mod.harden(ssh, session, server.id, wg_port=51820, progress=capture_progress)
+
+    assert not any("disable-password" in cmd for cmd in order)
+    assert any("не подтверждён" in m for m in messages)
+
+
+async def test_harden_firewall_failure_does_not_abort_remaining_steps(monkeypatch) -> None:
+    """Отказ фаервола не должен обрывать оркестровку: сервер уже
+    установлен, частичная защита лучше никакой."""
+    import bot.services.hardening as mod
+
+    order: list[str] = []
+    ssh = _FakeHardenSSH(order, firewall_ok=False)
+    server = _fake_server()
+    _patch_get_server(monkeypatch, server)
+
+    async def fake_ensure_bot_key(_ssh, _session, _server_id):
+        order.append("ensure_bot_key")
+        return True
+
+    monkeypatch.setattr(mod, "ensure_bot_key", fake_ensure_bot_key)
+
+    session = SimpleNamespace(commit=AsyncMock())
+    await mod.harden(ssh, session, server.id, wg_port=51820, progress=_noop_progress)
+
+    assert any("ensure_bot_key" in c for c in order)
+    assert any("disable-password" in c for c in order)
+    assert any(c.endswith(" check") for c in order)
+
+
+async def test_harden_passes_wg_port_as_udp_slash_port(monkeypatch) -> None:
+    """`apply-firewall` принимает порты строго как `tcp/NNN` и `udp/NNN`."""
+    import bot.services.hardening as mod
+
+    order: list[str] = []
+    ssh = _FakeHardenSSH(order)
+    server = _fake_server()
+    _patch_get_server(monkeypatch, server)
+
+    async def fake_ensure_bot_key(_ssh, _session, _server_id):
+        return True
+
+    monkeypatch.setattr(mod, "ensure_bot_key", fake_ensure_bot_key)
+
+    session = SimpleNamespace(commit=AsyncMock())
+    await mod.harden(ssh, session, server.id, wg_port=51820, progress=_noop_progress)
+
+    fw_cmds = [c for c in order if "apply-firewall" in c]
+    assert fw_cmds == [f"{mod.REMOTE_PATH} apply-firewall tcp/22 udp/51820"]

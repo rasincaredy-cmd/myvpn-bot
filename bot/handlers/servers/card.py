@@ -22,7 +22,7 @@ from bot.keyboards.inline import (
     server_card,
     servers_list,
 )
-from bot.services import amnezia
+from bot.services import amnezia, hardening
 from bot.services.ssh import SSHClient, SSHError
 from bot.states.install import ServerEditStates
 from bot.texts import t
@@ -353,3 +353,101 @@ async def cb_server_del_ok(call: CallbackQuery, session: AsyncSession) -> None:
     # Сервера больше нет — возвращаем в список серверов, откуда админ и пришёл
     # (Блок «Мелочи 2»), а не в главное меню.
     await call.message.edit_text(cleanup_text, reply_markup=back_to_servers_kb())
+
+
+# --- Защита сервера (эталон безопасности) -------------------------------------
+
+@router.callback_query(F.data.startswith(f"{CB_SERVERS}:harden:"))
+async def cb_server_harden(call: CallbackQuery, session: AsyncSession) -> None:
+    """Показать, соответствует ли сервер эталону. Ничего не меняет."""
+    server_id = int(call.data.split(":")[2])
+    server = await repo.get_server(session, server_id)
+    if server is None:
+        await call.answer("Сервер не найден", show_alert=True)
+        return
+
+    await call.answer("Проверяю...")
+    creds = repo.creds_from_server(server)
+    try:
+        async with SSHClient(creds) as ssh:
+            report = await hardening.check(ssh)
+    except (SSHError, OSError) as exc:
+        with contextlib.suppress(TelegramBadRequest):
+            await call.message.edit_text(
+                f"🛡 <b>Защита сервера</b>\n\nНе удалось подключиться: {exc}",
+                reply_markup=back_to_servers_kb(),
+            )
+        return
+
+    if report.compliant:
+        text = "🛡 <b>Защита сервера</b>\n\nСервер соответствует эталону."
+    else:
+        problems = "\n".join(f"• {p}" for p in report.failed)
+        text = (
+            "🛡 <b>Защита сервера</b>\n\n"
+            f"Найдено несоответствий: {len(report.failed)}\n\n{problems}"
+        )
+
+    from aiogram.utils.keyboard import InlineKeyboardBuilder as IKB
+
+    kb = IKB()
+    if not report.compliant:
+        kb.button(
+            text="🔧 Привести в порядок",
+            callback_data=f"{CB_SERVERS}:hardenrun:{server_id}",
+        )
+    kb.button(text="« К серверу", callback_data=f"{CB_SERVERS}:open:{server_id}")
+    kb.adjust(1)
+    # «message is not modified» (повторная проверка с тем же результатом) —
+    # не повод ронять обработчик, админ и так видит актуальный текст.
+    with contextlib.suppress(TelegramBadRequest):
+        await call.message.edit_text(text, reply_markup=kb.as_markup())
+
+
+@router.callback_query(F.data.startswith(f"{CB_SERVERS}:hardenrun:"))
+async def cb_server_harden_run(call: CallbackQuery, session: AsyncSession) -> None:
+    """Привести сервер к эталону. Меняет состояние сервера."""
+    server_id = int(call.data.split(":")[2])
+    server = await repo.get_server(session, server_id)
+    if server is None:
+        await call.answer("Сервер не найден", show_alert=True)
+        return
+
+    await call.answer("Работаю, это займёт пару минут")
+    try:
+        msg = await call.message.edit_text("🛡 Привожу сервер в порядок...")
+    except TelegramBadRequest:
+        msg = call.message
+
+    async def progress(text: str) -> None:
+        with contextlib.suppress(TelegramBadRequest):
+            await msg.edit_text(f"🛡 {text}")
+
+    creds = repo.creds_from_server(server)
+    try:
+        async with SSHClient(creds) as ssh:
+            report = await hardening.harden(
+                ssh, session, server_id, wg_port=server.wg_port, progress=progress
+            )
+    except (SSHError, OSError) as exc:
+        with contextlib.suppress(TelegramBadRequest):
+            await msg.edit_text(
+                f"🛡 <b>Защита сервера</b>\n\nСорвалось: {exc}",
+                reply_markup=back_to_servers_kb(),
+            )
+        return
+
+    if report.compliant:
+        text = "🛡 <b>Готово</b>\n\nСервер соответствует эталону."
+    else:
+        problems = "\n".join(f"• {p}" for p in report.failed)
+        text = (
+            "🛡 <b>Частично</b>\n\nОсталось несоответствий: "
+            f"{len(report.failed)}\n\n{problems}"
+        )
+    from aiogram.utils.keyboard import InlineKeyboardBuilder as IKB
+
+    kb = IKB()
+    kb.button(text="« К серверу", callback_data=f"{CB_SERVERS}:open:{server_id}")
+    with contextlib.suppress(TelegramBadRequest):
+        await msg.edit_text(text, reply_markup=kb.as_markup())

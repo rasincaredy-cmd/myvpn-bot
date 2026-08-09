@@ -56,6 +56,7 @@ def server_card(
         text="🔒 Приватный: ВКЛ" if is_private else "🔓 Приватный: выкл",
         callback_data=f"{CB_SERVERS}:priv:{server_id}",
     )
+    kb.button(text="🛡 Защита", callback_data=f"{CB_SERVERS}:harden:{server_id}")
     kb.button(text="🗑 Удалить", callback_data=f"{CB_SERVERS}:del:{server_id}")
     kb.button(text="« К списку", callback_data=f"{CB_SERVERS}:list")
     kb.adjust(2, 2, 2, 2, 1, 1, 1, 1)

@@ -38,7 +38,14 @@ listening_ports() {
 }
 
 check_password_off() {
-  if sshd -T 2>/dev/null | grep -qx "passwordauthentication no"; then
+  # ВНИМАНИЕ: не писать `sshd -T | grep -q ...`. Скрипт работает под
+  # `set -o pipefail`, а `grep -q` закрывает трубу на первом совпадении —
+  # источник получает SIGPIPE, весь конвейер становится «неуспешным», и
+  # НАЙДЕННАЯ строка читается как ненайденная. Проверка начинает врать
+  # ровно наоборот. Поэтому вывод сначала в переменную, потом сравнение.
+  local sshd_conf
+  sshd_conf="$(sshd -T 2>/dev/null)"
+  if grep -qx "passwordauthentication no" <<<"$sshd_conf"; then
     ok "вход по паролю выключен"
   else
     fail "вход по паролю РАЗРЕШЁН"
@@ -79,7 +86,7 @@ check_fail2ban() {
 check_firewall() {
   local ufw_status ufw_active=0
   ufw_status="$(ufw status 2>/dev/null)"
-  if echo "$ufw_status" | grep -q "Status: active"; then
+  if grep -q "Status: active" <<<"$ufw_status"; then
     ok "фаервол включён"
     ufw_active=1
   else
@@ -95,7 +102,7 @@ check_firewall() {
   # соврёт "не открыта". На деле без фаервола панель открыта всем портом.
   if [ "$ufw_active" -eq 0 ]; then
     fail "фаервол выключен — панель x-ui открыта всему интернету"
-  elif echo "$ufw_status" | grep -q "${PANEL_PORT}.*ALLOW.*Anywhere"; then
+  elif grep -q "${PANEL_PORT}.*ALLOW.*Anywhere" <<<"$ufw_status"; then
     fail "панель x-ui открыта всему интернету"
   else
     ok "панель x-ui не открыта наружу"
@@ -183,9 +190,96 @@ cmd_apply_journal() {
   echo "стало: $(journalctl --disk-usage 2>/dev/null)"
 }
 
+# --- Выключение входа по паролю -------------------------------------------
+#
+# Пароль гасится ОТДЕЛЬНЫМ файлом настроек, а не правкой sshd_config.
+# Отсюда важное следствие для отката: вернуть доступ можно только УДАЛИВ
+# этот файл. Восстановление старого sshd_config из копии его не тронет —
+# и «страховка» окажется фиктивной.
+SSHD_DROPIN=/etc/ssh/sshd_config.d/99-hardening.conf
+
+# Автооткат: сервер сам вернёт настройки, если через 10 минут никто
+# не подтвердил, что доступ жив. Ставится ДО изменения.
+arm_rollback() {
+  local unit="$1" cmd="$2"
+  systemctl stop "${unit}.timer" 2>/dev/null || true
+  systemctl reset-failed "$unit" 2>/dev/null || true
+  if systemd-run --on-active=10min --unit="$unit" \
+       /bin/bash -c "$cmd" >/dev/null 2>&1; then
+    echo "автооткат вооружён: ${unit} сработает через 10 минут"
+    return 0
+  fi
+  fail "не удалось вооружить автооткат ${unit} — опасный шаг делать НЕЛЬЗЯ"
+  return 1
+}
+
+cmd_rollback_cancel() {
+  local n=0
+  for unit in rollback-sshd rollback-ufw; do
+    if systemctl stop "${unit}.timer" 2>/dev/null; then
+      systemctl reset-failed "$unit" 2>/dev/null || true
+      echo "автооткат отменён: ${unit}"
+      n=$((n+1))
+    fi
+  done
+  [ "$n" -eq 0 ] && echo "активных автооткатов не было"
+  return 0
+}
+
+# Доказать вход по ключу ДО того, как гасить пароль.
+verify_key_login() {
+  local key="${1:-/root/.ssh/bot_server1}"
+  [ -f "$key" ] || { echo "нет файла ключа $key"; return 1; }
+  # Тот же капкан, что в check_password_off: под pipefail `... | grep -q`
+  # ломается от SIGPIPE. Здесь это особенно опасно — от результата зависит,
+  # можно ли гасить пароль. Поэтому забираем вывод в переменную.
+  local out
+  out="$(ssh -n -i "$key" -o StrictHostKeyChecking=no -o PasswordAuthentication=no \
+      -o PubkeyAuthentication=yes -o BatchMode=yes -o ConnectTimeout=10 \
+      root@127.0.0.1 'echo ok' 2>/dev/null)"
+  [ "$out" = "ok" ]
+}
+
+cmd_disable_password() {
+  echo "=== выключение входа по паролю ==="
+  if ! verify_key_login "${1:-}"; then
+    fail "вход по ключу НЕ работает — пароль оставлен включённым"
+    return 1
+  fi
+  ok "вход по ключу подтверждён"
+
+  # Откат удаляет ровно то, что мы создаём, и поднимает sshd обратно.
+  arm_rollback rollback-sshd "rm -f ${SSHD_DROPIN}; systemctl restart ssh" || return 1
+
+  mkdir -p /etc/ssh/sshd_config.d
+  cat > "$SSHD_DROPIN" <<'CONF'
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin prohibit-password
+CONF
+
+  if ! sshd -t 2>&1; then
+    fail "конфиг sshd невалиден — откатываю немедленно"
+    rm -f "$SSHD_DROPIN"
+    cmd_rollback_cancel
+    return 1
+  fi
+  if ! systemctl restart ssh; then
+    fail "sshd не перезапустился — откатываю немедленно"
+    rm -f "$SSHD_DROPIN"
+    systemctl restart ssh || true
+    cmd_rollback_cancel
+    return 1
+  fi
+  echo "пароль выключен. Проверь вход В НОВОЙ сессии и вызови: $0 rollback-cancel"
+  return 0
+}
+
 case "${1:-}" in
   check) cmd_check ;;
   plan)  cmd_plan ;;
   apply-journal) cmd_apply_journal ;;
-  *) echo "использование: $0 {check|plan|apply-journal}" >&2; exit 2 ;;
+  disable-password) shift; cmd_disable_password "${1:-}" ;;
+  rollback-cancel)  cmd_rollback_cancel ;;
+  *) echo "использование: $0 {check|plan|apply-journal|disable-password|rollback-cancel}" >&2; exit 2 ;;
 esac

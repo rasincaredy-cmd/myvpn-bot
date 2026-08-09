@@ -198,26 +198,63 @@ async def harden(
 
     await upload(ssh)
 
+    # Critical-1: отказ шага обязан дожить до ИТОГОВОГО отчёта, а не только
+    # до строки прогресса, которую тут же затирает следующая. Итог строится
+    # из `check`, а `check` видит лишь текущее состояние сервера — она не
+    # знает, например, что настройка применилась, но самопроверка после неё
+    # не прошла и на сервере остался вооружённый автооткат. Копим отказы
+    # здесь и подмешиваем их в отчёт.
+    steps_failed: list[str] = []
+
+    async def run_step(command: str, title: str, note: str) -> bool:
+        """Выполнить шаг и запомнить отказ. Возвращает успех шага."""
+        res = await ssh.run(f"{REMOTE_PATH} {command}")
+        if res.ok:
+            return True
+        steps_failed.append(note)
+        logger.warning(
+            "hardening: шаг {} не удался на сервере id={} (код {})",
+            command,
+            server_id,
+            res.exit_code,
+        )
+        await progress(f"⚠️ {title}")
+        return False
+
     await progress("Включаю сбор статистики...")
-    await ssh.run(f"{REMOTE_PATH} apply-stats")
+    await run_step("apply-stats", "Сбор статистики включить не удалось",
+                   "сбор статистики включить не удалось")
 
     await progress("Ограничиваю размер журнала...")
-    await ssh.run(f"{REMOTE_PATH} apply-journal")
+    await run_step("apply-journal", "Потолок журнала поставить не удалось",
+                   "потолок размера журнала поставить не удалось")
 
     await progress("Ставлю защиту от перебора паролей...")
-    await ssh.run(f"{REMOTE_PATH} apply-fail2ban")
+    await run_step("apply-fail2ban", "Банилку перебора поднять не удалось",
+                   "банилку перебора (fail2ban) поднять не удалось")
+
+    # Important-2: порт SSH берём из данных сервера, а не из константы.
+    # Мастер установки спрашивает порт у админа, и на сервере с ssh на 2222
+    # обязательный `tcp/22` не слушает — сценарий откажется включать фаервол
+    # вообще когда-либо, ни при установке, ни по кнопке.
+    server = await repo.get_server(session, server_id)
+    ssh_port = server.ssh_port if server is not None else 22
 
     await progress("Включаю фаервол...")
-    fw = await ssh.run(f"{REMOTE_PATH} apply-firewall tcp/22 udp/{wg_port}")
-    if not fw.ok:
-        await progress("⚠️ Фаервол включить не удалось, остальное продолжаю")
-        logger.warning("apply-firewall failed on server id={}: {}", server_id, fw.stdout)
+    await run_step(
+        f"apply-firewall tcp/{ssh_port} udp/{wg_port}",
+        "Фаервол включить не удалось, остальное продолжаю",
+        "фаервол включить не удалось",
+    )
 
     await progress("Завожу ключ для бота...")
     if await ensure_bot_key(ssh, session, server_id):
         await progress("Выключаю вход по паролю...")
-        off = await ssh.run(f"{REMOTE_PATH} disable-password {KEY_PATH}")
-        if off.ok:
+        if await run_step(
+            f"disable-password {KEY_PATH}",
+            "Вход по паролю выключить не удалось",
+            "вход по паролю выключить не удалось",
+        ):
             # Пароль больше не работает как способ входа — хранить его в базе
             # смысла нет, а утечь он может. Стираем только после
             # подтверждённого успеха.
@@ -225,10 +262,18 @@ async def harden(
             if server is not None:
                 server.ssh_password_enc = None
                 await session.commit()
-        else:
-            await progress("⚠️ Вход по паролю выключить не удалось")
-            logger.warning("disable-password failed on server id={}", server_id)
     else:
+        steps_failed.append("вход по ключу не подтверждён — пароль оставлен включённым")
         await progress("⚠️ Вход по ключу не подтверждён — пароль оставлен включённым")
 
-    return await check(ssh)
+    report = await check(ssh)
+    if not steps_failed:
+        return report
+    # HardeningReport заморожен — собираем новый на основе того, что вернула
+    # проверка, и снимаем «соответствует эталону»: хоть один шаг провалился.
+    return HardeningReport(
+        compliant=False,
+        ok=report.ok,
+        failed=[*report.failed, *steps_failed],
+        raw=report.raw,
+    )

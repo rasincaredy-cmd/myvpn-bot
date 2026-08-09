@@ -371,7 +371,14 @@ async def cb_server_harden(call: CallbackQuery, session: AsyncSession) -> None:
     try:
         async with SSHClient(creds) as ssh:
             report = await hardening.check(ssh)
-    except (SSHError, OSError) as exc:
+    # Important-4: ловим Exception целиком, как это уже делает установка
+    # (bot/handlers/install.py). Ошибки asyncssh наследуются напрямую от
+    # Exception, а не от OSError: SFTPError (кончилось место в /root,
+    # файловая система только для чтения — а проверка первым делом кладёт
+    # сценарий через SFTP) и ConnectionLost пролетали мимо перехвата, и
+    # админ навсегда оставался с экраном «Проверяю...».
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Проверка защиты сервера id={} сорвалась: {}", server_id, exc)
         with contextlib.suppress(TelegramBadRequest):
             await call.message.edit_text(
                 f"🛡 <b>Защита сервера</b>\n\nНе удалось подключиться: {exc}",
@@ -429,7 +436,11 @@ async def cb_server_harden_run(call: CallbackQuery, session: AsyncSession) -> No
             report = await hardening.harden(
                 ssh, session, server_id, wg_port=server.wg_port, progress=progress
             )
-    except (SSHError, OSError) as exc:
+    # Important-4: см. комментарий в проверке выше. Здесь это важнее вдвое:
+    # приведение к эталону идёт минутами, и обрыв связи посреди него
+    # (asyncssh.ConnectionLost) — обычное дело, а не редкость.
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Приведение сервера id={} к эталону сорвалось: {}", server_id, exc)
         with contextlib.suppress(TelegramBadRequest):
             await msg.edit_text(
                 f"🛡 <b>Защита сервера</b>\n\nСорвалось: {exc}",

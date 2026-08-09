@@ -31,18 +31,6 @@ def test_harden_order_password_last() -> None:
     assert order == sorted(order), "порядок шагов приведения к эталону нарушен"
 
 
-def test_harden_passes_wg_port_in_required_format() -> None:
-    # apply-firewall принимает строго tcp/NNN и udp/NNN; голое число
-    # приведёт к отказу включать фаервол.
-    import inspect
-
-    from bot.services.hardening import harden
-
-    src = inspect.getsource(harden)
-    assert "udp/{" in src or 'udp/' in src
-    assert "tcp/22" in src
-
-
 def test_script_is_taken_from_repo() -> None:
     # Копия текста сценария в коде разъедется с самим сценарием.
     assert SCRIPT_PATH.is_file(), "сценарий-эталон не найден в репозитории"
@@ -356,24 +344,38 @@ class _FakeHardenSSH:
     чтобы порядок вызова шагов (включая `ensure_bot_key`, который не
     ходит через `ssh.run`) был виден в одном списке."""
 
-    def __init__(self, order: list[str], *, firewall_ok: bool = True, disable_password_ok: bool = True) -> None:
+    def __init__(
+        self,
+        order: list[str],
+        *,
+        firewall_ok: bool = True,
+        disable_password_ok: bool = True,
+        failing: tuple[str, ...] = (),
+        check_stdout: str = "ИТОГ: сервер соответствует эталону\n",
+    ) -> None:
         self.order = order
         self.firewall_ok = firewall_ok
         self.disable_password_ok = disable_password_ok
+        # Команды, которые «проваливаются» (ненулевой код) — по подстроке.
+        self.failing = failing
+        # Что печатает `check` в конце. По умолчанию — всё зелёное: именно
+        # эта комбинация («шаг упал, а состояние сервера выглядит нормальным»)
+        # и была дырой из Critical-1.
+        self.check_stdout = check_stdout
 
     async def write_file(self, path: str, content: str, *, mode: int = 0o700) -> None:
         pass
 
     async def run(self, cmd: str, *, check: bool = False, timeout=None) -> CommandResult:
         self.order.append(cmd)
+        if any(f in cmd for f in self.failing):
+            return CommandResult(cmd=cmd, exit_code=1, stdout="", stderr="")
         if "apply-firewall" in cmd:
             return CommandResult(cmd=cmd, exit_code=0 if self.firewall_ok else 1, stdout="", stderr="")
         if "disable-password" in cmd:
             return CommandResult(cmd=cmd, exit_code=0 if self.disable_password_ok else 1, stdout="", stderr="")
         if cmd.endswith(" check"):
-            return CommandResult(
-                cmd=cmd, exit_code=0, stdout="ИТОГ: сервер соответствует эталону\n", stderr=""
-            )
+            return CommandResult(cmd=cmd, exit_code=0, stdout=self.check_stdout, stderr="")
         return CommandResult(cmd=cmd, exit_code=0, stdout="", stderr="")
 
 
@@ -464,22 +466,118 @@ async def test_harden_firewall_failure_does_not_abort_remaining_steps(monkeypatc
     assert any(c.endswith(" check") for c in order)
 
 
-async def test_harden_passes_wg_port_as_udp_slash_port(monkeypatch) -> None:
-    """`apply-firewall` принимает порты строго как `tcp/NNN` и `udp/NNN`."""
+async def _run_harden(monkeypatch, ssh, server, *, key_ok: bool = True):
+    """Прогнать `harden` на фейковом SSH и вернуть отчёт."""
     import bot.services.hardening as mod
 
-    order: list[str] = []
-    ssh = _FakeHardenSSH(order)
-    server = _fake_server()
     _patch_get_server(monkeypatch, server)
 
     async def fake_ensure_bot_key(_ssh, _session, _server_id):
-        return True
+        return key_ok
 
     monkeypatch.setattr(mod, "ensure_bot_key", fake_ensure_bot_key)
-
     session = SimpleNamespace(commit=AsyncMock())
-    await mod.harden(ssh, session, server.id, wg_port=51820, progress=_noop_progress)
+    return await mod.harden(
+        ssh, session, server.id, wg_port=51820, progress=_noop_progress
+    )
+
+
+async def test_harden_passes_real_ssh_port_of_the_server(monkeypatch) -> None:
+    """Important-2: обязательный порт для фаервола — тот, на котором ssh
+    реально слушает У ЭТОГО сервера (мастер установки спрашивает порт у
+    админа, не-22 — штатный ввод). Зашитый `tcp/22` на сервере с ssh на
+    2222 не слушает, сценарий отказывается включать фаервол — и не включит
+    его уже никогда: ни при установке, ни по кнопке в админке.
+
+    Порты передаются строго как `tcp/NNN` и `udp/NNN`: голое число
+    сценарий не распознаёт и тоже откажется включать фаервол.
+    """
+    import bot.services.hardening as mod
+
+    order: list[str] = []
+    server = _fake_server()  # ssh_port=2222
+    await _run_harden(monkeypatch, _FakeHardenSSH(order), server)
+
+    fw_cmds = [c for c in order if "apply-firewall" in c]
+    assert fw_cmds == [
+        f"{mod.REMOTE_PATH} apply-firewall tcp/{server.ssh_port} udp/51820"
+    ], f"порт ssh взят не из данных сервера: {fw_cmds}"
+
+
+async def test_harden_ssh_port_follows_the_server_record(monkeypatch) -> None:
+    """Тот же вызов на сервере с обычным портом 22 — чтобы «взято из базы»
+    не выродилось в другую константу."""
+    import bot.services.hardening as mod
+
+    order: list[str] = []
+    server = _fake_server()
+    server.ssh_port = 22
+    await _run_harden(monkeypatch, _FakeHardenSSH(order), server)
 
     fw_cmds = [c for c in order if "apply-firewall" in c]
     assert fw_cmds == [f"{mod.REMOTE_PATH} apply-firewall tcp/22 udp/51820"]
+
+
+# --- Critical-1: отказ шага обязан дожить до итогового отчёта --------------
+#
+# Итог целиком строится из `check`, а `check` видит только текущее состояние
+# сервера. Шаг мог применить настройку и НЕ пройти самопроверку — тогда на
+# сервере остался вооружённый автооткат, который через 10 минут снимет
+# защиту, а бот бы отрапортовал «сервер соответствует эталону».
+
+
+async def test_disable_password_failure_reaches_the_report(monkeypatch) -> None:
+    server = _fake_server()
+    report = await _run_harden(
+        monkeypatch, _FakeHardenSSH([], failing=("disable-password",)), server
+    )
+    assert report.compliant is False, (
+        "отказ выключения пароля не дожил до отчёта — админ прочитает "
+        "«соответствует эталону» на сервере с вооружённым автооткатом"
+    )
+    assert any("парол" in f.lower() for f in report.failed), report.failed
+
+
+async def test_firewall_failure_reaches_the_report(monkeypatch) -> None:
+    server = _fake_server()
+    report = await _run_harden(
+        monkeypatch, _FakeHardenSSH([], failing=("apply-firewall",)), server
+    )
+    assert report.compliant is False
+    assert any("фаервол" in f.lower() for f in report.failed), report.failed
+
+
+async def test_quiet_steps_failures_reach_the_report(monkeypatch) -> None:
+    """apply-stats, apply-journal и apply-fail2ban раньше не проверялись на
+    успех вовсе — их отказ пропадал бесследно."""
+    for step, word in (
+        ("apply-stats", "статистик"),
+        ("apply-journal", "журнал"),
+        ("apply-fail2ban", "перебор"),
+    ):
+        server = _fake_server()
+        report = await _run_harden(
+            monkeypatch, _FakeHardenSSH([], failing=(step,)), server
+        )
+        assert report.compliant is False, f"отказ {step} не дожил до отчёта"
+        assert any(word in f.lower() for f in report.failed), (step, report.failed)
+
+
+async def test_unproven_key_reaches_the_report(monkeypatch) -> None:
+    """Пароль остался включённым — это несоответствие эталону, даже если
+    остальное зелёное."""
+    server = _fake_server()
+    report = await _run_harden(
+        monkeypatch, _FakeHardenSSH([]), server, key_ok=False
+    )
+    assert report.compliant is False
+    assert any("ключ" in f.lower() for f in report.failed), report.failed
+
+
+async def test_all_steps_ok_keeps_report_from_check(monkeypatch) -> None:
+    """Обратная сторона: когда все шаги прошли, отчёт остаётся ровно тем,
+    что вернула проверка, — иначе кнопка вечно рапортует «частично»."""
+    server = _fake_server()
+    report = await _run_harden(monkeypatch, _FakeHardenSSH([]), server)
+    assert report.compliant is True
+    assert report.failed == []

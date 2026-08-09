@@ -202,3 +202,37 @@ def test_apply_stats_command_exists(text: str) -> None:
     # "соответствующим эталону".
     assert "apply-stats" in text
     assert "cmd_apply_stats" in text
+
+
+def test_firewall_verifies_restricted_rules(text: str) -> None:
+    """N2: сверка после включения не должна отвергать собственные
+    ограниченные правила.
+
+    Порт, слушающий на приватном адресе, получает правило вида
+    `ufw allow from 10.8.0.0/24 to 10.8.0.1 port 53` — в выводе `ufw status`
+    такая строка начинается с адреса назначения, а не с `53/udp`. Сверка,
+    привязанная к началу строки, не найдёт правило, решит что порт не
+    открыт, вернёт ошибку и ОСТАВИТ автооткат вооружённым — через 10 минут
+    фаервол выключится на корректно настроенном сервере.
+    """
+    assert "rule_present" in text
+
+
+def test_fail2ban_installs_systemd_backend_dependency(text: str) -> None:
+    # N3: джейл с backend=systemd не стартует без python3-systemd, и
+    # apply-fail2ban честно возвращает ошибку — то есть автоматика встанет
+    # на ровном месте. Зависимость надо ставить вместе с fail2ban.
+    assert "python3-systemd" in text
+
+
+def test_fail2ban_waits_for_jail(text: str) -> None:
+    # N3: опрос джейла сразу после старта на нагруженной машине даёт
+    # ложный отказ. Нужен повтор, а не единственная попытка после sleep.
+    assert "jail_ready" in text
+
+
+def test_plan_marks_private_bound_ports(text: str) -> None:
+    # Команда plan существует ради одного — показать, что изменится.
+    # Приватно-привязанные порты apply-firewall наружу НЕ откроет, значит
+    # показывать их в списке «останутся открытыми наружу» — враньё.
+    assert "только изнутри" in text

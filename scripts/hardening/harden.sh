@@ -108,6 +108,17 @@ port_is_listening() {
   awk -v w="$want" '$1==w{f=1} END{exit !f}' <<<"$ports"
 }
 
+# Правило может быть записано двумя способами: обычное начинается с
+# "NNN/proto", а ограниченное по адресу — с адреса назначения, и порт
+# стоит дальше в строке. Сверка, привязанная к началу строки, второе
+# не находит и объявляет корректно открытый порт закрытым.
+rule_present() {
+  local status="$1" num="$2" proto="$3"
+  grep -qE "(^|[[:space:]])${num}/${proto}([[:space:]]|$)" <<<"$status" && return 0
+  grep -qE "[[:space:]]${num}([[:space:]]|/${proto}[[:space:]])" <<<"$status" && return 0
+  return 1
+}
+
 password_actually_off() {
   local out
   out="$(sshd -T 2>/dev/null)"
@@ -251,8 +262,28 @@ cmd_check() {
 cmd_plan() {
   echo "=== что будет сделано (ничего не меняется) ==="
   echo "белый список банилки: ${OWN_IP} ${VPN_SUBNET} ${BYPASS_SUBNET}"
+  # I1/N4: apply-firewall НЕ открывает наружу порты, слушающие на приватном
+  # адресе (см. is_private_ipv4 в cmd_apply_firewall) — показывать их в
+  # списке "останутся открытыми наружу" было бы враньём. Разносим по двум
+  # спискам заранее, а не фильтруем один общий.
+  local ports port addr num open_lines="" private_lines=""
+  ports="$(listening_ports)"
+  while read -r port addr; do
+    [ -z "$port" ] && continue
+    num="${port##*/}"
+    [ "$num" = "$PANEL_PORT" ] && continue
+    if is_private_ipv4 "$addr"; then
+      private_lines="${private_lines}  ${port} ${addr} — только изнутри, наружу открыт не будет"$'\n'
+    else
+      open_lines="${open_lines}  ${port} ${addr}"$'\n'
+    fi
+  done <<<"$ports"
   echo "останутся открытыми наружу порты (адрес привязки справа):"
-  listening_ports | grep -v "tcp/${PANEL_PORT} " | sed 's/^/  /'
+  printf '%s' "$open_lines"
+  if [ -n "$private_lines" ]; then
+    echo "слушают только на приватном адресе (apply-firewall наружу их не откроет):"
+    printf '%s' "$private_lines"
+  fi
   echo "будет закрыт от интернета и разрешён только из VPN:"
   echo "  tcp/${PANEL_PORT} (панель x-ui)"
   echo "потолок журнала: ${JOURNAL_CAP} (сейчас $(journalctl --disk-usage 2>/dev/null | grep -oE '[0-9.]+[MG]' | tail -1))"
@@ -288,10 +319,23 @@ cmd_apply_journal() {
   echo "стало: $(journalctl --disk-usage 2>/dev/null)"
 }
 
+# Джейл поднимается не мгновенно, и на нагруженной машине единственная
+# попытка сразу после старта даёт ложный отказ.
+jail_ready() {
+  local i
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    fail2ban-client status sshd >/dev/null 2>&1 && return 0
+    sleep 2
+  done
+  return 1
+}
+
 cmd_apply_fail2ban() {
   echo "=== банилка перебора ==="
   if ! systemctl is-active --quiet fail2ban; then
-    DEBIAN_FRONTEND=noninteractive apt-get install -y fail2ban >/dev/null 2>&1 \
+    # backend=systemd (см. jail.local ниже) не стартует без python3-systemd —
+    # ставим зависимость сразу вместе с пакетом, а не по факту падения джейла.
+    DEBIAN_FRONTEND=noninteractive apt-get install -y fail2ban python3-systemd >/dev/null 2>&1 \
       || { fail "не удалось установить fail2ban"; return 1; }
   fi
 
@@ -321,15 +365,15 @@ CONF
     fail "fail2ban не запустился"
     return 1
   fi
-  sleep 3
   if ! systemctl is-active --quiet fail2ban; then
     fail "fail2ban не активен после запуска"
     return 1
   fi
   # I3 (та же самая история про "служба жива — джейл не обязательно"):
   # применение тоже обязано убедиться, что джейл реально поднялся, а не
-  # только что демон стартовал.
-  if ! fail2ban-client status sshd >/dev/null 2>&1; then
+  # только что демон стартовал. jail_ready повторяет опрос — единственная
+  # попытка сразу после старта на нагруженной машине даёт ложный отказ.
+  if ! jail_ready; then
     fail "джейл sshd не поднялся после запуска fail2ban"
     return 1
   fi
@@ -435,8 +479,7 @@ cmd_apply_firewall() {
   ufw_after="$(ufw status 2>/dev/null)"
   for rp in $required; do
     num="${rp##*/}"; proto="${rp%%/*}"
-    grep -qE "^${num}/${proto}[[:space:]]+ALLOW" <<<"$ufw_after" \
-      || missing_after="${missing_after}${rp} "
+    rule_present "$ufw_after" "$num" "$proto" || missing_after="${missing_after}${rp} "
   done
   if [ -n "$missing_after" ]; then
     fail "после включения в правилах фаервола не хватает: ${missing_after}— автооткат ОСТАВЛЕН вооружённым"

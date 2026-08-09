@@ -6,7 +6,18 @@
 #   harden.sh plan          — показать, что изменится
 #   harden.sh apply-journal  — поставить потолок журналу и обрезать его
 #   harden.sh apply-fail2ban — банилка перебора с белым списком
-#   harden.sh apply-firewall — фаервол от слушающих портов (с автооткатом)
+#   harden.sh apply-firewall [обязательный_порт ...]
+#                            — фаервол от слушающих портов (с автооткатом).
+#                              ssh обязателен всегда; доп. порты (например
+#                              ещё не поднятый на момент вызова VPN-порт)
+#                              передаются аргументами и тоже обязаны слушать
+#                              до включения фаервола.
+#   harden.sh apply-stats    — включить сбор статистики (sysstat)
+#   harden.sh disable-password [путь_к_ключу]
+#                            — выключить вход по паролю (с автооткатом)
+#   harden.sh rollback-cancel — вручную снять автооткат. Запасной путь:
+#                              apply-firewall и disable-password при
+#                              успешной самопроверке снимают его сами.
 #
 # Спека: docs/superpowers/specs/2026-08-08-zashchita-serverov-design.md
 set -uo pipefail
@@ -29,14 +40,75 @@ FAILED=0
 ok()   { echo "OK   $*"; }
 fail() { echo "FAIL $*"; FAILED=1; }
 
-# Порты, которые реально слушают наружу. Фаервол строится от них,
-# а не от списка из головы — иначе легко забыть нужный и отрезать сервис.
+# --- Арифметика над IPv4-адресами (для I1: адрес привязки порта) ----------
+#
+# Чистый bash, без ipcalc/python — сценарий обязан оставаться
+# самодостаточным. `10#` перед октетом защищает от того, что bash
+# трактует числа с ведущим нулём как восьмеричные (октет "08" иначе
+# упал бы с ошибкой "value too great for base").
+ip_to_int() {
+  local IFS=. o1 o2 o3 o4
+  read -r o1 o2 o3 o4 <<<"$1"
+  echo $(( (10#$o1 << 24) + (10#$o2 << 16) + (10#$o3 << 8) + 10#$o4 ))
+}
+
+in_cidr() {
+  local ip="$1" cidr="$2" net bits ip_i net_i mask
+  is_ipv4 "$ip" || return 1
+  net="${cidr%/*}"; bits="${cidr#*/}"
+  ip_i=$(ip_to_int "$ip")
+  net_i=$(ip_to_int "$net")
+  mask=$(( (0xFFFFFFFF << (32 - bits)) & 0xFFFFFFFF ))
+  [ $(( ip_i & mask )) -eq $(( net_i & mask )) ]
+}
+
+# I1: служба, слушающая только на внутреннем адресе (например резолвер на
+# 10.8.0.1:53), не должна получить правило "разрешить всем" — это открытый
+# резолвер на сервере, который мы защищаем. VPN_SUBNET и BYPASS_SUBNET уже
+# входят в 10.0.0.0/8, но проверяем и вообще частные диапазоны — мало ли
+# какая ещё внутренняя служба на сервере слушает на приватном адресе.
+is_private_ipv4() {
+  local ip="$1"
+  in_cidr "$ip" "10.0.0.0/8" && return 0
+  in_cidr "$ip" "172.16.0.0/12" && return 0
+  in_cidr "$ip" "192.168.0.0/16" && return 0
+  return 1
+}
+
+# Порты, которые реально слушают наружу, вместе с адресом привязки.
+# Фаервол строится от них, а не от списка из головы — иначе легко забыть
+# нужный и отрезать сервис. Адрес нужен отдельно от порта: без него служба
+# на внутреннем VPN-адресе получила бы правило "всем" (см. is_private_ipv4).
 listening_ports() {
   ss -tulnH 2>/dev/null | awk '
     $5 !~ /^127\./ && $5 !~ /^\[::1\]/ {
       n = split($5, a, ":"); port = a[n]
-      if (port ~ /^[0-9]+$/) print ($1 == "udp" ? "udp/" : "tcp/") port
+      addr = substr($5, 1, length($5) - length(port) - 1)
+      if (port ~ /^[0-9]+$/) print ($1 == "udp" ? "udp/" : "tcp/") port, addr
     }' | sort -u
+}
+
+# Порт, на котором реально слушает sshd (по эффективному конфигу, а не по
+# догадке "наверняка 22") — нужен и для check, и для обязательного списка
+# портов в apply-firewall.
+current_ssh_port() {
+  local p
+  p="$(sshd -T 2>/dev/null | awk '$1=="port"{print $2; exit}')"
+  [ -n "$p" ] && echo "$p" || echo 22
+}
+
+# Есть ли строка вида "proto/port" в списке строк "proto/port addr" —
+# используется, чтобы проверить обязательные порты (C3), не заботясь про
+# адрес привязки.
+port_is_listening() {
+  local want="$1" ports="$2"
+  awk -v w="$want" '$1==w{f=1} END{exit !f}' <<<"$ports"
+}
+
+password_actually_off() {
+  local out
+  out="$(sshd -T 2>/dev/null)"
+  grep -qx "passwordauthentication no" <<<"$out"
 }
 
 check_password_off() {
@@ -45,9 +117,7 @@ check_password_off() {
   # источник получает SIGPIPE, весь конвейер становится «неуспешным», и
   # НАЙДЕННАЯ строка читается как ненайденная. Проверка начинает врать
   # ровно наоборот. Поэтому вывод сначала в переменную, потом сравнение.
-  local sshd_conf
-  sshd_conf="$(sshd -T 2>/dev/null)"
-  if grep -qx "passwordauthentication no" <<<"$sshd_conf"; then
+  if password_actually_off; then
     ok "вход по паролю выключен"
   else
     fail "вход по паролю РАЗРЕШЁН"
@@ -59,6 +129,17 @@ check_fail2ban() {
     ok "банилка перебора работает"
   else
     fail "банилки перебора нет"
+  fi
+
+  # I3: служба fail2ban может быть active, а конкретный джейл — не
+  # подняться (типовая причина: backend=systemd и на сервере не хватает
+  # зависимости для чтения журнала systemd). Тогда "банилка работает"
+  # при нуле реальной защиты. Опрашиваем именно джейл и смотрим код
+  # возврата команды, а не сам факт, что служба жива.
+  if fail2ban-client status sshd >/dev/null 2>&1; then
+    ok "джейл sshd поднят"
+  else
+    fail "джейл sshd НЕ поднят — банилка не защищает ssh"
   fi
 
   local jail="/etc/fail2ban/jail.local"
@@ -87,7 +168,9 @@ check_fail2ban() {
 
 check_firewall() {
   local ufw_status ufw_active=0
-  ufw_status="$(ufw status 2>/dev/null)"
+  # verbose, а не короткий status: короткий вывод не содержит строку
+  # "Default: ..." с политикой по умолчанию, которая нужна ниже (I2).
+  ufw_status="$(ufw status verbose 2>/dev/null)"
   if grep -q "Status: active" <<<"$ufw_status"; then
     ok "фаервол включён"
     ufw_active=1
@@ -104,7 +187,17 @@ check_firewall() {
   # соврёт "не открыта". На деле без фаервола панель открыта всем портом.
   if [ "$ufw_active" -eq 0 ]; then
     fail "фаервол выключен — панель x-ui открыта всему интернету"
-  elif grep -q "${PANEL_PORT}.*ALLOW.*Anywhere" <<<"$ufw_status"; then
+    return
+  fi
+  # I2: включённый ufw с политикой "allow incoming" пропускает всё —
+  # такой сервер раньше проходил check целиком и получал "соответствует
+  # эталону", хотя фаервол фактически ничего не блокирует.
+  if grep -qE '^Default: deny \(incoming\)' <<<"$ufw_status"; then
+    ok "политика по умолчанию для входящих — запрещающая"
+  else
+    fail "политика по умолчанию для входящих НЕ запрещающая — фаервол ничего не блокирует"
+  fi
+  if grep -q "${PANEL_PORT}.*ALLOW.*Anywhere" <<<"$ufw_status"; then
     fail "панель x-ui открыта всему интернету"
   else
     ok "панель x-ui не открыта наружу"
@@ -155,8 +248,8 @@ cmd_check() {
 cmd_plan() {
   echo "=== что будет сделано (ничего не меняется) ==="
   echo "белый список банилки: ${OWN_IP} ${VPN_SUBNET} ${BYPASS_SUBNET}"
-  echo "останутся открытыми наружу порты:"
-  listening_ports | grep -v "tcp/${PANEL_PORT}" | sed 's/^/  /'
+  echo "останутся открытыми наружу порты (адрес привязки справа):"
+  listening_ports | grep -v "tcp/${PANEL_PORT} " | sed 's/^/  /'
   echo "будет закрыт от интернета и разрешён только из VPN:"
   echo "  tcp/${PANEL_PORT} (панель x-ui)"
   echo "потолок журнала: ${JOURNAL_CAP} (сейчас $(journalctl --disk-usage 2>/dev/null | grep -oE '[0-9.]+[MG]' | tail -1))"
@@ -230,6 +323,13 @@ CONF
     fail "fail2ban не активен после запуска"
     return 1
   fi
+  # I3 (та же самая история про "служба жива — джейл не обязательно"):
+  # применение тоже обязано убедиться, что джейл реально поднялся, а не
+  # только что демон стартовал.
+  if ! fail2ban-client status sshd >/dev/null 2>&1; then
+    fail "джейл sshd не поднялся после запуска fail2ban"
+    return 1
+  fi
   ok "банилка запущена, белый список: ${OWN_IP} ${VPN_SUBNET} ${BYPASS_SUBNET}"
   fail2ban-client status sshd 2>&1 | sed 's/^/  /'
   return 0
@@ -242,10 +342,32 @@ cmd_apply_firewall() {
       || { fail "не удалось установить ufw"; return 1; }
   fi
 
+  local ssh_port required rp num proto
+  ssh_port="$(current_ssh_port)"
+  # C3: ssh обязателен всегда — без него запертый сервер уже никак не
+  # открыть. Остальные обязательные порты передаёт вызывающий (бот): точка
+  # вызова по плану — сразу после установки VPN, когда интерфейс может
+  # быть ещё не поднят. Мгновенный снимок listening_ports его тогда не
+  # увидит, и молчаливая потеря порта означала бы сервер с VPN, к
+  # которому нельзя подключиться.
+  required="tcp/${ssh_port}"
+  for rp in "$@"; do
+    required="${required} ${rp}"
+  done
+
   local ports
   ports="$(listening_ports)"
   if [ -z "$ports" ]; then
     fail "не удалось определить слушающие порты — включать фаервол вслепую НЕЛЬЗЯ"
+    return 1
+  fi
+
+  local missing=""
+  for rp in $required; do
+    port_is_listening "$rp" "$ports" || missing="${missing}${rp} "
+  done
+  if [ -n "$missing" ]; then
+    fail "обязательный порт не слушает: ${missing}— фаервол НЕ включаю"
     return 1
   fi
 
@@ -266,12 +388,29 @@ cmd_apply_firewall() {
   ufw default allow routed >/dev/null
 
   # Открываем ровно то, что слушает наружу, кроме панели управления.
-  local port proto num
-  while read -r port; do
+  local port addr
+  while read -r port addr; do
     [ -z "$port" ] && continue
     proto="${port%%/*}"
     num="${port##*/}"
     [ "$num" = "$PANEL_PORT" ] && continue
+    if is_private_ipv4 "$addr"; then
+      # I1: служба на внутреннем адресе (например резолвер на 10.8.0.1:53)
+      # не должна получить правило "всем" — это открытый резолвер на
+      # сервере, который мы защищаем. Если адрес попадает конкретно в
+      # VPN_SUBNET/BYPASS_SUBNET — открываем её так же, как панель: только
+      # тем, кому и положено ходить внутрь. Для прочих приватных адресов
+      # источник доступа неизвестен — правило просто не создаём (порт и
+      # так недоступен снаружи, адрес приватный).
+      if in_cidr "$addr" "$VPN_SUBNET" || in_cidr "$addr" "$BYPASS_SUBNET"; then
+        ufw allow from "$VPN_SUBNET" to "$addr" port "$num" proto "$proto" >/dev/null
+        ufw allow from "$BYPASS_SUBNET" to "$addr" port "$num" proto "$proto" >/dev/null
+        echo "  ${num}/${proto} на ${addr} — только из ${VPN_SUBNET} и ${BYPASS_SUBNET}"
+      else
+        echo "  ${num}/${proto} слушает на внутреннем адресе ${addr} — наружу не открываю"
+      fi
+      continue
+    fi
     ufw allow "${num}/${proto}" >/dev/null && echo "  открыт ${num}/${proto}"
   done <<<"$ports"
 
@@ -286,7 +425,94 @@ cmd_apply_firewall() {
   fi
   ok "фаервол включён"
   ufw status verbose 2>&1 | head -12 | sed 's/^/  /'
-  echo "Проверь связь и VPN у клиентов, затем вызови: $0 rollback-cancel"
+
+  # C3 (после включения): убеждаемся, что обязательные порты реально
+  # попали в применённый набор правил, а не только должны были попасть.
+  local ufw_after missing_after=""
+  ufw_after="$(ufw status 2>/dev/null)"
+  for rp in $required; do
+    num="${rp##*/}"; proto="${rp%%/*}"
+    grep -qE "^${num}/${proto}[[:space:]]+ALLOW" <<<"$ufw_after" \
+      || missing_after="${missing_after}${rp} "
+  done
+  if [ -n "$missing_after" ]; then
+    fail "после включения в правилах фаервола не хватает: ${missing_after}— автооткат ОСТАВЛЕН вооружённым"
+    return 1
+  fi
+
+  # C1: сервер сам проверяет себя и, если всё хорошо, сам снимает
+  # автооткат — иначе повторный прогон на уже настроенном сервере (штатный
+  # сценарий для бота, без человека) неизбежно выключит фаервол через 10
+  # минут, если никто не позвал rollback-cancel руками.
+  #
+  # Проверить НОВОЕ соединение к своему внешнему адресу изнутри той же
+  # машины нельзя доверять: пакеты к собственному адресу маршрутизируются
+  # ядром как RTN_LOCAL и приходят на вход с iif=lo — тем же путём, что и
+  # обращение к 127.0.0.1, которое ufw (как и большинство фаерволов)
+  # безусловно пропускает до пользовательских правил. Такая "проверка"
+  # была бы точно такой же ложью, как `grep -q` под pipefail в
+  # check_password_off: всегда зелёная, независимо от реальных правил.
+  # Поэтому проверяем то, что действительно наблюдаемо изнутри честно:
+  # правило ssh-порта в применённом наборе (уже сделано выше) и то, что
+  # сам sshd не пострадал и продолжает слушать свой порт.
+  if { systemctl is-active --quiet ssh 2>/dev/null || systemctl is-active --quiet sshd 2>/dev/null; } \
+     && ss -tlnH 2>/dev/null | awk -v p=":${ssh_port}\$" '$4 ~ p {f=1} END{exit !f}'; then
+    ok "ssh-порт в правилах фаервола, sshd жив — снимаю автооткат"
+    rollback_cancel_unit rollback-ufw
+    echo "автооткат снят, фаервол применён"
+  else
+    fail "sshd не активен или не слушает ${ssh_port}/tcp после включения фаервола — автооткат ОСТАВЛЕН вооружённым, проверь вручную и вызови: $0 rollback-cancel"
+    return 1
+  fi
+  return 0
+}
+
+cmd_apply_stats() {
+  echo "=== сбор статистики (sysstat) ==="
+  # I6: check требует работающий sysstat-collect.timer, но раньше ни одна
+  # apply-команда его не устанавливала — на проде это сделали руками, а
+  # новый сервер никогда бы не стал "соответствующим эталону".
+  if ! dpkg -s sysstat >/dev/null 2>&1; then
+    DEBIAN_FRONTEND=noninteractive apt-get install -y sysstat >/dev/null 2>&1 \
+      || { fail "не удалось установить sysstat"; return 1; }
+  fi
+
+  # Хранение — 30 дней, а не пакетный дефолт (обычно неделя).
+  local conf=/etc/sysstat/sysstat
+  if [ -f "$conf" ]; then
+    if grep -qE '^HISTORY=' "$conf"; then
+      sed -i 's/^HISTORY=.*/HISTORY=30/' "$conf"
+    else
+      printf '\nHISTORY=30\n' >> "$conf"
+    fi
+  fi
+
+  # Шаг сбора — 2 минуты, а не пакетный дефолт (обычно 10): за 10 минут
+  # короткий всплеск нагрузки может провалиться между двумя замерами.
+  # Переопределяем systemd-таймер дропином, а не правкой юнита из пакета —
+  # дропин переживёт обновление sysstat, юнит пакета — нет.
+  mkdir -p /etc/systemd/system/sysstat-collect.timer.d
+  cat > /etc/systemd/system/sysstat-collect.timer.d/override.conf <<'CONF'
+[Timer]
+OnCalendar=
+OnCalendar=*:0/2
+CONF
+  # На системах, где sysstat всё ещё дёргается через cron (не systemd-
+  # таймер), правим и его — иначе на такой системе шаг остался бы 10 мин.
+  local cron=/etc/cron.d/sysstat
+  if [ -f "$cron" ]; then
+    sed -i -E 's#\*/[0-9]+(\s+\*\s+\*\s+\*\s+\*\s+root\s+command\s+-v\s+debian-sa1)#*/2\1#' "$cron"
+  fi
+
+  systemctl daemon-reload
+  systemctl enable --now sysstat-collect.timer >/dev/null 2>&1
+  systemctl enable --now sysstat >/dev/null 2>&1 || true
+
+  if ! systemctl is-active --quiet sysstat-collect.timer; then
+    fail "sysstat-collect.timer не активен после включения"
+    return 1
+  fi
+  ok "сбор статистики включён (шаг 2 минуты, хранение 30 дней)"
   return 0
 }
 
@@ -296,7 +522,35 @@ cmd_apply_firewall() {
 # Отсюда важное следствие для отката: вернуть доступ можно только УДАЛИВ
 # этот файл. Восстановление старого sshd_config из копии его не тронет —
 # и «страховка» окажется фиктивной.
-SSHD_DROPIN=/etc/ssh/sshd_config.d/99-hardening.conf
+#
+# C2: имя файла — 00-, а не 99-. sshd берёт ПЕРВОЕ встреченное значение,
+# а drop-in-файлы подключаются по алфавиту: типовой облачный
+# 50-cloud-init.conf с "PasswordAuthentication yes" выигрывал бы у 99-.
+# 00- гарантированно читается первым.
+SSHD_DROPIN=/etc/ssh/sshd_config.d/00-hardening.conf
+# Имя из более ранней версии сценария — если осталось на сервере, лучше
+# убрать: путаницы с дублем настроек быть не должно (хотя обе версии
+# согласны в содержимом, так что сама по себе не опасна).
+SSHD_DROPIN_LEGACY=/etc/ssh/sshd_config.d/99-hardening.conf
+
+# I8: юнит ssh называется по-разному (ssh на Debian/Ubuntu, sshd на
+# большинстве прочих дистрибутивов). Раньше рестарт был прибит к одному
+# имени — на системе с другим юнитом рестарт молча не случался бы, и
+# правка конфига не применялась вовсе.
+restart_ssh_service() {
+  systemctl restart ssh 2>/dev/null && return 0
+  systemctl restart sshd 2>/dev/null && return 0
+  return 1
+}
+
+# C2: на части систем строки Include для sshd_config.d в sshd_config нет
+# вовсе, и весь drop-in каталог молча игнорируется целиком. Раньше это не
+# проверялось: проверка синтаксиса и рестарт проходили зелёными, а пароль
+# оставался включён — скрипт врал, что выключил его.
+sshd_dropin_included() {
+  grep -qE '^[[:space:]]*Include[[:space:]]+/etc/ssh/sshd_config\.d/\*\.conf' \
+    /etc/ssh/sshd_config 2>/dev/null
+}
 
 # Автооткат: сервер сам вернёт настройки, если через 10 минут никто
 # не подтвердил, что доступ жив. Ставится ДО изменения.
@@ -313,14 +567,22 @@ arm_rollback() {
   return 1
 }
 
+# Снять автооткат одного юнита. Общий код для ручной отмены
+# (cmd_rollback_cancel) и для автоматической (C1) после самопроверки.
+rollback_cancel_unit() {
+  local unit="$1"
+  if systemctl stop "${unit}.timer" 2>/dev/null; then
+    systemctl reset-failed "$unit" 2>/dev/null || true
+    echo "автооткат отменён: ${unit}"
+    return 0
+  fi
+  return 1
+}
+
 cmd_rollback_cancel() {
   local n=0
   for unit in rollback-sshd rollback-ufw; do
-    if systemctl stop "${unit}.timer" 2>/dev/null; then
-      systemctl reset-failed "$unit" 2>/dev/null || true
-      echo "автооткат отменён: ${unit}"
-      n=$((n+1))
-    fi
+    rollback_cancel_unit "$unit" && n=$((n+1))
   done
   [ "$n" -eq 0 ] && echo "активных автооткатов не было"
   return 0
@@ -348,8 +610,18 @@ cmd_disable_password() {
   fi
   ok "вход по ключу подтверждён"
 
+  # C2: если Include для sshd_config.d нет в sshd_config, наш drop-in
+  # никогда не будет прочитан — sshd -t и рестарт пройдут зелёными, а
+  # пароль так и останется включён. Не притворяемся, что всё в порядке.
+  if ! sshd_dropin_included; then
+    fail "в sshd_config нет Include для sshd_config.d — drop-in будет проигнорирован, пароль НЕ трогаю"
+    return 1
+  fi
+
+  [ -f "$SSHD_DROPIN_LEGACY" ] && rm -f "$SSHD_DROPIN_LEGACY"
+
   # Откат удаляет ровно то, что мы создаём, и поднимает sshd обратно.
-  arm_rollback rollback-sshd "rm -f ${SSHD_DROPIN}; systemctl restart ssh" || return 1
+  arm_rollback rollback-sshd "rm -f ${SSHD_DROPIN}; systemctl restart ssh 2>/dev/null || systemctl restart sshd" || return 1
 
   mkdir -p /etc/ssh/sshd_config.d
   cat > "$SSHD_DROPIN" <<'CONF'
@@ -364,14 +636,39 @@ CONF
     cmd_rollback_cancel
     return 1
   fi
-  if ! systemctl restart ssh; then
+  if ! restart_ssh_service; then
     fail "sshd не перезапустился — откатываю немедленно"
     rm -f "$SSHD_DROPIN"
-    systemctl restart ssh || true
+    restart_ssh_service || true
     cmd_rollback_cancel
     return 1
   fi
-  echo "пароль выключен. Проверь вход В НОВОЙ сессии и вызови: $0 rollback-cancel"
+
+  # C2: мало того, что рестарт прошёл — конфиг мог быть перебит другим
+  # drop-in-файлом (типовой 50-cloud-init.conf), и пароль остался бы
+  # включён при зелёном рестарте. Проверяем ФАКТ через sshd -T, а не
+  # намерение.
+  if ! password_actually_off; then
+    fail "после рестарта sshd -T всё ещё показывает пароль включённым — откатываю немедленно"
+    rm -f "$SSHD_DROPIN"
+    restart_ssh_service || true
+    cmd_rollback_cancel
+    return 1
+  fi
+  ok "пароль выключен, sshd -T подтверждает"
+
+  # C1: самопроверка входа по ключу ПОСЛЕ изменения — раз доступ жив,
+  # автооткат можно снять сразу, не дожидаясь ручной команды. Для бота,
+  # который будет запускать это без участия человека, забытая ручная
+  # отмена через 10 минут вернула бы пароль обратно — гарантированная
+  # авария при простом повторном прогоне на уже настроенном сервере.
+  if verify_key_login "${1:-}"; then
+    ok "вход по ключу подтверждён после изменения — снимаю автооткат"
+    rollback_cancel_unit rollback-sshd
+  else
+    fail "вход по ключу НЕ подтверждён после изменения — автооткат ОСТАВЛЕН вооружённым"
+    return 1
+  fi
   return 0
 }
 
@@ -380,8 +677,9 @@ case "${1:-}" in
   plan)  cmd_plan ;;
   apply-journal) cmd_apply_journal ;;
   apply-fail2ban) cmd_apply_fail2ban ;;
-  apply-firewall) cmd_apply_firewall ;;
+  apply-firewall) shift; cmd_apply_firewall "$@" ;;
+  apply-stats) cmd_apply_stats ;;
   disable-password) shift; cmd_disable_password "${1:-}" ;;
   rollback-cancel)  cmd_rollback_cancel ;;
-  *) echo "использование: $0 {check|plan|apply-journal|apply-fail2ban|apply-firewall|disable-password|rollback-cancel}" >&2; exit 2 ;;
+  *) echo "использование: $0 {check|plan|apply-journal|apply-fail2ban|apply-firewall|apply-stats|disable-password|rollback-cancel}" >&2; exit 2 ;;
 esac

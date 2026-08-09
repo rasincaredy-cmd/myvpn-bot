@@ -20,10 +20,17 @@ from bot.services.crypto import encrypt
 
 
 def prepare_update(private_key: str) -> dict:
-    """Поля, которые надо записать серверу. Только ключ — и ничего больше."""
+    """Поля, которые надо записать серверу.
+
+    Пароль намеренно не трогаем. А вот фразу-пароль от СТАРОГО ключа —
+    обязаны занулить: если у сервера раньше был ключ с passphrase, а
+    новый импортируется без неё, в базе останется чужая фраза. В лучшем
+    случае она просто бесполезна, в худшем — ломает разбор нового ключа,
+    и вскроется это уже после того, как пароль входа стёрт отдельным шагом.
+    """
     if not private_key or not private_key.strip():
         raise ValueError("пустой ключ")
-    return {"ssh_key_enc": encrypt(private_key)}
+    return {"ssh_key_enc": encrypt(private_key), "ssh_key_passphrase_enc": None}
 
 
 async def main(server_id: int, key_path: Path) -> int:
@@ -48,7 +55,10 @@ async def main(server_id: int, key_path: Path) -> int:
             setattr(server, field, value)
         host = server.host
 
-    print(f"ключ записан для сервера id={server_id} ({host}); пароль оставлен как был")
+    print(
+        f"ключ записан для сервера id={server_id} ({host}); "
+        "фраза-пароль от старого ключа сброшена; пароль входа оставлен как был"
+    )
     return 0
 
 

@@ -10,7 +10,9 @@
 
 ## Global Constraints
 
-- Тесты запускаются **`python -m pytest`** (termux-питон). `python3` в этом окружении **без** `cryptography` — им тесты не запускать.
+- **Два разных окружения, интерпретаторы называются по-разному:**
+  - на телефоне (Termux, тут пишется код и гоняются тесты) — **`python`**; `python3` здесь без `cryptography`, им тесты не запускать;
+  - на сервере — **`/usr/bin/python3.11`**; команды `python` там НЕТ вовсе, а `python3` (3.10) без нужных пакетов. `python3.11` — тот же интерпретатор, которым запускается сам бот (`ExecStart=/usr/bin/python3.11 -m bot`), поэтому проверки на сервере обязаны идти именно им: иначе проверяется не то окружение, в котором живёт бот.
 - Спека: `docs/superpowers/specs/2026-08-08-zashchita-serverov-design.md`.
 - Ветка: `docs/zashchita-serverov` (уже существует, в ней лежит спека). В `main` ничего не вливать — идёт согласование в банке.
 - Боевой сервер: `31.77.157.162`, ssh-алиас `klopas`, садится в `/root` → для git на сервере использовать `git -C`.
@@ -399,7 +401,7 @@ Expected: файл на месте.
 
 Run:
 ```bash
-ssh klopas 'cd /root/myvpn-bot && python scripts/check_server_ssh.py 1'
+ssh klopas 'cd /root/myvpn-bot && /usr/bin/python3.11 scripts/check_server_ssh.py 1'
 ```
 Expected: `OK 31.77.157.162: вход по паролю`
 
@@ -632,13 +634,13 @@ Expected: `вход-по-ключу-работает`
 Run:
 ```bash
 scp /root/myvpn-bot/scripts/set_server_key.py klopas:/root/myvpn-bot/scripts/set_server_key.py
-ssh klopas 'cd /root/myvpn-bot && python scripts/set_server_key.py 1 /root/.ssh/bot_server1'
+ssh klopas 'cd /root/myvpn-bot && /usr/bin/python3.11 scripts/set_server_key.py 1 /root/.ssh/bot_server1'
 ```
 Expected: `ключ записан для сервера id=1; пароль оставлен как был`
 
 - [ ] **Step 9: Проверить, что бот теперь ходит именно по ключу**
 
-Run: `ssh klopas 'cd /root/myvpn-bot && python scripts/check_server_ssh.py 1'`
+Run: `ssh klopas 'cd /root/myvpn-bot && /usr/bin/python3.11 scripts/check_server_ssh.py 1'`
 Expected: `OK 31.77.157.162: вход по ключу`
 **Если написало «вход по паролю» или ошибку — остановиться и чинить, пароль пока не выключать.**
 
@@ -783,7 +785,7 @@ Expected: `связь-жива` и `passwordauthentication no`.
 
 - [ ] **Step 7: Убедиться, что бот по-прежнему ходит на сервер**
 
-Run: `ssh klopas 'cd /root/myvpn-bot && python scripts/check_server_ssh.py 1'`
+Run: `ssh klopas 'cd /root/myvpn-bot && /usr/bin/python3.11 scripts/check_server_ssh.py 1'`
 Expected: `OK 31.77.157.162: вход по ключу`
 **Если ошибка — НЕ отменять автооткат. Просто подождать 10 минут: сервер сам вернёт прежний конфиг sshd и пароль снова заработает. Отмена автооткta здесь закрепила бы поломку.**
 
@@ -816,7 +818,7 @@ Expected: `пароль стёрт из базы`
 
 - [ ] **Step 10: Финальная проверка бота и check**
 
-Run: `ssh klopas 'cd /root/myvpn-bot && python scripts/check_server_ssh.py 1 && /root/harden.sh check 2>&1 | grep -i парол'`
+Run: `ssh klopas 'cd /root/myvpn-bot && /usr/bin/python3.11 scripts/check_server_ssh.py 1 && /root/harden.sh check 2>&1 | grep -i парол'`
 Expected: `OK ... вход по ключу` и `OK   вход по паролю выключен`.
 
 - [ ] **Step 11: Коммит**
@@ -900,7 +902,7 @@ Expected: в списке присутствуют `10.8.0.0/24`, `10.66.66.0/24
 
 Run:
 ```bash
-ssh klopas 'cd /root/myvpn-bot && python scripts/check_server_ssh.py 1; fail2ban-client status sshd | grep -i "banned IP"'
+ssh klopas 'cd /root/myvpn-bot && /usr/bin/python3.11 scripts/check_server_ssh.py 1; fail2ban-client status sshd | grep -i "banned IP"'
 ```
 Expected: `OK ... вход по ключу`; в списке забаненных нет адреса сервера и адресов из `10.8.0.0/24`.
 
@@ -1072,7 +1074,7 @@ Expected: все строки `OK`, `ИТОГ: сервер соответств
 
 Run:
 ```bash
-ssh klopas 'cd /root/myvpn-bot && python scripts/check_server_ssh.py 1'
+ssh klopas 'cd /root/myvpn-bot && /usr/bin/python3.11 scripts/check_server_ssh.py 1'
 ssh klopas 'systemctl is-active myvpn-bot; journalctl -u myvpn-bot --since "-10min" --no-pager | grep -icE "error|traceback" || echo "ошибок нет"'
 ```
 Expected: `OK ... вход по ключу`, `active`, `ошибок нет`.

@@ -114,6 +114,13 @@ class User(Base):
     is_vip: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default="0", nullable=False
     )
+    # «Служебный» (этап D): свои люди и проверяющие из статистики исключаются —
+    # тесты владельца и бесплатные друзья не должны выдавать себя за продажи.
+    # Отдельно от is_vip намеренно: «друг» — это доступ к приватным серверам, и
+    # друг однажды может ещё и платить; смешаешь — спрячешь настоящие деньги.
+    is_staff: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="0", nullable=False
+    )
 
     peers: Mapped[list["Peer"]] = relationship(back_populates="user")
 

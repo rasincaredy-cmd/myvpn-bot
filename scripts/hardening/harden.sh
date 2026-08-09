@@ -109,13 +109,36 @@ port_is_listening() {
 }
 
 # Правило может быть записано двумя способами: обычное начинается с
-# "NNN/proto", а ограниченное по адресу — с адреса назначения, и порт
-# стоит дальше в строке. Сверка, привязанная к началу строки, второе
-# не находит и объявляет корректно открытый порт закрытым.
+# "NNN/proto", а ограниченное по адресу — с адреса назначения, и "NNN/proto"
+# стоит дальше в строке (`10.8.0.1 53/udp   ALLOW   10.8.0.0/24`). Сверка,
+# привязанная к началу строки, второе не находит и объявляет корректно
+# открытый порт закрытым. Но искать голое "NNN/proto" где угодно в строке
+# тоже нельзя: тот же номер порта может встретиться в колонке From (адрес
+# источника), а строка вида "22/tcp DENY Anywhere" должна остаться "не
+# открыт", а не превратиться в "открыт". Поэтому обе формы закрываются
+# одним выражением: "NNN/proto" (с самого начала строки или после пробела,
+# то есть строго в колонке "To"), допускается разделитель "(v6)", и сразу
+# следом обязаны идти ALLOW или LIMIT.
 rule_present() {
   local status="$1" num="$2" proto="$3"
-  grep -qE "(^|[[:space:]])${num}/${proto}([[:space:]]|$)" <<<"$status" && return 0
-  grep -qE "[[:space:]]${num}([[:space:]]|/${proto}[[:space:]])" <<<"$status" && return 0
+  grep -qE "(^|[[:space:]])${num}/${proto}([[:space:]]+\(v6\))?[[:space:]]+(ALLOW|LIMIT)" <<<"$status"
+}
+
+# Важное-4: порт, слушающий ТОЛЬКО на приватном адресе вне VPN_SUBNET и
+# BYPASS_SUBNET, не получает от cmd_apply_firewall вообще никакого
+# ufw-правила (см. её основной цикл — там для такого адреса просто
+# `continue` без единой команды ufw). Если такой порт попал в обязательные
+# (required), пост-сверка после включения никогда не найдёт для него ALLOW,
+# и это выяснится уже ПОСЛЕ вооружения автооткатa и включения фаервола.
+# Проверяем достижимость заранее — до единой правки.
+required_port_reachable() {
+  local ports="$1" rp="$2" port addr
+  while read -r port addr; do
+    [ "$port" = "$rp" ] || continue
+    if ! is_private_ipv4 "$addr" || in_cidr "$addr" "$VPN_SUBNET" || in_cidr "$addr" "$BYPASS_SUBNET"; then
+      return 0
+    fi
+  done <<<"$ports"
   return 1
 }
 
@@ -263,9 +286,9 @@ cmd_plan() {
   echo "=== что будет сделано (ничего не меняется) ==="
   echo "белый список банилки: ${OWN_IP} ${VPN_SUBNET} ${BYPASS_SUBNET}"
   # I1/N4: apply-firewall НЕ открывает наружу порты, слушающие на приватном
-  # адресе (см. is_private_ipv4 в cmd_apply_firewall) — показывать их в
-  # списке "останутся открытыми наружу" было бы враньём. Разносим по двум
-  # спискам заранее, а не фильтруем один общий.
+  # адресе (см. is_private_ipv4 — общая функция, объявлена выше) —
+  # показывать их в списке "останутся открытыми наружу" было бы враньём.
+  # Разносим по двум спискам заранее, а не фильтруем один общий.
   local ports port addr num open_lines="" private_lines=""
   ports="$(listening_ports)"
   while read -r port addr; do
@@ -333,10 +356,19 @@ jail_ready() {
 cmd_apply_fail2ban() {
   echo "=== банилка перебора ==="
   if ! systemctl is-active --quiet fail2ban; then
-    # backend=systemd (см. jail.local ниже) не стартует без python3-systemd —
-    # ставим зависимость сразу вместе с пакетом, а не по факту падения джейла.
-    DEBIAN_FRONTEND=noninteractive apt-get install -y fail2ban python3-systemd >/dev/null 2>&1 \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y fail2ban >/dev/null 2>&1 \
       || { fail "не удалось установить fail2ban"; return 1; }
+  fi
+
+  # backend=systemd (см. jail.local ниже) пишется на КАЖДОМ прогоне, а без
+  # python3-systemd джейл с ним не стартует. Проверка "fail2ban уже
+  # активен — зависимость не нужна" неверна: на образе, собранном с
+  # --no-install-recommends, fail2ban может быть установлен и активен, а
+  # python3-systemd — нет. Ставим зависимость безусловно, а не только при
+  # установке fail2ban с нуля.
+  if ! dpkg -s python3-systemd >/dev/null 2>&1; then
+    DEBIAN_FRONTEND=noninteractive apt-get install -y python3-systemd >/dev/null 2>&1 \
+      || { fail "не удалось установить python3-systemd — джейл с backend=systemd не поднимется"; return 1; }
   fi
 
   # Белый список — самое важное здесь. Без собственного адреса банилка
@@ -415,6 +447,20 @@ cmd_apply_firewall() {
   done
   if [ -n "$missing" ]; then
     fail "обязательный порт не слушает: ${missing}— фаервол НЕ включаю"
+    return 1
+  fi
+
+  # Важное-4: обязательный порт, слушающий только на приватном адресе вне
+  # VPN_SUBNET/BYPASS_SUBNET, никогда не получит правило ALLOW-наружу — и
+  # без этой проверки фаервол уже был бы включён с вооружённым автооткатом
+  # к моменту, когда это выяснится. Отказываем СЕЙЧАС, до автооткатa и до
+  # единой правки фаервола.
+  local unreachable=""
+  for rp in $required; do
+    required_port_reachable "$ports" "$rp" || unreachable="${unreachable}${rp} "
+  done
+  if [ -n "$unreachable" ]; then
+    fail "обязательный порт слушает только на внутреннем адресе — открыть его наружу нельзя: ${unreachable}— фаервол НЕ включаю"
     return 1
   fi
 

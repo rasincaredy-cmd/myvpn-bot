@@ -225,6 +225,32 @@ def test_fail2ban_installs_systemd_backend_dependency(text: str) -> None:
     assert "python3-systemd" in text
 
 
+def test_fail2ban_dependency_installed_unconditionally(text: str) -> None:
+    """Important-1: установка python3-systemd не должна зависеть от того,
+    пришлось ли ставить fail2ban «с нуля».
+
+    backend=systemd пишется в jail.local на КАЖДОМ прогоне apply-fail2ban.
+    Если зависимость ставится только внутри
+    `if ! systemctl is-active --quiet fail2ban; then ... fi`, то на
+    образе, где fail2ban уже установлен и активен (например собран с
+    --no-install-recommends), а python3-systemd не хватает, эта ветка не
+    выполнится вовсе — джейл не поднимется, и это будет повторяться на
+    каждом прогоне бота без самолечения.
+    """
+    start = text.index("if ! systemctl is-active --quiet fail2ban; then")
+    end = text.index("\n  fi\n", start)
+    inside_if = text[start:end]
+    after_if = text[end : text.index("cat > /etc/fail2ban/jail.local", end)]
+    assert "python3-systemd" not in inside_if, (
+        "зависимость systemd-бэкенда ставится только внутри условия "
+        "«fail2ban ещё не активен» — не установится, если fail2ban уже стоит"
+    )
+    assert "python3-systemd" in after_if, (
+        "нет безусловной установки python3-systemd между установкой "
+        "fail2ban и записью jail.local"
+    )
+
+
 def test_fail2ban_waits_for_jail(text: str) -> None:
     # N3: опрос джейла сразу после старта на нагруженной машине даёт
     # ложный отказ. Нужен повтор, а не единственная попытка после sleep.
@@ -235,4 +261,91 @@ def test_plan_marks_private_bound_ports(text: str) -> None:
     # Команда plan существует ради одного — показать, что изменится.
     # Приватно-привязанные порты apply-firewall наружу НЕ откроет, значит
     # показывать их в списке «останутся открытыми наружу» — враньё.
-    assert "только изнутри" in text
+    #
+    # ВНИМАНИЕ: не проверять просто "только изнутри" — эта подстрока уже
+    # была в файле ДО правки (комментарий про панель "только изнутри VPN и
+    # обхода"), и тест был бы зелёным на невыполненной работе. Проверяем
+    # фразы, которых в старом cmd_plan не было и быть не могло.
+    assert "наружу открыт не будет" in text
+    assert "слушают только на приватном адресе" in text
+
+
+def test_rule_present_requires_allow_or_limit_action(text: str) -> None:
+    """Important-2: rule_present обязана ловить обе формы записи правила,
+    но НЕ должна принимать голое совпадение номера порта где угодно в
+    строке — иначе `22/tcp DENY Anywhere` (запрещающее правило, оставшееся
+    от неудавшегося `ufw --force reset`) читалась бы как «правило есть»,
+    пост-сверка рапортовала бы успех, и автооткат снимался бы на сервере,
+    где нужный порт на самом деле закрыт первым же совпадением DENY.
+
+    Тест реально выполняет функцию rule_present из сценария на образце
+    настоящего вывода `ufw status` с боевого сервера (обычная форма,
+    форма "(v6)" и форма, ограниченная по адресу назначения), а не просто
+    ищет имя функции по тексту.
+    """
+    match = re.search(r"^rule_present\(\) \{.*?\n\}\n", text, re.MULTILINE | re.DOTALL)
+    assert match, "функция rule_present не найдена в сценарии"
+    func_src = match.group(0)
+
+    allow_sample = (
+        "To                         Action      From\n"
+        "--                         ------      ----\n"
+        "22/tcp                     ALLOW       Anywhere\n"
+        "585/udp                    ALLOW       Anywhere\n"
+        "6769/tcp                   ALLOW       10.8.0.0/24\n"
+        "6769/tcp                   ALLOW       10.66.66.0/24\n"
+        "22/tcp (v6)                ALLOW       Anywhere (v6)\n"
+        "10.8.0.1 53/udp            ALLOW       10.8.0.0/24\n"
+    )
+    deny_only_sample = "22/tcp                     DENY        Anywhere\n"
+
+    script = f"""
+set -uo pipefail
+{func_src}
+
+allow_status=$(cat <<'SAMPLE_EOF'
+{allow_sample}SAMPLE_EOF
+)
+rule_present "$allow_status" 22 tcp || exit 11
+rule_present "$allow_status" 6769 tcp || exit 12
+rule_present "$allow_status" 53 udp || exit 13
+
+deny_status=$(cat <<'SAMPLE_EOF'
+{deny_only_sample}SAMPLE_EOF
+)
+if rule_present "$deny_status" 22 tcp; then
+  exit 14
+fi
+exit 0
+"""
+    result = subprocess.run(
+        ["bash", "-c", script], capture_output=True, text=True
+    )
+    codes = {
+        11: "обычная форма '22/tcp ALLOW Anywhere' не распознана как присутствующая",
+        12: "правило, ограниченное по адресу источника (6769/tcp ALLOW <subnet>), не распознано",
+        13: "правило, ограниченное по адресу назначения (10.8.0.1 53/udp ALLOW ...), не распознано",
+        14: "строка '22/tcp DENY Anywhere' без ALLOW/LIMIT ошибочно считается присутствующим правилом",
+    }
+    assert result.returncode == 0, (
+        codes.get(result.returncode, f"код {result.returncode}")
+        + f"\nstdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+
+
+def test_firewall_checks_required_port_reachability_before_rollback(text: str) -> None:
+    """Important-4: обязательный порт, слушающий ТОЛЬКО на приватном адресе
+    вне VPN_SUBNET/BYPASS_SUBNET, никогда не получит от cmd_apply_firewall
+    ни одного ufw-правила (её основной цикл просто делает `continue` для
+    такого адреса) — пост-сверка после включения никогда не найдёт для
+    него ALLOW. Проверять это нужно ДО arm_rollback и ДО единой правки
+    фаервола, а не постфактум, когда автооткат уже вооружён, а фаервол уже
+    включён.
+    """
+    assert "required_port_reachable" in text
+    check_idx = text.index('required_port_reachable "$ports" "$rp"')
+    rollback_idx = text.index('arm_rollback rollback-ufw "ufw --force disable"')
+    assert check_idx < rollback_idx, (
+        "проверка достижимости обязательного порта стоит после "
+        "arm_rollback, а не до него"
+    )

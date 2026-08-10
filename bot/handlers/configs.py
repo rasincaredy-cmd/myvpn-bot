@@ -40,6 +40,7 @@ from bot.services.crypto import encrypt
 from bot.services.ssh import SSHClient, SSHError
 from bot.states.install import InviteStates
 from bot.texts import t
+from bot.utils.timefmt import fmt_msk
 from bot.utils.validators import is_valid_label
 
 router = Router(name="configs")

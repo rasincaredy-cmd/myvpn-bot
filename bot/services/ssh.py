@@ -155,3 +155,29 @@ class SSHClient:
             attrs = asyncssh.SFTPAttrs(permissions=mode)
             async with sftp.open(path, "w", attrs=attrs) as f:
                 await f.write(content)
+
+    async def put_file(
+        self, local_path: str, remote_path: str, *, mode: int = 0o644
+    ) -> None:
+        """Залить локальный файл на сервер как есть.
+
+        Отдельно от `write_file`, потому что тот принимает строку: программа
+        обхода — восьмимегабайтный бинарь, через str он не пройдёт без порчи
+        байтов.
+
+        Права ставим тем же SFTP-сеансом: без бита исполнения залитая
+        программа не запустится. Между созданием файла и `chmod` есть
+        короткое окно, но опасности в нём нет — до `chmod` файл лежит
+        БЕЗ бита исполнения (по умолчанию 0644 у root), то есть окно
+        сужает права, а не расширяет.
+        """
+        if self._conn is None:
+            raise SSHError("нет соединения")
+        try:
+            async with self._conn.start_sftp_client() as sftp:
+                await sftp.put(local_path, remote_path)
+                await sftp.chmod(remote_path, mode)
+        except asyncssh.Error as exc:
+            # asyncssh.Error не наследует OSError — без явного перехвата
+            # сбой заливки пролетел бы мимо всех `except SSHError` наверху.
+            raise SSHError(f"не удалось залить {remote_path}: {exc}") from exc

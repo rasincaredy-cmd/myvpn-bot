@@ -943,10 +943,12 @@ class TestDeviceCardHidesMovedPeer:
 
         sent: list[int] = []
 
-        async def fake_ask(chat_id, session_, peer_):
-            sent.append(peer_.id)
+        async def fake_ask(chat_id, session_, device_, peers_):
+            sent.extend(p.id for p in peers_)
 
-        monkeypatch.setattr(devices_h, "ask_config_format", fake_ask)
+        # С 10.08.2026 формат спрашивается один раз на устройство, а конфиги
+        # приходят пачкой. Инвариант тот же: доживающего в пачке быть не должно.
+        monkeypatch.setattr(devices_h, "ask_config_format_for_device", fake_ask)
 
         call = _FakeCall(f"dev:send:{device.id}", user.tg_id)
         await devices_h.cb_dev_send(call, session)

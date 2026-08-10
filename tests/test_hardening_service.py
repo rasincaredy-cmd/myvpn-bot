@@ -14,12 +14,17 @@ def test_harden_order_password_last() -> None:
     Выключение пароля обязано идти после заведения ключа, а фаервол —
     после того, как нужные порты уже разрешены. Перестановка любого из
     этих шагов оставляет сервер без доступа.
+
+    Ищем порядок в теле функции без докстринга: упоминание команды
+    в описании — не вызов, а тест на нём уже один раз ложно упал.
     """
     import inspect
 
     from bot.services.hardening import harden
 
     src = inspect.getsource(harden)
+    body_start = src.index('"""', src.index('"""') + 3) + 3
+    src = src[body_start:]
     order = [
         src.index("apply-stats"),
         src.index("apply-journal"),

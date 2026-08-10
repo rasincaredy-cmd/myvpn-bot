@@ -36,7 +36,10 @@ from bot.utils.timefmt import as_utc, fmt_msk
 from bot.utils.validators import is_valid_label
 
 # Переиспользуем машинерию создания пиров и единый экран выбора формата.
-from bot.handlers.config_delivery import ask_config_format
+from bot.handlers.config_delivery import (
+    ask_config_format,
+    ask_config_format_for_device,
+)
 from bot.handlers.configs import provision_device_peers
 
 router = Router(name="devices")
@@ -326,8 +329,10 @@ async def cb_dev_send(call: CallbackQuery, session: AsyncSession) -> None:
     if not peers:
         await call.answer("Нет активных конфигов", show_alert=True)
         return
-    for peer in peers:
-        await ask_config_format(call.message.chat.id, session, peer)
+    # Вопрос про формат задаём один раз на устройство: до 10.08.2026 он
+    # приходил на каждую локацию, и юзер отвечал на него столько раз,
+    # сколько у него конфигов.
+    await ask_config_format_for_device(call.message.chat.id, session, device, peers)
     await call.answer()
 
 

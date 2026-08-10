@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import shlex
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -187,12 +188,18 @@ async def harden(
     *,
     wg_port: int,
     progress,
+    extra_ports: Sequence[str] = (),
 ) -> HardeningReport:
     """Привести сервер к эталону.
 
     Порядок шагов менять нельзя: фаервол включается после того, как порты
     уже слушают, ключ заводится до выключения пароля, пароль гасится
     последним. Любая перестановка оставляет сервер без доступа.
+
+    `extra_ports` — порты вида `udp/56000`, которые обязаны остаться
+    открытыми (обход БС). Передавать их можно ТОЛЬКО когда служба уже
+    слушает: `apply-firewall` считает такой порт обязательным и вовсе
+    откажется включать фаервол, если он молчит.
     """
     from bot.db import repo
 
@@ -241,8 +248,11 @@ async def harden(
     ssh_port = server.ssh_port if server is not None else 22
 
     await progress("Включаю фаервол...")
+    required = f"tcp/{ssh_port} udp/{wg_port}"
+    if extra_ports:
+        required += " " + " ".join(extra_ports)
     await run_step(
-        f"apply-firewall tcp/{ssh_port} udp/{wg_port}",
+        f"apply-firewall {required}",
         "Фаервол включить не удалось, остальное продолжаю",
         "фаервол включить не удалось",
     )

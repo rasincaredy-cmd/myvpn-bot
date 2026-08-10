@@ -19,6 +19,18 @@ def config_format_kb(peer_id: int) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
+def config_format_device_kb(device_id: int) -> InlineKeyboardMarkup:
+    """То же самое, но на всё устройство сразу: у конфигов одного устройства
+    формат нужен один и тот же, а вопрос до 10.08.2026 задавался на каждую
+    локацию отдельно. `dev` в середине отличает эти кнопки от одиночных."""
+    kb = InlineKeyboardBuilder()
+    kb.button(text="📄 Файлами",   callback_data=f"{CB_CFG}:file:dev:{device_id}")
+    kb.button(text="📱 QR-кодами", callback_data=f"{CB_CFG}:qr:dev:{device_id}")
+    kb.button(text="🔗 Ссылками",  callback_data=f"{CB_CFG}:link:dev:{device_id}")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
 def devices_list_kb(
     rows: list[tuple[int, str, str]],  # (device_id, mark, label) — срез страницы
     used: int,

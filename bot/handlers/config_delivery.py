@@ -13,13 +13,18 @@ from __future__ import annotations
 import re
 
 from aiogram import F, Router
-from aiogram.types import BufferedInputFile, CallbackQuery
+from aiogram.types import (
+    BufferedInputFile,
+    CallbackQuery,
+    InputMediaDocument,
+    InputMediaPhoto,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
 from bot.db import repo
-from bot.db.models import Peer, PeerStatus, Server
-from bot.keyboards.inline import CB_CFG, config_format_kb
+from bot.db.models import Device, Peer, PeerStatus, Server
+from bot.keyboards.inline import CB_CFG, config_format_device_kb, config_format_kb
 from bot.loader import bot
 from bot.services import amnezia
 from bot.services.crypto import decrypt
@@ -89,6 +94,143 @@ async def ask_config_format(
         "🔗 <b>Ссылкой</b> — если настраиваешь <b>этот же</b> телефон.",
         reply_markup=config_format_kb(peer.id),
     )
+
+
+async def ask_config_format_for_device(
+    chat_id: int, session: AsyncSession, device: Device, peers: list[Peer]
+) -> None:
+    """Один вопрос на всё устройство.
+
+    Раньше «получить все» задавало этот вопрос на каждую локацию, и юзер
+    отвечал на него столько раз, сколько у него конфигов.
+    """
+    from bot.handlers.configs import config_display_base
+
+    where = []
+    for peer in peers:
+        server = await repo.get_server(session, peer.server_id)
+        where.append(config_display_base(server) if server else "?")
+
+    await bot.send_message(
+        chat_id,
+        f"📦 <b>Конфиги «{device.label}»</b> — {len(peers)} шт.\n"
+        f"<i>{', '.join(where)}</i>\n\n"
+        "Как их прислать?\n\n"
+        "📄 <b>Файлами</b> — универсально: открой каждый в AmneziaVPN.\n"
+        "📱 <b>QR-кодами</b> — если настраиваешь <b>другое</b> устройство.\n"
+        "🔗 <b>Ссылками</b> — если настраиваешь <b>этот же</b> телефон.\n\n"
+        "Одной ссылкой сразу все локации не передать — приложение "
+        "принимает по одному серверу за раз.",
+        reply_markup=config_format_device_kb(device.id),
+    )
+
+
+# Telegram не принимает в одном альбоме больше десяти вложений.
+_ALBUM_LIMIT = 10
+
+
+def _chunks(items: list, size: int) -> list[list]:
+    return [items[i:i + size] for i in range(0, len(items), size)]
+
+
+async def _visible_active_peers(session: AsyncSession, device_id: int) -> list[Peer]:
+    """Те же правила, что и у карточки устройства: отозванные не показываем,
+    доживающий после переезда конфиг — тоже (в приложении уже нужен новый)."""
+    from bot.services import relocate
+
+    peers = relocate.visible_peers(await repo.list_peers_for_device(session, device_id))
+    return [p for p in peers if p.status == PeerStatus.ACTIVE]
+
+
+@router.callback_query(F.data.startswith(f"{CB_CFG}:") & F.data.contains(":dev:"))
+async def cb_config_format_device(call: CallbackQuery, session: AsyncSession) -> None:
+    """Присылает все конфиги устройства пачкой.
+
+    Обработчик стоит ВЫШЕ одиночного: оба ловят префикс `cfg:`, и общий,
+    получив `cfg:file:dev:10`, попытался бы разобрать «dev» как номер пира.
+    """
+    _, kind, _, raw_id = call.data.split(":")
+    device = await repo.get_device(session, int(raw_id))
+    user = await repo.get_user_by_tg_id(session, call.from_user.id)
+    is_admin = call.from_user.id in settings.admin_ids
+    if device is None or (not is_admin and (user is None or device.user_id != user.id)):
+        # Тот же ответ, что и на несуществующее устройство: по разнице
+        # чужой номер не должен отличаться от несуществующего.
+        await call.answer("Не найдено", show_alert=True)
+        return
+
+    peers = await _visible_active_peers(session, device.id)
+    if not peers:
+        await call.answer("Нет активных конфигов", show_alert=True)
+        return
+
+    chat_id = call.message.chat.id
+    built: list[tuple[Server, Peer, str]] = []
+    for peer in peers:
+        pair = await build_conf_for_peer(session, peer)
+        if pair is not None:
+            built.append((pair[0], peer, pair[1]))
+    if not built:
+        await call.answer("Серверы недоступны", show_alert=True)
+        return
+
+    from bot.handlers.configs import config_display_base, make_vpn_link
+
+    if kind == "link":
+        lines = []
+        for server, peer, conf in built:
+            link = await make_vpn_link(session, server, peer.label, conf)
+            lines.append(f"<b>{config_display_base(server)}</b>\n<code>{link}</code>")
+        await bot.send_message(
+            chat_id,
+            "🔗 <b>Ссылки на твои конфиги</b>\n\n" + "\n\n".join(lines) + "\n\n"
+            "Нажми на ссылку — она скопируется. В AmneziaVPN жми «＋» и вставь.",
+        )
+        await call.answer("Отправил")
+        return
+
+    media = []
+    for server, peer, conf in built:
+        where = config_display_base(server)
+        if kind == "qr":
+            media.append(
+                InputMediaPhoto(
+                    media=BufferedInputFile(
+                        conf_to_qr_png(conf), filename=f"{peer.label}-{server.id}.png"
+                    ),
+                    caption=where,
+                )
+            )
+        else:
+            filename = _conf_filename(server, peer.label)
+            media.append(
+                InputMediaDocument(
+                    media=BufferedInputFile(conf.encode("utf-8"), filename=filename),
+                    caption=where,
+                )
+            )
+
+    # Альбом из одного вложения Telegram не принимает — такой шлём как обычно.
+    if len(media) == 1:
+        single = media[0]
+        if kind == "qr":
+            await bot.send_photo(chat_id, photo=single.media, caption=single.caption)
+        else:
+            await bot.send_document(
+                chat_id, document=single.media, caption=single.caption
+            )
+    else:
+        for group in _chunks(media, _ALBUM_LIMIT):
+            await bot.send_media_group(chat_id, media=group)
+
+    hint = (
+        "📱 Открой AmneziaVPN на <b>другом</b> устройстве → «＋» → "
+        "«Сканировать QR-код»."
+        if kind == "qr"
+        else "📄 Открой AmneziaVPN → «＋» → выбери файл нужной локации."
+    )
+    await bot.send_message(chat_id, hint)
+    await call.answer("Отправил")
 
 
 @router.callback_query(F.data.startswith(f"{CB_CFG}:"))

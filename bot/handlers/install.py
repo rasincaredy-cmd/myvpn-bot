@@ -25,7 +25,7 @@ from bot.keyboards.inline import (
     main_menu,
 )
 from bot.loader import bot
-from bot.services import amnezia, hardening
+from bot.services import amnezia, hardening, wdtt_install
 from bot.services.crypto import encrypt
 from bot.services.ssh import SSHClient, SSHCredentials, SSHError
 from bot.states.install import InstallStates
@@ -365,11 +365,44 @@ async def step_run(
     # выше уже закрыт, а внутри `harden` бот заводит себе ключ и гасит
     # пароль, так что тянуть старое соединение через полминуты работы
     # смысла нет.
+    # Обход БС ставится сам и до эталона: фаервол строится от портов, которые
+    # реально слушают, поэтому демон обхода должен быть уже поднят. Отказ
+    # обхода не отменяет сервер — VPN на нём работает, тумблер просто
+    # остаётся выключенным, и юзеру обход на этой ноде не предлагается.
+    bypass_ok = False
+    try:
+        async with SSHClient(creds) as ssh:
+            bypass_ok = await wdtt_install.install(
+                ssh, ports=server.wdtt_ports, dns=server.dns, progress=progress
+            )
+    except Exception as exc:  # noqa: BLE001 — сервер уже установлен, о проблеме сообщаем
+        logger.warning("Установка обхода БС сорвалась: {}", exc)
+
+    server.wdtt_enabled = bypass_ok
+    await session.commit()
+    bypass_line = (
+        "🛡 Обход БС: работает"
+        if bypass_ok
+        else "⚠️ Обход БС: не встал, тумблер в карточке выключен"
+    )
+
+    # Порты обхода уходят в фаервол обязательными только когда обход поднялся:
+    # неслушающий обязательный порт — причина вовсе не включать фаервол.
+    extra_ports: tuple[str, ...] = ()
+    if bypass_ok:
+        dtls, wg = (server.wdtt_ports or wdtt_install.DEFAULT_PORTS).split(",")[:2]
+        extra_ports = (f"udp/{dtls.strip()}", f"udp/{wg.strip()}")
+
     await progress("Привожу сервер к эталону безопасности...")
     try:
         async with SSHClient(creds) as ssh:
             report = await hardening.harden(
-                ssh, session, server.id, wg_port=data["wg_port"], progress=progress
+                ssh,
+                session,
+                server.id,
+                wg_port=data["wg_port"],
+                progress=progress,
+                extra_ports=extra_ports,
             )
         if report.compliant:
             security_line = "🛡 Защита: сервер соответствует эталону"
@@ -390,6 +423,7 @@ async def step_run(
     )
     await bot.send_message(
         chat_id,
-        t.install_done.format(name=server.name) + f"\n\n{security_line}",
+        t.install_done.format(name=server.name)
+        + f"\n\n{security_line}\n{bypass_line}",
         reply_markup=main_menu(user.is_admin),
     )

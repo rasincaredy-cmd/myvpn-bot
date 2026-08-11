@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
 from bot.db import repo
-from bot.db.models import AuditAction, CryptoInvoice, User
+from bot.db.models import AuditAction, CryptoInvoice, PlategaPayment, User
 from bot.services import revive as revive_svc
 from bot.services.pricing import (
     DAYS_PER_MONTH,
@@ -121,6 +121,26 @@ async def apply_paid_invoice(
     return await credit_deposit(
         session, user_id=inv.user_id, amount_kopeks=inv.amount_kopeks,
         method="cryptobot", note=f"Пополнение (инвойс {inv.invoice_id})",
+    )
+
+
+async def apply_paid_platega(
+    session: AsyncSession, row: PlategaPayment
+) -> DepositResult:
+    """Зачисляет ОПЛАЧЕННЫЙ счёт Platega: баланс юзеру + реф-награда пригласившему.
+
+    Идемпотентно: повторный вызов по уже paid-строке — no-op (кнопка «Проверить»
+    и поллинг планировщика могут наперегонки увидеть одну оплату).
+
+    Юзер и сумма берутся из строки, а не из ответа провайдера: их API по id
+    отдаёт и чужие транзакции, доверять ему как источнику правды нельзя."""
+    if row.status == "paid":
+        return DepositResult(credited=False)
+    row.status = "paid"
+    row.paid_at = datetime.now(timezone.utc)
+    return await credit_deposit(
+        session, user_id=row.user_id, amount_kopeks=row.amount_kopeks,
+        method="platega", note=f"Пополнение картой (счёт {row.transaction_id})",
     )
 
 

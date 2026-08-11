@@ -10,8 +10,9 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from bot.config import settings
 from bot.db import repo
-from bot.services import platega
+from bot.services import billing, platega
 
 
 async def _user(session: AsyncSession, tg_id: int = 501):
@@ -93,3 +94,63 @@ class TestPaymentRows:
         old.created_at = datetime.now(timezone.utc) - timedelta(hours=30)
         await session.flush()
         assert await repo.list_open_platega_payments(session) == []
+
+
+class TestCrediting:
+    @pytest.mark.asyncio
+    async def test_payment_credits_balance(self, session: AsyncSession) -> None:
+        user = await _user(session, tg_id=601)
+        row = await repo.create_platega_payment(
+            session, user_id=user.id, transaction_id="tx-pay",
+            amount_kopeks=300_00, url="u",
+        )
+        dep = await billing.apply_paid_platega(session, row)
+        await session.refresh(user)
+        assert dep.credited is True
+        assert user.balance_kopeks == 300_00
+        assert row.status == "paid"
+        assert row.paid_at is not None
+
+    @pytest.mark.asyncio
+    async def test_no_bonus_for_card(self, session: AsyncSession) -> None:
+        """Карта и СБП — самый дорогой для сервиса способ, бонуса за него нет
+        (решение 8.08). Зачисляем ровно сумму счёта."""
+        user = await _user(session, tg_id=602)
+        row = await repo.create_platega_payment(
+            session, user_id=user.id, transaction_id="tx-nobonus",
+            amount_kopeks=100_00, url="u",
+        )
+        await billing.apply_paid_platega(session, row)
+        await session.refresh(user)
+        assert user.balance_kopeks == 100_00
+
+    @pytest.mark.asyncio
+    async def test_double_credit_impossible(self, session: AsyncSession) -> None:
+        """Кнопка «Проверить» и тик планировщика могут увидеть оплату
+        одновременно — баланс обязан вырасти один раз."""
+        user = await _user(session, tg_id=603)
+        row = await repo.create_platega_payment(
+            session, user_id=user.id, transaction_id="tx-twice",
+            amount_kopeks=250_00, url="u",
+        )
+        first = await billing.apply_paid_platega(session, row)
+        second = await billing.apply_paid_platega(session, row)
+        await session.refresh(user)
+        assert first.credited is True
+        assert second.credited is False
+        assert user.balance_kopeks == 250_00
+
+    @pytest.mark.asyncio
+    async def test_referrer_gets_percent(self, session: AsyncSession) -> None:
+        inviter = await _user(session, tg_id=604)
+        buyer = await _user(session, tg_id=605)
+        buyer.referrer_id = inviter.id
+        await session.flush()
+        row = await repo.create_platega_payment(
+            session, user_id=buyer.id, transaction_id="tx-ref",
+            amount_kopeks=1000_00, url="u",
+        )
+        dep = await billing.apply_paid_platega(session, row)
+        await session.refresh(inviter)
+        assert dep.ref_reward_kopeks == 1000_00 * settings.referral_percent // 100
+        assert inviter.balance_kopeks == dep.ref_reward_kopeks

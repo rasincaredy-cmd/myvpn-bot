@@ -367,8 +367,10 @@ cmd_plan() {
     echo "слушают только на приватном адресе (apply-firewall наружу их не откроет):"
     printf '%s' "$private_lines"
   fi
-  echo "будет закрыт от интернета и разрешён только из VPN:"
-  echo "  tcp/${PANEL_PORT} (панель x-ui)"
+  if grep -q "^tcp/${PANEL_PORT}\b" <<<"$ports"; then
+    echo "будет закрыт от интернета и разрешён только из VPN:"
+    echo "  tcp/${PANEL_PORT} (панель x-ui)"
+  fi
   echo "потолок журнала: ${JOURNAL_CAP} (сейчас $(journalctl --disk-usage 2>/dev/null | grep -oE '[0-9.]+[MG]' | tail -1))"
 }
 
@@ -567,10 +569,16 @@ cmd_apply_firewall() {
     ufw allow "${num}/${proto}" >/dev/null && echo "  открыт ${num}/${proto}"
   done <<<"$ports"
 
-  # Панель управления — только изнутри VPN и обхода.
-  ufw allow from "$VPN_SUBNET" to any port "$PANEL_PORT" proto tcp >/dev/null
-  ufw allow from "$BYPASS_SUBNET" to any port "$PANEL_PORT" proto tcp >/dev/null
-  echo "  панель ${PANEL_PORT} — только из ${VPN_SUBNET} и ${BYPASS_SUBNET}"
+  # Панель управления — только изнутри VPN и обхода. Правила создаём, лишь
+  # если панель реально слушает: x-ui с боевого сервера удалён 09.08.2026, и
+  # на серверах без панели это были правила в никуда. Мусор в наборе правил
+  # опасен не сам по себе, а тем, что через год никто не помнит, что за порт
+  # открыт и можно ли его убирать.
+  if grep -q "^tcp/${PANEL_PORT}\b" <<<"$ports"; then
+    ufw allow from "$VPN_SUBNET" to any port "$PANEL_PORT" proto tcp >/dev/null
+    ufw allow from "$BYPASS_SUBNET" to any port "$PANEL_PORT" proto tcp >/dev/null
+    echo "  панель ${PANEL_PORT} — только из ${VPN_SUBNET} и ${BYPASS_SUBNET}"
+  fi
 
   if ! ufw --force enable >/dev/null; then
     fail "ufw не включился"

@@ -43,6 +43,9 @@ def server_card(
     kb.button(text="📋 Инвайты",       callback_data=f"{CB_INVITES}:list:{server_id}")
     kb.button(text="📊 Трафик",        callback_data=f"{CB_SERVERS}:traffic:{server_id}")
     kb.button(text="🖥 Состояние",     callback_data=f"{CB_SERVERS}:stats:{server_id}")
+    # Скорость и объём канала: упираемся мы в трафик, а не в процессор, и
+    # видеть темп относительно потолка хостера нужно до того, как упрёмся.
+    kb.button(text="📈 Канал",         callback_data=f"{CB_SERVERS}:chan:{server_id}")
     kb.button(text="🌍 Локация",       callback_data=f"{CB_SERVERS}:loc:{server_id}")
     kb.button(text="✏️ Имя",           callback_data=f"{CB_SERVERS}:rename:{server_id}")
     kb.button(text="🌐 DNS",           callback_data=f"{CB_SERVERS}:dns:{server_id}")
@@ -96,6 +99,14 @@ def traffic_nav(server_id: int, has_orphans: bool = False) -> InlineKeyboardMark
 def stats_nav(server_id: int) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="🔄 Обновить",  callback_data=f"{CB_SERVERS}:stats:{server_id}")
+    kb.button(text="« К серверу", callback_data=f"{CB_SERVERS}:open:{server_id}")
+    kb.adjust(2)
+    return kb.as_markup()
+
+
+def channel_nav(server_id: int) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🔄 Обновить",  callback_data=f"{CB_SERVERS}:chan:{server_id}")
     kb.button(text="« К серверу", callback_data=f"{CB_SERVERS}:open:{server_id}")
     kb.adjust(2)
     return kb.as_markup()

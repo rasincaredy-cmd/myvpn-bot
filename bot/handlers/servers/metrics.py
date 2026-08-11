@@ -9,8 +9,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.db import repo
 from bot.db.models import PeerStatus
-from bot.keyboards.inline import CB_SERVERS, server_card, stats_nav, traffic_nav
-from bot.services import amnezia
+from bot.keyboards.inline import (
+    CB_SERVERS,
+    channel_nav,
+    server_card,
+    stats_nav,
+    traffic_nav,
+)
+from bot.services import amnezia, health
 from bot.services.ssh import SSHClient, SSHError
 
 router = Router(name="servers_metrics")
@@ -115,6 +121,9 @@ async def cb_server_stats(call: CallbackQuery, session: AsyncSession) -> None:
     try:
         async with SSHClient(repo.creds_from_server(server)) as ssh:
             stats = await amnezia.get_server_stats(ssh)
+            # Второй командой в том же подключении: то, чего не знает
+            # стандартный сбор — кто копит очередь приёма и кого забанили.
+            extras = health.parse_extras((await ssh.run(health.extras_command())).stdout)
     except SSHError as exc:
         await call.message.edit_text(
             f"❌ SSH-ошибка: <code>{exc}</code>",
@@ -131,9 +140,43 @@ async def cb_server_stats(call: CallbackQuery, session: AsyncSession) -> None:
         f"📈 <b>Load avg:</b> {stats.load_1:.2f} / {stats.load_5:.2f} / {stats.load_15:.2f}"
         f"  ({stats.cpu_count} CPU)\n"
         f"🧠 <b>RAM:</b> {stats.ram_used_mb} / {stats.ram_total_mb} MB  ({ram_pct}%)\n"
-        f"💾 <b>Диск (/):</b> {stats.disk_used_gb:.1f} / {stats.disk_total_gb:.1f} GB  ({disk_pct}%)"
+        f"💾 <b>Диск (/):</b> {stats.disk_used_gb:.1f} / {stats.disk_total_gb:.1f} GB  ({disk_pct}%)\n\n"
+        + health.format_extras(extras)
     )
     await call.message.edit_text(text, reply_markup=stats_nav(server_id))
+
+
+# --- Канал: скорость и объём -------------------------------------------------
+
+@router.callback_query(F.data.startswith(f"{CB_SERVERS}:chan:"))
+async def cb_server_channel(call: CallbackQuery, session: AsyncSession) -> None:
+    """Скорость за сегодня и темп расхода трафика относительно потолка хостера.
+
+    Отдельно от «Состояния»: там мгновенный срез железа, здесь история за
+    сутки и прогноз на месяц — в одно сообщение это не влезает.
+    """
+    server_id = int(call.data.rsplit(":", 1)[-1])
+    server = await repo.get_server(session, server_id)
+    if server is None:
+        await call.answer("Не найдено", show_alert=True)
+        return
+
+    await call.answer("⏳ Считаю канал...")
+
+    try:
+        async with SSHClient(repo.creds_from_server(server)) as ssh:
+            res = await ssh.run(health.channel_command())
+    except SSHError as exc:
+        await call.message.edit_text(
+            f"❌ SSH-ошибка: <code>{exc}</code>",
+            reply_markup=server_card(server.id, server.wdtt_enabled, server.is_private),
+        )
+        return
+
+    channel = health.parse_channel(res.stdout)
+    await call.message.edit_text(
+        health.format_channel(server.name, channel), reply_markup=channel_nav(server_id)
+    )
 
 
 # --- Очистка лишних WG-пиров -------------------------------------------------

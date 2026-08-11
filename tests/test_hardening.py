@@ -187,6 +187,49 @@ def test_panel_restricted_to_vpn(text: str) -> None:
     assert '"$BYPASS_SUBNET" to any port "$PANEL_PORT"' in text
 
 
+def _run_plan(tmp_path: Path, listening: str) -> subprocess.CompletedProcess:
+    """`plan` ничего не меняет, поэтому его можно гонять по-настоящему.
+    Подсовываем свой `ss` — от него зависит весь набор будущих правил."""
+    # Тело подставного `ss` собираем heredoc-ом, а не printf: экранированные
+    # переводы строк доезжают до awk как literal «\n», и весь список портов
+    # схлопывается в одну строку — тест при этом зеленеет по неверной причине.
+    binp = _fake_bin(
+        tmp_path,
+        ss=f"cat <<'SSEOF'\n{listening}SSEOF\n",
+        journalctl="echo '500.0M'\n",
+    )
+    env = {**os.environ, "PATH": f"{binp}:{os.environ.get('PATH', '')}"}
+    return subprocess.run(
+        ["bash", str(SCRIPT), "plan"], capture_output=True, text=True, env=env
+    )
+
+
+_SS_WITH_PANEL = (
+    "tcp   LISTEN 0 128  0.0.0.0:22   0.0.0.0:*\n"
+    "tcp   LISTEN 0 128  0.0.0.0:6769 0.0.0.0:*\n"
+    "udp   UNCONN 0 0    0.0.0.0:585  0.0.0.0:*\n"
+)
+_SS_NO_PANEL = (
+    "tcp   LISTEN 0 128  0.0.0.0:22   0.0.0.0:*\n"
+    "udp   UNCONN 0 0    0.0.0.0:585  0.0.0.0:*\n"
+)
+
+
+def test_panel_rules_skipped_when_panel_is_gone(tmp_path: Path) -> None:
+    # x-ui удалён с боевого сервера 09.08.2026: правила для порта, который
+    # никто не слушает, — мусор, из-за которого через год не понять, что за
+    # дыра открыта и можно ли её закрывать.
+    out = _run_plan(tmp_path, _SS_NO_PANEL).stdout
+    assert "6769" not in out
+
+
+def test_panel_rules_kept_while_panel_listens(tmp_path: Path) -> None:
+    # Обратная сторона: там, где панель есть, её обязательно надо закрыть
+    # от интернета — иначе правка выше молча открыла бы её всему миру.
+    out = _run_plan(tmp_path, _SS_WITH_PANEL).stdout
+    assert "6769" in out
+
+
 def test_firewall_built_from_listening_ports(text: str) -> None:
     # Правила строятся от того, что реально слушает наружу. Список портов
     # из головы — верный способ забыть нужный и обрезать живой сервис.

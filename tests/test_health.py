@@ -1,0 +1,358 @@
+"""Тревоги о состоянии серверов (этап 2B).
+
+Фикстура PROBE — настоящий вывод probe_command с боевой ноды 11.08.2026,
+а не придуманный: форматы sar/fail2ban/snmp отличаются между версиями, и
+тест на выдуманном тексте доказывает только то, что парсер понимает сам себя.
+"""
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+from bot.services import health
+
+PROBE = """---SERVICES---
+awg-quick@awg0 active
+fail2ban active
+wdtt active
+---DISK---
+15%
+---RAM---
+1963 1441
+---OOM---
+0
+---STEAL---
+07:42:12        all      1.04      0.00      0.76      0.16      2.46     95.59
+07:44:26        all      0.32      0.00      0.71      0.05      2.14     96.78
+07:46:07        all      0.50      0.00      0.92      0.04      2.07     96.47
+07:48:03        all      1.20      0.00      1.64      0.25      2.69     94.23
+07:50:26        all      0.37      0.00      0.67      0.13      2.53     96.29
+07:52:26        all      0.89      0.00      3.19      0.12      3.02     92.79
+---STEALTODAY---
+Average:        all      0.76      0.03      0.81      0.12      1.51     96.76
+---STEALPREV---
+Average:        all      1.38      0.00      1.78      0.10      2.49     94.25
+---SNMP---
+Udp: InDatagrams NoPorts InErrors OutDatagrams RcvbufErrors SndbufErrors InCsumErrors IgnoredMulti MemErrors
+Udp: 22601563 9427 1148 6775259 1146 229 2 0 0
+UdpLite: InDatagrams NoPorts InErrors OutDatagrams RcvbufErrors SndbufErrors InCsumErrors IgnoredMulti MemErrors
+---BAN---
+   |- Currently banned:\t0
+   `- Banned IP list:\t
+---OWNIP---
+31.77.157.162
+"""
+
+UNITS = ["awg-quick@awg0", "fail2ban", "wdtt"]
+NOW = datetime(2026, 8, 11, 12, 0, tzinfo=timezone.utc)
+
+
+def snap(**over) -> health.Snapshot:
+    """Снимок здоровой боевой ноды, в который тест портит одно поле."""
+    s = health.build_snapshot(1, "Нидерланды", PROBE, units=UNITS)
+    for key, value in over.items():
+        setattr(s, key, value)
+    return s
+
+
+# ── Разбор вывода ────────────────────────────────────────────────────────────
+
+def test_snapshot_from_real_probe():
+    s = health.build_snapshot(1, "Нидерланды", PROBE, units=UNITS)
+    assert s.services == {"awg-quick@awg0": "active", "fail2ban": "active",
+                          "wdtt": "active"}
+    assert s.disk_free_pct == 85          # df показал 15% занято
+    assert s.ram_free_pct == 73           # 1441 доступно из 1963
+    assert s.oom_kills == 0
+    assert s.steal_recent == 2.48         # среднее шести последних отсчётов
+    assert s.steal_today == 1.51
+    assert s.steal_yesterday == 2.49
+    assert s.udp_errors == 1148 + 1146    # InErrors + RcvbufErrors
+    assert s.banned == ()
+    assert s.own_ip == "31.77.157.162"
+
+
+def test_healthy_server_is_silent():
+    assert health.evaluate(snap(), prev_udp_errors=2294) == []
+
+
+def test_steal_column_survives_12_hour_clock():
+    """При 12-часовом формате времени строка начинается двумя полями
+    («07:42:12 AM»), и отсчёт колонок слева съезжает — берём с конца."""
+    lines = ["07:42:12 AM     all      1.04      0.00      0.76      0.16"
+             "      9.90     95.59"]
+    assert health._steal_from_sar(lines) == 9.9
+
+
+def test_steal_ignores_header_lines():
+    lines = ["12:00:01        CPU     %user     %nice   %system   %iowait"
+             "    %steal     %idle",
+             "07:42:12        all      1.04      0.00      0.76      0.16"
+             "      4.00     95.59"]
+    assert health._steal_from_sar(lines) == 4.0
+
+
+def test_udp_errors_follow_header_not_position():
+    """У Udp набор счётчиков менялся между версиями ядра: считаем по именам
+    из заголовка, иначе однажды начнём складывать не те колонки."""
+    lines = ["Udp: InDatagrams NoPorts InErrors OutDatagrams RcvbufErrors",
+             "Udp: 100 5 7 200 9"]
+    assert health._udp_errors_from_snmp(lines) == 16
+
+
+def test_banned_ips_are_parsed():
+    probe = PROBE.replace(
+        "`- Banned IP list:\t", "`- Banned IP list:\t1.2.3.4 31.77.157.162"
+    )
+    s = health.build_snapshot(1, "Нидерланды", probe, units=UNITS)
+    assert s.banned == ("1.2.3.4", "31.77.157.162")
+
+
+def test_garbage_output_does_not_invent_alerts():
+    """Сломанный парсер обязан молчать, а не будить админа выдуманной
+    аварией: все поля остаются в безопасных значениях."""
+    s = health.build_snapshot(1, "Х", "полная белиберда\nбез секций", units=[])
+    assert health.evaluate(s, prev_udp_errors=None) == []
+
+
+def test_unit_without_answer_counts_as_down():
+    """Юнита нет в выводе вовсе — сервер не ответил на вопрос, и это отказ,
+    а не «всё хорошо»."""
+    s = health.build_snapshot(1, "Х", "---SERVICES---\n", units=["wdtt"])
+    keys = [a.key for a in health.evaluate(s, None)]
+    assert "1:svc:wdtt" in keys
+
+
+# ── Пороги ───────────────────────────────────────────────────────────────────
+
+def test_service_down_is_critical():
+    alerts = health.evaluate(snap(services={"awg-quick@awg0": "failed"}), 2294)
+    assert [(a.key, a.level) for a in alerts] == [("1:svc:awg-quick@awg0", "crit")]
+    assert "VPN" in alerts[0].title       # админ читает «VPN», не имя юнита
+
+
+def test_self_ban_is_first_alert():
+    """Самая важная тревога спеки идёт первой: без доступа по SSH всё
+    остальное чинить нечем."""
+    alerts = health.evaluate(
+        snap(banned=("31.77.157.162",), services={"wdtt": "failed"}), 2294
+    )
+    assert alerts[0].key == "1:selfban"
+
+
+def test_disk_threshold():
+    assert health.evaluate(snap(disk_free_pct=14), 2294)[0].key == "1:disk"
+    assert health.evaluate(snap(disk_free_pct=15), 2294) == []
+
+
+def test_oom_wins_over_low_ram():
+    """Убийства процессов и низкая память — одна беда; два сообщения о ней
+    подряд это спам."""
+    alerts = health.evaluate(snap(oom_kills=3, ram_free_pct=2), 2294)
+    assert [a.key for a in alerts] == ["1:oom"]
+
+
+def test_low_ram_alone():
+    assert health.evaluate(snap(ram_free_pct=9), 2294)[0].key == "1:ram"
+
+
+def test_steal_threshold_is_ten_percent():
+    """Порог 20% из первой редакции спеки не сработал бы никогда: пик на
+    боевой ноде — 14.31%."""
+    assert health.evaluate(snap(steal_recent=14.31), 2294)[0].key == "1:steal"
+    assert health.evaluate(snap(steal_recent=10.0), 2294) == []
+
+
+def test_growing_trend_is_not_a_telegram_alert():
+    """Решение 11.08.2026: тревоги на растущий тренд нет. При фоне 2–3%
+    «сегодня в полтора раза хуже вчера» срабатывало бы на колебаниях и
+    ничего не требовало бы от админа — то есть было бы ровно тем «прими к
+    сведению», которое спека запрещает. Динамика видна цифрой в экране."""
+    assert health.evaluate(snap(steal_today=9.0, steal_yesterday=5.0), 2294) == []
+
+
+def test_udp_growth_alert():
+    alerts = health.evaluate(snap(udp_errors=3000), prev_udp_errors=2000)
+    assert alerts[0].key == "1:udp"
+
+
+def test_udp_first_run_is_silent():
+    """Первый замер сравнивать не с чем — счётчик накопительный с загрузки,
+    и без предыдущего значения он означал бы «потеряно 2294 пакета»."""
+    assert health.evaluate(snap(), prev_udp_errors=None) == []
+
+
+def test_udp_counter_reset_after_reboot_is_silent():
+    assert health.evaluate(snap(udp_errors=10), prev_udp_errors=999999) == []
+
+
+# ── Антиспам ─────────────────────────────────────────────────────────────────
+
+def alert(key: str = "1:disk") -> health.Alert:
+    return health.Alert(key=key, level="crit", title="Диск", detail="…")
+
+
+def test_first_alert_is_sent():
+    state: dict = {}
+    to_send, resolved = health.decide(state, [alert()], NOW)
+    assert [a.key for a in to_send] == ["1:disk"]
+    assert resolved == []
+
+
+def test_same_problem_is_not_repeated_within_an_hour():
+    state: dict = {}
+    health.decide(state, [alert()], NOW)
+    to_send, _ = health.decide(state, [alert()], NOW + timedelta(minutes=59))
+    assert to_send == []
+
+
+def test_same_problem_repeats_after_an_hour():
+    state: dict = {}
+    health.decide(state, [alert()], NOW)
+    to_send, _ = health.decide(state, [alert()], NOW + timedelta(hours=1))
+    assert [a.key for a in to_send] == ["1:disk"]
+
+
+def test_resolved_problem_is_reported_once():
+    """«Отпустило» обязательно: без него админ не знает, чинилось оно само
+    или до сих пор висит."""
+    state: dict = {}
+    health.decide(state, [alert()], NOW)
+    to_send, resolved = health.decide(state, [], NOW + timedelta(minutes=10))
+    assert to_send == [] and resolved == ["1:disk"]
+
+
+def test_state_survives_restart():
+    """Состояние живёт в файле, а не в памяти: рестарт бота не должен
+    приводить к повторной пачке сообщений о том, что и так известно."""
+    state: dict = {}
+    health.decide(state, [alert()], NOW)
+    reloaded = {"active": dict(state["active"])}   # как после чтения файла
+    to_send, _ = health.decide(reloaded, [alert()], NOW + timedelta(minutes=5))
+    assert to_send == []
+
+
+# ── Состав проверок ──────────────────────────────────────────────────────────
+
+class FakeServer:
+    def __init__(self, wdtt_enabled: bool):
+        self.wg_interface = "awg0"
+        self.wdtt_enabled = wdtt_enabled
+
+
+def test_units_include_bypass_only_where_enabled():
+    assert "wdtt" in health.units_for(FakeServer(True))
+    assert "wdtt" not in health.units_for(FakeServer(False))
+
+
+def test_bot_service_is_not_checked():
+    """Бот живёт на одном из серверов и о собственной смерти сообщить не
+    сможет — проверять его значит обещать несбыточное."""
+    assert not any("myvpn" in u for u in health.units_for(FakeServer(True)))
+
+
+# ── Канал ────────────────────────────────────────────────────────────────────
+
+CHANNEL = """---IFACE---
+ens3
+---SPEED---
+38.2 39.3 1429.7 1517.9 240
+---BYTES---
+62535610523
+64990981255
+---UPTIME---
+569282.53
+"""
+
+
+def test_channel_parsed_from_real_output():
+    ch = health.parse_channel(CHANNEL)
+    assert ch.iface == "ens3"
+    assert (ch.avg_rx_kbs, ch.avg_tx_kbs) == (38.2, 39.3)
+    assert (ch.peak_rx_kbs, ch.peak_tx_kbs) == (1429.7, 1517.9)
+    assert ch.samples == 240
+    assert ch.total_bytes == 62535610523 + 64990981255
+
+
+def test_channel_speed_shown_in_megabits():
+    """Хостер меряет канал в мегабитах — сравнивать надо в тех же единицах."""
+    assert health._mbits(1429.7) == 11.4
+
+
+def test_monthly_forecast_from_uptime():
+    """119 ГиБ за 6.6 суток → около 540 ГиБ в месяц, то есть проценты от
+    потолка в 16 ТБ, а не близко к нему."""
+    ch = health.parse_channel(CHANNEL)
+    gib = ch.monthly_forecast_bytes / 1024 ** 3
+    assert 520 < gib < 560
+    assert "% от потолка" in health.format_channel("Нидерланды", ch)
+
+
+def test_channel_survives_empty_history():
+    """Сервер только что установлен: sysstat ещё ничего не собрал, делить
+    на ноль нельзя, а сообщение всё равно должно быть осмысленным."""
+    ch = health.parse_channel("---IFACE---\nens3\n---SPEED---\n---BYTES---\n"
+                              "---UPTIME---\n0\n")
+    text = health.format_channel("Новый", ch)
+    assert "Истории скорости пока нет" in text
+    assert ch.monthly_forecast_bytes == 0
+
+
+@pytest.mark.parametrize("fmt", ["+%Y%m%d", "+%d"])
+def test_probe_tries_both_sysstat_filename_formats(fmt: str):
+    """Имя вчерашнего файла sysstat зависит от версии пакета: на боевой ноде
+    это sa20260810, в старых — sa10. Жёсткий выбор одного формата молча
+    ломает тревогу на тренд: секция просто приходит пустой."""
+    assert fmt in health.probe_command(["wdtt"])
+
+
+# ── Метрики поверх sysstat ───────────────────────────────────────────────────
+
+EXTRAS = """---QUEUE---
+0.0.0.0:585 4096
+---SNMP---
+Udp: InDatagrams NoPorts InErrors OutDatagrams RcvbufErrors SndbufErrors
+Udp: 22601563 9427 1148 6775259 1146 229
+---BAN---
+   |- Currently banned:\t2
+   |- Total banned:\t29
+"""
+
+
+def test_extras_parsed():
+    ex = health.parse_extras(EXTRAS)
+    assert ex.queues == (("0.0.0.0:585", 4096),)
+    assert ex.udp_errors == 1148 + 1146
+    assert (ex.banned_now, ex.banned_total) == (2, 29)
+
+
+def test_extras_queue_empty_is_not_a_problem():
+    """Пустая очередь — норма, и выглядеть она должна как норма, а не как
+    отсутствие данных."""
+    ex = health.parse_extras("---QUEUE---\n---SNMP---\n---BAN---\n")
+    assert "пусто" in health.format_extras(ex)
+
+
+def test_extras_names_the_socket_that_piles_up():
+    """Общий счётчик потерь говорит, что пакеты теряются, но не говорит —
+    у кого. Сокет обязан быть виден в тексте."""
+    assert "0.0.0.0:585" in health.format_extras(health.parse_extras(EXTRAS))
+
+
+def test_steal_dynamics_shown_in_server_screen():
+    """Цифру убрали из тревог, но не из виду: сравнение сегодня/вчера должно
+    остаться на экране, иначе при жалобе на лаги снова нечего предъявить."""
+    ex = health.parse_extras(
+        "---STEALTODAY---\nAverage: all 0.76 0.03 0.81 0.12 4.20 96.76\n"
+        "---STEALPREV---\nAverage: all 1.38 0.00 1.78 0.10 2.49 94.25\n"
+    )
+    assert (ex.steal_today, ex.steal_yesterday) == (4.2, 2.49)
+    text = health.format_extras(ex)
+    assert "4.2%" in text and "2.49%" in text and "↑" in text
+
+
+def test_steal_dynamics_hidden_when_history_is_empty():
+    """Свежий сервер: истории нет — строку не показываем, а не рисуем «0%»,
+    как будто сосед измерен и его нет."""
+    assert "Сосед" not in health.format_extras(health.parse_extras("---BAN---\n"))

@@ -611,3 +611,19 @@ async def run() -> None:
                 logger.info("Linkcheck done: {} problem(s)", len(problems))
         except Exception:
             logger.exception("Linkcheck failed")
+
+        # ── 6. Тревоги о состоянии серверов (этап 2B) ────────────────────────
+        # Раз в health_interval_minutes обходим серверы по SSH: упавшие службы,
+        # диск, память, сосед по железу, потери пакетов, самобан. Пишет админам
+        # только когда что-то сломалось, и отдельно — когда отпустило.
+        # Своя сессия: обход длинный (SSH к каждому серверу), а держать сессию
+        # тика открытой всё это время незачем.
+        try:
+            from bot.services import health as health_svc
+
+            now = datetime.now(timezone.utc)
+            if health_svc.due(now):
+                async with session_scope() as session:
+                    await health_svc.run_round(session)
+        except Exception:
+            logger.exception("Health round failed")

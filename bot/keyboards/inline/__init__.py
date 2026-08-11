@@ -81,6 +81,7 @@ from bot.keyboards.inline.prefixes import (
 from bot.keyboards.inline.servers import (
     admin_peer_card,
     back_to_servers_kb,
+    channel_nav,
     confirm_delete_server,
     invite_card_kb,
     invites_list_kb,
@@ -134,6 +135,7 @@ __all__ = [
     "back_to_menu",
     "back_to_panel",
     "back_to_servers_kb",
+    "channel_nav",
     "back_to_users_kb",
     "balance_kb",
     "broadcast_confirm_kb",

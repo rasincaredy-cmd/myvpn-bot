@@ -90,6 +90,15 @@ async def get_platega_payment(
     return await session.get(PlategaPayment, row_id)
 
 
+async def get_platega_payment_by_tx(
+    session: AsyncSession, transaction_id: str
+) -> PlategaPayment | None:
+    """Строка платежа по id транзакции провайдера — так приходит уведомление."""
+    return (await session.execute(
+        select(PlategaPayment).where(PlategaPayment.transaction_id == transaction_id)
+    )).scalar_one_or_none()
+
+
 async def list_open_platega_payments(
     session: AsyncSession, *, max_age_hours: int = 24
 ) -> list[PlategaPayment]:

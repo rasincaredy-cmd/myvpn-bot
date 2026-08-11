@@ -174,15 +174,14 @@ async def cb_panel_user_bypass_link(call: CallbackQuery, session: AsyncSession) 
     if access.status != PeerStatus.ACTIVE:
         await call.answer("Доступ отозван — ссылка уже не работает", show_alert=True)
         return
-    from bot.handlers.wdtt import _PLATFORMS
-    from bot.services.crypto import decrypt
+    from bot.handlers.wdtt import _PLATFORMS, _link_for
     app = _PLATFORMS.get(access.platform, ("", "", None))[1] if access.platform else ""
     app_line = (
         f"Приложение юзера — <b>{app}</b>." if app
         else "Приложение обхода: WDTT — Android, VK Turn Proxy — iOS, PWDTT — ПК."
     )
     await call.message.answer(
-        t.wdtt_link.format(link=decrypt(access.uri_enc), app_line=app_line)
+        t.wdtt_link.format(link=await _link_for(session, access), app_line=app_line)
     )
     await call.answer("Отправил ссылку")
 

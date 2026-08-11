@@ -76,6 +76,18 @@ def _app_block(platform: str) -> str:
     )
 
 
+async def _link_for(session: AsyncSession, access) -> str:
+    """Ссылка доступа с АКТУАЛЬНЫМ адресом сервера из его карточки.
+
+    Ссылка сохраняется один раз при выдаче и после смены IP у хостера держит
+    мёртвый адрес. Конфиг VPN такой болезни не знает — он каждый раз собирается
+    заново из server.host; здесь делаем то же самое. Одна точка на бота и на
+    админку: поддержка обязана видеть ровно ту ссылку, что ушла юзеру."""
+    uri = decrypt(access.uri_enc)
+    server = await repo.get_server(session, access.server_id)
+    return wdtt_svc.link_with_host(uri, server.host) if server else uri
+
+
 def _sub_active(user) -> bool:
     return user.sub_expires_at is None or as_utc(user.sub_expires_at) > datetime.now(timezone.utc)
 
@@ -220,7 +232,12 @@ async def cb_wdtt_my_link(call: CallbackQuery, session: AsyncSession) -> None:
         f"Импортируй её в приложение резервного подключения — <b>{app}</b>." if app
         else "Импортируй её в приложение резервного подключения (WDTT — Android, VK Turn Proxy — iOS, PWDTT — ПК)."
     )
-    await call.message.answer(t.wdtt_link.format(link=decrypt(access.uri_enc), app_line=app_line))
+    # Адрес подставляем из карточки сервера, а не из того, что записано в
+    # ссылке: после смены IP у хостера в базе лежит мёртвый адрес, и юзер
+    # получил бы ссылку, которая никуда не ведёт.
+    await call.message.answer(
+        t.wdtt_link.format(link=await _link_for(session, access), app_line=app_line)
+    )
     await call.answer("Отправил ссылку")
 
 
@@ -482,7 +499,9 @@ async def cb_wdtt_platform(call: CallbackQuery, state: FSMContext, session: Asyn
         await call.answer()
         return
 
-    link = res["link"]
+    # Адрес в ссылку ставим свой: сервер обхода мог запомнить прежний IP и
+    # отдавать его до перезапуска демона (см. wdtt_svc.link_with_host).
+    link = wdtt_svc.link_with_host(res["link"], server.host)
     if platform == "pc":
         link = f"{link}#{label}"
     access = await repo.create_wdtt_access(

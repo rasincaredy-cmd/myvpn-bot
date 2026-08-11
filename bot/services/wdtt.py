@@ -17,6 +17,29 @@ from bot.services.ssh import SSHClient, SSHError
 _DEFAULT_PORTS = "56000,56001,9000"
 
 
+def link_with_host(uri: str, host: str) -> str:
+    """Ставит в wdtt://-ссылку адрес `host` вместо того, что зашил сервер.
+
+    Адрес в ссылке сервер обхода определяет сам — спрашивает у внешнего сервиса
+    (api.ipify.org) и запоминает ответ до перезапуска демона. После смены IP у
+    хостера он ещё сутками отдаёт мёртвый адрес, а уже выданная ссылка лежит в
+    базе замороженной строкой и не чинится никогда. Правда об адресе есть у
+    бота — карточка сервера, по ней же собирается конфиг VPN, — поэтому адрес
+    подставляем сами: и когда сохраняем новую ссылку, и когда показываем старую.
+
+    Формат: wdtt://адрес:dtls:wg:tun:пароль:хеши[#метка]. Ссылку чужой формы
+    возвращаем как есть — собрать из неё рабочую всё равно нечем."""
+    if not host or "://" not in uri:
+        return uri
+    scheme, body = uri.split("://", 1)
+    body, sep, label = body.partition("#")
+    parts = body.split(":")
+    if len(parts) != 6:
+        return uri
+    parts[0] = host
+    return f"{scheme}://{':'.join(parts)}{sep}{label}"
+
+
 async def _run_ctl(ssh: SSHClient, binary: str, args: list[str]) -> dict:
     cmd = shlex.quote(binary) + " ctl " + " ".join(shlex.quote(a) for a in args)
     res = await ssh.run(cmd, check=False, timeout=40)

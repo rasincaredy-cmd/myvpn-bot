@@ -193,3 +193,82 @@ class TestScreens:
         """На экране счёта обязан стоять реальный срок жизни (30 минут), иначе
         юзер уйдёт пить чай и вернётся к мёртвому счёту."""
         assert platega.INVOICE_TTL_MINUTES == 30
+
+
+async def _noop_notify(dep) -> None:
+    """Уведомления в Telegram в тестах не шлём — бот не поднят."""
+    return None
+
+
+class TestPolling:
+    @pytest.mark.asyncio
+    async def test_confirmed_is_credited(
+        self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Юзер закрыл экран, не нажав «Проверить» — деньги обязан найти бот."""
+        from bot.services import scheduler
+
+        user = await _user(session, tg_id=701)
+        row = await repo.create_platega_payment(
+            session, user_id=user.id, transaction_id="tx-poll",
+            amount_kopeks=500_00, url="u",
+        )
+        await session.commit()
+
+        async def fake_status(transaction_id: str) -> str:
+            assert transaction_id == "tx-poll"
+            return "CONFIRMED"
+
+        monkeypatch.setattr(platega, "enabled", lambda: True)
+        monkeypatch.setattr(platega, "get_status", fake_status)
+        monkeypatch.setattr("bot.handlers.balance.notify_deposit", _noop_notify)
+        await scheduler._poll_platega_payments(session)
+        await session.refresh(user)
+        await session.refresh(row)
+        assert row.status == "paid"
+        assert user.balance_kopeks == 500_00
+
+    @pytest.mark.asyncio
+    async def test_canceled_is_closed(
+        self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from bot.services import scheduler
+
+        user = await _user(session, tg_id=702)
+        row = await repo.create_platega_payment(
+            session, user_id=user.id, transaction_id="tx-dead",
+            amount_kopeks=100_00, url="u",
+        )
+        await session.commit()
+
+        async def fake_status(transaction_id: str) -> str:
+            return "CANCELED"
+
+        monkeypatch.setattr(platega, "enabled", lambda: True)
+        monkeypatch.setattr(platega, "get_status", fake_status)
+        await scheduler._poll_platega_payments(session)
+        await session.refresh(row)
+        await session.refresh(user)
+        assert row.status == "canceled"
+        assert user.balance_kopeks == 0
+
+    @pytest.mark.asyncio
+    async def test_api_failure_does_not_break_tick(
+        self, session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Платёжка легла — тик планировщика обязан пережить это молча."""
+        from bot.services import scheduler
+
+        user = await _user(session, tg_id=703)
+        await repo.create_platega_payment(
+            session, user_id=user.id, transaction_id="tx-boom",
+            amount_kopeks=100_00, url="u",
+        )
+        await session.commit()
+
+        async def boom(transaction_id: str) -> str:
+            raise platega.PlategaError("сеть легла")
+
+        monkeypatch.setattr(platega, "enabled", lambda: True)
+        monkeypatch.setattr(platega, "get_status", boom)
+        await scheduler._poll_platega_payments(session)  # не должно бросить

@@ -53,6 +53,66 @@ def _humanize_left(delta: timedelta) -> str:
     return f"{max(minutes, 1)} мин"
 
 
+async def _poll_platega_payments(session) -> None:
+    """Сверяет неоплаченные счета Platega: CONFIRMED → зачислить (идемпотентно),
+    CANCELED/CHARGEBACKED → закрыть. Ошибки API не валят тик.
+
+    Статусы спрашиваем по одному: пакетного запроса у провайдера нет, а счетов
+    в работе одновременно единицы (счёт живёт 30 минут)."""
+    from bot.services import billing, platega
+
+    if not platega.enabled():
+        return
+    rows = await repo.list_open_platega_payments(session)
+    if not rows:
+        return
+    changed = False
+    for row in rows:
+        try:
+            status = await platega.get_status(row.transaction_id)
+        except platega.PlategaError as exc:
+            logger.warning("Platega poll failed for {}: {}", row.transaction_id, exc)
+            continue
+        if status == "CONFIRMED":
+            dep = await billing.apply_paid_platega(session, row)
+            changed = True
+            from bot.handlers.balance import notify_deposit
+            await notify_deposit(dep)
+        elif status == "CANCELED":
+            row.status = "canceled"
+            changed = True
+        elif status == "CHARGEBACKED":
+            # Деньги вернули плательщику. Баланс НЕ трогаем: юзер мог их уже
+            # потратить, и автоматический минус сделает хуже. Разбирает админ.
+            row.status = "canceled"
+            changed = True
+            logger.error(
+                "Platega chargeback: payment {} (user {}, {} kopeks)",
+                row.transaction_id, row.user_id, row.amount_kopeks,
+            )
+            await _alert_admins_chargeback(row)
+    if changed:
+        await session.commit()
+
+
+async def _alert_admins_chargeback(row) -> None:
+    """Возврат по платежу — админам в личку. Ошибки Telegram глотаем: тик
+    планировщика важнее доставки одного сообщения."""
+    from bot.services.pricing import fmt_rub
+
+    text = (
+        "⚠️ <b>Возврат платежа Platega</b>\n"
+        f"Счёт: <code>{row.transaction_id}</code>\n"
+        f"Юзер: {row.user_id}, сумма: {fmt_rub(row.amount_kopeks)}\n"
+        "Баланс юзера не тронут — разбери вручную."
+    )
+    for admin_id in settings.admin_ids:
+        try:
+            await bot.send_message(admin_id, text)
+        except Exception:
+            pass
+
+
 async def _revoke_all_devices_for_user(session, user_id: int, *, reason: str) -> bool:
     """Отзыв всех устройств юзера — общая логика в revive.revoke_devices_for_user
     (зеркало ревайва; её же зовёт админка при мгновенном отключении подписки).
@@ -165,6 +225,14 @@ async def _run_checks() -> None:
             await _poll_crypto_invoices(session)
         except Exception:
             logger.exception("Scheduler section 0 (crypto poll) failed")
+            await session.rollback()
+
+        # Платёжки опрашиваем по отдельности: 500 от одной не должна лишать
+        # юзеров другой их денег до следующего тика.
+        try:
+            await _poll_platega_payments(session)
+        except Exception:
+            logger.exception("Scheduler section 0 (platega poll) failed")
             await session.rollback()
 
         # ── 1. Истечение подписки: отзыв ВСЕХ устройств юзера ────────────────

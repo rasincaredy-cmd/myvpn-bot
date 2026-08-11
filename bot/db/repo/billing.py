@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bot.db.models import BalanceTx, CryptoInvoice, User
+from bot.db.models import BalanceTx, CryptoInvoice, PlategaPayment, User
 
 
 async def add_balance_tx(
@@ -68,6 +68,38 @@ async def list_open_invoices(
         select(CryptoInvoice)
         .where(CryptoInvoice.status == "active")
         .where(CryptoInvoice.created_at >= cutoff)
+    )).scalars())
+
+
+async def create_platega_payment(
+    session: AsyncSession, *, user_id: int, transaction_id: str,
+    amount_kopeks: int, url: str,
+) -> PlategaPayment:
+    row = PlategaPayment(
+        user_id=user_id, transaction_id=transaction_id,
+        amount_kopeks=amount_kopeks, url=url,
+    )
+    session.add(row)
+    await session.flush()
+    return row
+
+
+async def get_platega_payment(
+    session: AsyncSession, row_id: int
+) -> PlategaPayment | None:
+    return await session.get(PlategaPayment, row_id)
+
+
+async def list_open_platega_payments(
+    session: AsyncSession, *, max_age_hours: int = 24
+) -> list[PlategaPayment]:
+    """Неоплаченные счета для поллинга планировщиком. Счёт Platega живёт 30
+    минут, поэтому суток с запасом хватает: всё старше провайдер уже отменил."""
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
+    return list((await session.execute(
+        select(PlategaPayment)
+        .where(PlategaPayment.status == "pending")
+        .where(PlategaPayment.created_at >= cutoff)
     )).scalars())
 
 

@@ -461,6 +461,38 @@ class CryptoInvoice(Base):
     paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class PlategaPayment(Base):
+    """Счёт Platega на пополнение баланса (карта/СБП/крипта одной формой).
+
+    Отдельно от CryptoInvoice: там id счёта числовой и свой набор статусов, а
+    здесь id — UUID провайдера. Статус меняется поллингом планировщика или
+    кнопкой «Проверить»; зачисление — строго через billing.apply_paid_platega
+    (идемпотентно).
+
+    Юзер и сумма берутся ИЗ ЭТОЙ строки, а не из ответа провайдера: по чужому
+    id их API отдаёт чужие транзакции, и доверять ответу как источнику правды
+    нельзя.
+    """
+
+    __tablename__ = "platega_payments"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    # UUID транзакции на стороне Platega.
+    transaction_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    amount_kopeks: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    status: Mapped[str] = mapped_column(  # pending | paid | canceled
+        String(16), default="pending", server_default="'pending'", nullable=False
+    )
+    url: Mapped[str] = mapped_column(String(512))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class StarPayment(Base):
     """Оплата звёздами Telegram. Хранится ради двух вещей: защиты от двойного
     зачисления (Telegram может доставить событие оплаты повторно) и возврата —

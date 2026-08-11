@@ -29,14 +29,17 @@ def topup_kb() -> InlineKeyboardMarkup:
 
 
 def deposit_methods_kb(
-    bonus_percent: int, cryptobot: bool = True
+    bonus_percent: int, cryptobot: bool = True, platega: bool = True
 ) -> InlineKeyboardMarkup:
     """Выбор способа пополнения (этап D). Бонус за способ — прямо на кнопке:
-    выбирают из двух строк, а не из абзаца текста над ними.
+    выбирают из строк, а не из абзаца текста над ними.
 
-    cryptobot=False — токен Crypto Pay не настроен; звёздам настройка не нужна,
-    поэтому пополнение живо и без него."""
+    cryptobot=False / platega=False — ключи способа не настроены; звёздам
+    настройка не нужна, поэтому пополнение живо даже без обоих."""
     kb = InlineKeyboardBuilder()
+    if platega:
+        kb.button(text="💳 Карта или СБП", callback_data=f"{CB_BAL}:dep:pg",
+                  style="success")
     if cryptobot:
         kb.button(
             text=f"💎 CryptoBot  +{bonus_percent}%",
@@ -70,6 +73,27 @@ def star_amounts_kb(amounts: list[tuple[int, str]]) -> InlineKeyboardMarkup:
     kb.button(text="✏️ Своя сумма", callback_data=f"{CB_BAL}:star:custom")
     kb.button(text="« Назад", callback_data=f"{CB_BAL}:dep")
     kb.adjust(2, 2, 1, 1)
+    return kb.as_markup()
+
+
+def platega_amounts_kb(amounts: list[tuple[int, str]]) -> InlineKeyboardMarkup:
+    """Суммы для оплаты картой/СБП — те же, что у остальных способов: юзер не
+    должен видеть разный набор сумм в зависимости от кошелька."""
+    kb = InlineKeyboardBuilder()
+    for rub, label in amounts:
+        kb.button(text=label, callback_data=f"{CB_BAL}:pg:{rub}")
+    kb.button(text="✏️ Своя сумма", callback_data=f"{CB_BAL}:pg:custom")
+    kb.button(text="« Назад", callback_data=f"{CB_BAL}:dep")
+    kb.adjust(2, 2, 1, 1)
+    return kb.as_markup()
+
+
+def platega_invoice_kb(pay_url: str, row_id: int) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="💳 Перейти к оплате", url=pay_url, style="success")
+    kb.button(text="✅ Я оплатил — проверить", callback_data=f"{CB_BAL}:pgchk:{row_id}")
+    kb.button(text="« К балансу", callback_data=f"{CB_BAL}:my")
+    kb.adjust(1)
     return kb.as_markup()
 
 

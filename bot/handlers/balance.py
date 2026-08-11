@@ -31,11 +31,13 @@ from bot.keyboards.inline import (
     deposit_methods_kb,
     extend_kb,
     invoice_kb,
+    platega_amounts_kb,
+    platega_invoice_kb,
     star_amounts_kb,
     topup_kb,
 )
 from bot.loader import bot
-from bot.services import billing, cryptopay
+from bot.services import billing, cryptopay, platega
 from bot.services.pricing import (
     DEPOSIT_BONUS_PERCENT,
     TERM_DISCOUNTS,
@@ -151,6 +153,8 @@ async def cb_bal_deposit(call: CallbackQuery, session: AsyncSession) -> None:
     иначе решит, что лишние проценты забрал сервис."""
     await call.message.edit_text(
         "➕ <b>Пополнение баланса</b>\n\n"
+        "💳 <b>Карта или СБП</b> — оплата рублями с карты или по QR через "
+        "приложение банка. Зачислим ровно ту сумму, которую выберешь.\n\n"
         f"💎 <b>@CryptoBot</b> — оплата в рублях, крипту можно купить с карты "
         f"прямо там. Начислим <b>+{DEPOSIT_BONUS_PERCENT['cryptobot']}%</b> "
         "сверху.\n\n"
@@ -162,7 +166,9 @@ async def cb_bal_deposit(call: CallbackQuery, session: AsyncSession) -> None:
         "в приложении — это не наша комиссия, мы её не получаем. Дешевле "
         "покупать звёзды не через приложение.</i>",
         reply_markup=deposit_methods_kb(
-            DEPOSIT_BONUS_PERCENT["cryptobot"], cryptobot=cryptopay.enabled()
+            DEPOSIT_BONUS_PERCENT["cryptobot"],
+            cryptobot=cryptopay.enabled(),
+            platega=platega.enabled(),
         ),
     )
     await call.answer()
@@ -205,6 +211,26 @@ async def cb_bal_deposit_stars(call: CallbackQuery) -> None:
     await call.answer()
 
 
+@router.callback_query(F.data == f"{CB_BAL}:dep:pg")
+async def cb_bal_deposit_platega(call: CallbackQuery) -> None:
+    """Экран сумм для оплаты картой/СБП. Способ оплаты юзер выбирает уже на
+    форме провайдера — здесь только сумма."""
+    if not platega.enabled():
+        await call.answer("Этот способ временно недоступен.", show_alert=True)
+        return
+    await call.message.edit_text(
+        "💳 <b>Оплата картой или через СБП</b>\n\n"
+        "Открой ссылку, выбери удобный способ — банковская карта, СБП по QR "
+        "или криптовалюта — и оплати. На баланс придёт ровно та сумма, "
+        "которую выберешь: комиссию платим мы.\n\n"
+        "Выбери сумму:\n"
+        "<i>Суммы на кнопках — стоимость базового тарифа (1 устройство + "
+        "1 резервное подключение) на месяц, 3 месяца, полгода и год.</i>",
+        reply_markup=platega_amounts_kb(_deposit_amounts()),
+    )
+    await call.answer()
+
+
 @router.callback_query(F.data == f"{CB_BAL}:dep:custom")
 async def cb_bal_deposit_custom(call: CallbackQuery, state: FSMContext) -> None:
     await _ask_custom_amount(call, state, method="cryptobot")
@@ -213,6 +239,11 @@ async def cb_bal_deposit_custom(call: CallbackQuery, state: FSMContext) -> None:
 @router.callback_query(F.data == f"{CB_BAL}:star:custom")
 async def cb_bal_star_custom(call: CallbackQuery, state: FSMContext) -> None:
     await _ask_custom_amount(call, state, method="stars")
+
+
+@router.callback_query(F.data == f"{CB_BAL}:pg:custom")
+async def cb_bal_platega_custom(call: CallbackQuery, state: FSMContext) -> None:
+    await _ask_custom_amount(call, state, method="platega")
 
 
 async def _ask_custom_amount(
@@ -246,6 +277,9 @@ async def step_bal_custom_amount(
     if method == "stars":
         await send_star_invoice(message, user, int(raw) * 100)
         return
+    if method == "platega":
+        await _create_and_show_platega(message.answer, session, user, int(raw) * 100)
+        return
     await _create_and_show_invoice(message.answer, session, user, int(raw) * 100)
 
 
@@ -278,6 +312,112 @@ async def cb_bal_star_amount(call: CallbackQuery, session: AsyncSession) -> None
     await session.commit()
     await send_star_invoice(call.message, user, int(raw) * 100)
     await call.answer()
+
+
+@router.callback_query(F.data.startswith(f"{CB_BAL}:pg:"))
+async def cb_bal_platega_amount(call: CallbackQuery, session: AsyncSession) -> None:
+    # Сюда падают только "pg:<число>" — pg:custom перехвачен выше.
+    raw = call.data.rsplit(":", 1)[-1]
+    # callback_data приходит от клиента и может быть подделана — держим сумму
+    # в тех же рамках, что и ручной ввод.
+    if not raw.isdigit() or not (_CUSTOM_MIN_RUB <= int(raw) <= _CUSTOM_MAX_RUB):
+        await call.answer("Некорректная сумма.", show_alert=True)
+        return
+    user = await _get_user(session, call)
+    await _create_and_show_platega(
+        call.message.edit_text, session, user, int(raw) * 100
+    )
+    await call.answer()
+
+
+async def _create_and_show_platega(
+    send, session: AsyncSession, user, amount_kopeks: int
+) -> None:
+    """Создаёт счёт Platega и показывает его юзеру.
+
+    Строку в базе пишем ДО показа: если юзер оплатит, а строки не окажется,
+    зачислять будет нечего — деньги провайдер уже возьмёт. Способ оплаты не
+    задаём: на форме юзер выберет карту, СБП или крипту сам."""
+    bot_username = await _get_bot_username()
+    try:
+        pay = await platega.create_payment(
+            amount_kopeks,
+            description=f"Пополнение баланса VPN на {fmt_rub(amount_kopeks)}",
+            payload=f"user:{user.id}",
+            return_url=f"https://t.me/{bot_username}",
+        )
+    except platega.PlategaError as exc:
+        logger.warning("Platega create_payment failed: {}", exc)
+        await send(
+            "❌ Не получилось создать счёт — попробуй позже или выбери другой "
+            "способ пополнения.",
+            reply_markup=balance_kb(True),
+        )
+        return
+    row = await repo.create_platega_payment(
+        session, user_id=user.id, transaction_id=pay["transaction_id"],
+        amount_kopeks=amount_kopeks, url=pay["url"],
+    )
+    await session.commit()
+    await send(
+        f"💳 Счёт на <b>{fmt_rub(amount_kopeks)}</b> создан "
+        f"(действует {platega.INVOICE_TTL_MINUTES} минут).\n\n"
+        "Нажми «Перейти к оплате», выбери способ и оплати. Потом вернись сюда "
+        "и жми «Я оплатил» — обычно баланс зачисляется за пару секунд. Если "
+        "закроешь экран — не страшно, бот сам увидит оплату в течение "
+        "~5 минут.",
+        reply_markup=platega_invoice_kb(pay["url"], row.id),
+    )
+
+
+@router.callback_query(F.data.startswith(f"{CB_BAL}:pgchk:"))
+async def cb_bal_platega_check(call: CallbackQuery, session: AsyncSession) -> None:
+    row_id = int(call.data.rsplit(":", 1)[-1])
+    row = await repo.get_platega_payment(session, row_id)
+    user = await _get_user(session, call)
+    if row is None or row.user_id != user.id:
+        await call.answer("Счёт не найден", show_alert=True)
+        return
+    if row.status == "paid":
+        await _render_balance(call.message.edit_text, session, user)
+        await call.answer("Уже зачислено ✅")
+        return
+    try:
+        status = await platega.get_status(row.transaction_id)
+    except platega.PlategaError as exc:
+        logger.warning("Platega check failed: {}", exc)
+        await call.answer("Платёжка не отвечает, попробуй чуть позже.", show_alert=True)
+        return
+    if status == "CONFIRMED":
+        dep = await billing.apply_paid_platega(session, row)
+        await session.commit()
+        await notify_deposit(dep)
+        await session.refresh(user)
+        # Подписка уже истекла, автопродление включено? Продлеваем сразу на
+        # свежие деньги — не заставляем ждать тика планировщика (до 5 минут).
+        ap = await billing.autopay_if_expired(session, user)
+        if ap is not None:
+            await session.commit()
+            await notify_autopay(user, ap)
+            await session.refresh(user)
+        await _render_balance(call.message.edit_text, session, user)
+        await call.answer("Зачислено ✅")
+        return
+    if status in ("CANCELED", "CHARGEBACKED"):
+        row.status = "canceled"
+        await session.commit()
+        await call.message.edit_text(
+            f"⌛ Счёт больше не действует (он живёт "
+            f"{platega.INVOICE_TTL_MINUTES} минут). Создай новый.",
+            reply_markup=balance_kb(True),
+        )
+        await call.answer()
+        return
+    await call.answer(
+        "Оплата пока не видна. Если платёж уже отправлен — подожди пару секунд "
+        "и жми ещё раз.",
+        show_alert=True,
+    )
 
 
 @router.callback_query(F.data.startswith(f"{CB_BAL}:dep:"))

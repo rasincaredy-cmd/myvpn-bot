@@ -154,3 +154,42 @@ class TestCrediting:
         await session.refresh(inviter)
         assert dep.ref_reward_kopeks == 1000_00 * settings.referral_percent // 100
         assert inviter.balance_kopeks == dep.ref_reward_kopeks
+
+
+class TestScreens:
+    def test_method_button_present(self) -> None:
+        """Кнопка карты/СБП есть на экране выбора способа."""
+        from bot.keyboards.inline import deposit_methods_kb
+
+        kb = deposit_methods_kb(4, cryptobot=True, platega=True)
+        texts = [b.text for row in kb.inline_keyboard for b in row]
+        assert any("Карта" in t for t in texts)
+
+    def test_method_button_hidden_without_keys(self) -> None:
+        """Ключей нет — кнопки нет: счёт всё равно не создать."""
+        from bot.keyboards.inline import deposit_methods_kb
+
+        kb = deposit_methods_kb(4, cryptobot=True, platega=False)
+        texts = [b.text for row in kb.inline_keyboard for b in row]
+        assert not any("Карта" in t for t in texts)
+
+    def test_amounts_keyboard_routes_to_platega(self) -> None:
+        from bot.keyboards.inline import platega_amounts_kb
+
+        kb = platega_amounts_kb([(90, "90 ₽ — месяц"), (240, "240 ₽ — 3 мес")])
+        data = [b.callback_data for row in kb.inline_keyboard for b in row]
+        assert "bal:pg:90" in data
+        assert "bal:pg:custom" in data
+
+    def test_invoice_keyboard_has_pay_and_check(self) -> None:
+        from bot.keyboards.inline import platega_invoice_kb
+
+        kb = platega_invoice_kb("https://pay.platega.io?id=x", 7)
+        buttons = [b for row in kb.inline_keyboard for b in row]
+        assert any(b.url == "https://pay.platega.io?id=x" for b in buttons)
+        assert any(b.callback_data == "bal:pgchk:7" for b in buttons)
+
+    def test_ttl_named_in_minutes(self) -> None:
+        """На экране счёта обязан стоять реальный срок жизни (30 минут), иначе
+        юзер уйдёт пить чай и вернётся к мёртвому счёту."""
+        assert platega.INVOICE_TTL_MINUTES == 30

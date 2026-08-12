@@ -806,6 +806,11 @@ async def cb_bal_buy(call: CallbackQuery, session: AsyncSession) -> None:
             show_alert=True,
         )
         return
+    # Баланс запоминаем ДО списания: если покупка не пройдёт, session.rollback()
+    # погасит загруженного юзера, и чтение его полей полезет в базу — в
+    # async-контексте это MissingGreenlet ровно в той ветке, где юзеру надо
+    # назвать нехватку (11.08.2026 так падало каждое «Купить» без денег).
+    balance_before = user.balance_kopeks
     res = await billing.charge_and_extend(
         session, user, months, max_devices=devices, max_bypass=bypass
     )
@@ -814,7 +819,7 @@ async def cb_bal_buy(call: CallbackQuery, session: AsyncSession) -> None:
         await call.answer(
             f"Не хватает {fmt_rub(res.missing_kopeks)}: цена "
             f"{fmt_rub(res.price_kopeks)}, на балансе "
-            f"{fmt_rub(user.balance_kopeks)}. "
+            f"{fmt_rub(balance_before)}. "
             "Жми «➕ Пополнить баланс» под сообщением 👇",
             show_alert=True,
         )

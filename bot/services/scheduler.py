@@ -45,10 +45,16 @@ REVOKED_RETENTION_DAYS = 30
 
 
 async def _notify(tg_id: int, text: str, reply_markup=None) -> None:
+    """Уведомление юзеру. Недоставка НЕ валит тик: юзер мог закрыть бота.
+
+    Но и молчать о ней нельзя — по этим строкам потом видно, дошла ли подсказка
+    до человека или он просто заблокировал бота. Раньше исключение глоталось
+    целиком, и «отправлено» в базе ничего не значило.
+    """
     try:
         await bot.send_message(tg_id, text, reply_markup=reply_markup)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Notify to {} failed: {}", tg_id, exc)
 
 
 def _humanize_left(delta: timedelta) -> str:

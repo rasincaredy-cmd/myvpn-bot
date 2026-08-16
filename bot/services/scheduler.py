@@ -9,24 +9,32 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 
 from loguru import logger
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
 from bot.db import repo
 from bot.db.base import session_scope
 from bot.db.models import Device, Peer, PeerStatus, User, WdttAccess
+from bot.keyboards.inline import support_intro_kb
 from bot.loader import bot
 from bot.services import amnezia
 from bot.services import wdtt as wdtt_svc
 from bot.services.crypto import decrypt
 from bot.services.ssh import SSHClient, SSHError
+from bot.texts import t
 from bot.utils.timefmt import as_utc
 
 
 # Пороги предупреждений о скором истечении подписки (часов до отзыва). Порядок =
 # номер бита в User.sub_warn_flags. v1 — фиксированные; позже можно сделать настройку.
 WARN_OFFSETS_HOURS = (24, 1)
+
+# Через сколько часов после выдачи конфига человек считается застрявшим на
+# установке: устройство создано, конфиг на руках, а трафика — ноль. Сутки, а не
+# пара часов: конфиг часто забирают вечером с одного телефона, а ставят
+# приложение на следующий день, и торопливая подсказка выглядела бы навязчиво.
+ONBOARD_STUCK_HOURS = 24
 
 # Сколько дней отозванные пиры/wdtt-доступы хранятся в БД, прежде чем
 # планировщик удалит их. Отзыв не удаляет строки сразу — они «ждут» продления
@@ -36,9 +44,9 @@ WARN_OFFSETS_HOURS = (24, 1)
 REVOKED_RETENTION_DAYS = 30
 
 
-async def _notify(tg_id: int, text: str) -> None:
+async def _notify(tg_id: int, text: str, reply_markup=None) -> None:
     try:
-        await bot.send_message(tg_id, text)
+        await bot.send_message(tg_id, text, reply_markup=reply_markup)
     except Exception:
         pass
 
@@ -51,6 +59,54 @@ def _humanize_left(delta: timedelta) -> str:
     if minutes >= 60:
         return f"{minutes // 60} ч"
     return f"{max(minutes, 1)} мин"
+
+
+async def find_onboard_stuck_users(session, now: datetime) -> list[User]:
+    """Кто забрал конфиг и не передал ни байта — кандидаты на руку помощи (1c).
+
+    Отдельной функцией, а не куском тика: это единственное место, где сервис
+    решает «человек застрял», и цена ошибки — рассылка живым юзерам. Проверяется
+    тестом, а не глазами по логам прода.
+
+    Условия: конфиг живой и выдан не меньше ONBOARD_STUCK_HOURS назад, суммарный
+    трафик по всем пирам и обходам ровно ноль, подсказку ещё не слали, и это не
+    свой человек (админ/стафф) и не заблокированный.
+    """
+    candidates = list((await session.execute(
+        select(User)
+        .where(User.onboard_help_sent_at.is_(None))
+        .where(User.is_admin.is_(False))
+        .where(User.is_staff.is_(False))
+        .where(User.is_blocked.is_(False))
+    )).scalars())
+
+    stuck: list[User] = []
+    for user in candidates:
+        peers = list((await session.execute(
+            select(Peer).where(Peer.user_id == user.id)
+        )).scalars())
+        # Ждём именно ЖИВОЙ конфиг, выданный достаточно давно: у отозванного
+        # подключаться уже некуда, и подсказка «нажми Подключиться» звучала бы
+        # издевательством.
+        if not any(
+            p.status == PeerStatus.ACTIVE
+            and now - as_utc(p.created_at) >= timedelta(hours=ONBOARD_STUCK_HOURS)
+            for p in peers
+        ):
+            continue
+        # Ноль считаем по ВСЕМ пирам и доступам обхода, включая отозванные:
+        # человек мог однажды подключиться со старого устройства — он
+        # разобрался, и помощь ему не нужна.
+        used = sum(p.traffic_used_bytes for p in peers)
+        if used == 0:
+            used += (await session.execute(
+                select(func.coalesce(func.sum(WdttAccess.traffic_used_bytes), 0))
+                .where(WdttAccess.user_id == user.id)
+            )).scalar_one()
+        if used:
+            continue
+        stuck.append(user)
+    return stuck
 
 
 async def _poll_platega_payments(session) -> None:
@@ -347,6 +403,25 @@ async def _run_checks() -> None:
                 await session.commit()
         except Exception:
             logger.exception("Scheduler section 1b (expiry warnings) failed")
+            await session.rollback()
+
+        # ── 1c. Рука помощи застрявшим на установке ──────────────────────────
+        # Юзер добавил устройство, забрал конфиг — и не передал ни байта. Это
+        # не «передумал»: он уже сказал «да» и уперся в установку приложения.
+        # Сам такой в поддержку не пишет — он молча уходит, и в статистике
+        # выглядит как обычный отвал. Поэтому пишем первыми.
+        try:
+            stuck = await find_onboard_stuck_users(session, now)
+            for user in stuck:
+                # Метку ставим ДО отправки и не снимаем, если отправка не
+                # прошла: юзер, закрывший бота, иначе собирал бы эту подсказку
+                # заново каждый тик до конца подписки.
+                user.onboard_help_sent_at = now
+                await _notify(user.tg_id, t.onboard_help, reply_markup=support_intro_kb())
+            if stuck:
+                await session.commit()
+        except Exception:
+            logger.exception("Scheduler section 1c (onboard help) failed")
             await session.rollback()
 
         # ── 2. Автоудаление давно отозванных пиров ──────────────────────────

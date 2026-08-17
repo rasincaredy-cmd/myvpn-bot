@@ -541,6 +541,7 @@ class AuditAction(StrEnum):
     CONFIG_REVOKED = "config_revoked"      # конфиг отозван
     CONFIG_REVIVED = "config_revived"      # конфиг ожил после оплаты
     CONFIG_MOVED = "config_moved"          # конфиг переехал на другой сервер
+    WDTT_UNBOUND = "wdtt_unbound"          # обход отвязан от устройства
     SUB_GRANTED = "sub_granted"            # подписка выдана админом
     SUB_REVOKED = "sub_revoked"            # админ отключил подписку
     USER_BLOCKED = "user_blocked"

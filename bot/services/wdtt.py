@@ -101,6 +101,22 @@ async def remove_access(ssh: SSHClient, *, password: str, binary: str) -> bool:
     return bool(data.get("removed"))
 
 
+async def unbind_device(ssh: SSHClient, *, password: str, binary: str) -> bool:
+    """Снимает привязку доступа к устройству. Срок и трафик не трогает.
+
+    Сервер обхода привязывает пароль к первому устройству, которое по нему
+    подключилось, и всем остальным отвечает отказом; приложение показывает этот
+    отказ как «неверный пароль». Поэтому смена телефона, переустановка или
+    переход на другой клиент без отвязки — тупик для юзера.
+
+    True — привязка была и снята, False — доступ и так был свободен. Если
+    пароля на сервере нет, ctl вернёт ошибку и поднимется SSHError: молчать
+    об этом нельзя, это расхождение базы бота с сервером."""
+    data = await _run_ctl(ssh, binary, ["-op", "unbind", "-password", password])
+    logger.info("wdtt access unbound (was_bound={})", bool(data.get("unbound")))
+    return bool(data.get("unbound"))
+
+
 async def list_accesses(ssh: SSHClient, *, binary: str) -> list[dict]:
     data = await _run_ctl(ssh, binary, ["-op", "list"])
     return list(data.get("passwords", []))

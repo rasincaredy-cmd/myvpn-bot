@@ -191,6 +191,31 @@ async def cb_panel_user_bypass_link(call: CallbackQuery, session: AsyncSession) 
     await call.answer("Отправил ссылку")
 
 
+@router.callback_query(F.data.startswith(f"{CB_PANEL}:ubpu:"))
+async def cb_panel_user_bypass_unbind(call: CallbackQuery, session: AsyncSession) -> None:
+    """Отвязка обхода юзера от устройства руками поддержки. Та же операция, что
+    по кнопке у самого юзера, — но жалоба «приложение пишет неверный пароль»
+    приходит сюда, и закрыть её надо здесь же."""
+    access = await repo.get_wdtt_access(session, int(call.data.split(":")[2]))
+    if access is None:
+        await call.answer("Не найдено", show_alert=True)
+        return
+    if access.status != PeerStatus.ACTIVE:
+        await call.answer("Доступ отозван — отвязывать нечего", show_alert=True)
+        return
+    from bot.handlers.wdtt import _unbind_access
+    was_bound = await _unbind_access(
+        session, access, actor_tg_id=call.from_user.id, actor_is_admin=True
+    )
+    await session.commit()
+    await call.answer(
+        {True: "Устройство отвязано", False: "Привязки и не было"}.get(
+            was_bound, "Сервер не ответил"
+        ),
+        show_alert=True,
+    )
+
+
 @router.callback_query(F.data.startswith(f"{CB_PANEL}:ubpx:"))
 async def cb_panel_user_bypass_del(call: CallbackQuery, session: AsyncSession) -> None:
     parts = call.data.split(":")

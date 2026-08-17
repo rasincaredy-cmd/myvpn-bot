@@ -220,6 +220,10 @@ async def cb_wdtt_my_open(call: CallbackQuery, session: AsyncSession) -> None:
             "\n\n⏸ <i>Отключён до продления подписки. Прежняя ссылка оживёт "
             "при продлении сама — удалять доступ не нужно.</i>"
         )
+    else:
+        # Про отвязку человек должен прочитать ДО того, как решит, что ссылка
+        # битая: приложение говорит «неверный пароль», а дело в устройстве.
+        text += t.wdtt_unbind_hint
     await call.message.edit_text(
         text, reply_markup=wdtt_user_card_kb(access.id, can_get=access.status == PeerStatus.ACTIVE)
     )
@@ -253,6 +257,78 @@ async def cb_wdtt_my_link(call: CallbackQuery, session: AsyncSession) -> None:
         )
     )
     await call.answer("Отправил ссылку")
+
+
+async def _unbind_access(
+    session: AsyncSession,
+    access,
+    *,
+    actor_tg_id: int | None,
+    actor_is_admin: bool = False,
+) -> bool | None:
+    """Снимает на сервере обхода привязку доступа к устройству.
+
+    Сервер запоминает первое устройство, подключившееся по ссылке, и остальным
+    отвечает отказом — приложение переводит этот отказ как «неверный пароль».
+    Пока привязку не снять, человек со новым телефоном (или с другим клиентом
+    вместо WDTT) уверен, что ссылка битая, и уходит молча.
+
+    True — привязка была и снята, False — доступ и так был свободен, None —
+    сервер не ответил. Одна точка на юзера и на поддержку: путей два, а
+    поведение и запись в журнале обязаны быть одни."""
+    server = await repo.get_server(session, access.server_id)
+    if server is None:
+        return None
+    try:
+        async with SSHClient(repo.creds_from_server(server)) as ssh:
+            was_bound = await wdtt_svc.unbind_device(
+                ssh, password=decrypt(access.password_enc),
+                binary=settings.wdtt_binary_path,
+            )
+    except SSHError as exc:
+        logger.warning("Wdtt unbind {} ssh err: {}", access.id, exc)
+        return None
+    await repo.log_action(
+        session, AuditAction.WDTT_UNBOUND,
+        actor_tg_id=actor_tg_id,
+        actor_is_admin=actor_is_admin,
+        target_user_id=access.user_id,
+        target_type="wdtt",
+        target_id=access.id,
+        # Отдельная формулировка на «привязки не было»: по журналу должно быть
+        # видно, чинили реальную проблему или человек нажал наугад.
+        details=(
+            f"Обход БС «{access.label}» отвязан от устройства" if was_bound  # wording: ok — аудит-лог админа
+            else f"Обход БС «{access.label}»: привязки к устройству не было"  # wording: ok — аудит-лог админа
+        ),
+    )
+    return was_bound
+
+
+def _unbind_result_text(was_bound: bool | None) -> str:
+    if was_bound is None:
+        return t.wdtt_unbind_failed
+    return t.wdtt_unbound if was_bound else t.wdtt_unbound_already
+
+
+@router.callback_query(F.data.startswith(f"{CB_WDTT}:myunbind:"))
+async def cb_wdtt_my_unbind(call: CallbackQuery, session: AsyncSession) -> None:
+    """«Подключаюсь с другого устройства» — юзер сам освобождает своё
+    подключение. Без лимита: решение осознанное — привязка перестаёт работать
+    как защита от передачи ссылки друзьям, зато человек не отваливается из-за
+    чужого сообщения об ошибке в приложении."""
+    access = await repo.get_wdtt_access(session, int(call.data.rsplit(":", 1)[-1]))
+    user = await repo.get_user_by_tg_id(session, call.from_user.id)
+    if access is None or user is None or access.user_id != user.id:
+        await call.answer("Не найдено", show_alert=True)
+        return
+    if access.status != PeerStatus.ACTIVE:
+        await call.answer("Доступ отозван", show_alert=True)
+        return
+    await call.answer("Отвязываю…")
+    was_bound = await _unbind_access(session, access, actor_tg_id=user.tg_id)
+    await session.commit()
+    await call.message.answer(_unbind_result_text(was_bound))
 
 
 @router.callback_query(F.data.startswith(f"{CB_WDTT}:myrevoke:"))

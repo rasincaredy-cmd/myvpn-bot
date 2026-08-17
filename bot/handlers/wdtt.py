@@ -65,6 +65,17 @@ _PLATFORMS = {
 }
 
 
+# Платформы, где в приложении есть тумблер «Режим ссылки»: пока он выключен,
+# полей для ссылки на экране нет. Проверено на Android 17.08.2026; про iOS и ПК
+# достоверно не известно, поэтому там шаг не показываем — лучше промолчать, чем
+# отправить человека искать несуществующую настройку.
+_LINK_MODE_PLATFORMS = {"android"}
+
+
+def _link_mode(platform: str | None) -> bool:
+    return platform in _LINK_MODE_PLATFORMS
+
+
 def _app_block(platform: str) -> str:
     """Строка «где взять приложение» для t.wdtt_created."""
     url = _PLATFORMS.get(platform, ("", "", None))[2]
@@ -236,7 +247,10 @@ async def cb_wdtt_my_link(call: CallbackQuery, session: AsyncSession) -> None:
     # ссылке: после смены IP у хостера в базе лежит мёртвый адрес, и юзер
     # получил бы ссылку, которая никуда не ведёт.
     await call.message.answer(
-        t.wdtt_link.format(link=await _link_for(session, access), app_line=app_line)
+        t.wdtt_link.format(
+            link=await _link_for(session, access), app_line=app_line,
+            link_mode=t.wdtt_link_mode_short if _link_mode(access.platform) else "",
+        )
     )
     await call.answer("Отправил ссылку")
 
@@ -538,6 +552,8 @@ async def cb_wdtt_platform(call: CallbackQuery, state: FSMContext, session: Asyn
         t.wdtt_created.format(
             label=label, server=labels.get(server.id, server.name),
             app=app_name, app_block=_app_block(platform), link=link,
+            link_mode=t.wdtt_link_mode if _link_mode(platform) else "",
+            n="3️⃣" if _link_mode(platform) else "2️⃣",
         ),
         reply_markup=back_to_menu(),
     )

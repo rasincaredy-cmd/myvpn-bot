@@ -129,6 +129,50 @@ async def ask_config_format_for_device(
 _ALBUM_LIMIT = 10
 
 
+# Потолок текстового сообщения Telegram. Одна vpn://-ссылка для AmneziaWG —
+# около 960 символов, поэтому уже на четвёртой локации все ссылки в ОДНОМ
+# сообщении перестают помещаться, отправка падает, и человек не получает ничего
+# (найдено аудитом 20.08.2026, когда локаций было две и куплена третья).
+TG_TEXT_LIMIT = 4096
+
+# Запас под заголовок, подсказку и разделители.
+_PACK_MARGIN = 200
+
+
+def pack_link_messages(blocks: list[str], header: str, footer: str) -> list[str]:
+    """Раскладывает блоки со ссылками по сообщениям, влезающим в лимит.
+
+    Заголовок ставится только на первое сообщение, подсказка — только на
+    последнее: три одинаковые шапки подряд читаются как сбой бота.
+
+    Блок, который сам длиннее лимита, отдаём как есть — пусть лучше Telegram
+    ругнётся, чем мы молча потеряем чей-то конфиг.
+    """
+    budget = TG_TEXT_LIMIT - _PACK_MARGIN
+    pages: list[list[str]] = []
+    current: list[str] = []
+    size = 0
+    for block in blocks:
+        add = len(block) + 2
+        if current and size + add > budget:
+            pages.append(current)
+            current, size = [], 0
+        current.append(block)
+        size += add
+    if current:
+        pages.append(current)
+
+    out: list[str] = []
+    for i, page in enumerate(pages):
+        text = "\n\n".join(page)
+        if i == 0:
+            text = f"{header}\n\n{text}"
+        if i == len(pages) - 1:
+            text = f"{text}\n\n{footer}"
+        out.append(text)
+    return out
+
+
 def _chunks(items: list, size: int) -> list[list]:
     return [items[i:i + size] for i in range(0, len(items), size)]
 
@@ -177,15 +221,18 @@ async def cb_config_format_device(call: CallbackQuery, session: AsyncSession) ->
     from bot.handlers.configs import config_display_base, make_vpn_link
 
     if kind == "link":
-        lines = []
+        blocks = []
         for server, peer, conf in built:
             link = await make_vpn_link(session, server, peer.label, conf)
-            lines.append(f"<b>{config_display_base(server)}</b>\n<code>{link}</code>")
-        await bot.send_message(
-            chat_id,
-            "🔗 <b>Ссылки на твои конфиги</b>\n\n" + "\n\n".join(lines) + "\n\n"
+            blocks.append(f"<b>{config_display_base(server)}</b>\n<code>{link}</code>")
+        # Разбиваем по лимиту: одна ссылка ~960 символов, и с четвёртой локации
+        # всё это в одно сообщение уже не влезало.
+        for text in pack_link_messages(
+            blocks,
+            "🔗 <b>Ссылки на твои конфиги</b>",
             "Нажми на ссылку — она скопируется. В AmneziaVPN жми «＋» и вставь.",
-        )
+        ):
+            await bot.send_message(chat_id, text)
         await call.answer("Отправил")
         return
 

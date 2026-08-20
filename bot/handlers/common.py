@@ -15,12 +15,14 @@ from bot.keyboards.inline import (
     CB_MENU,
     CB_NOP,
     back_to_menu,
+    MenuState,
     main_menu,
+    more_menu,
     notify_settings_kb,
     onboarding_hint_kb,
     server_card,
 )
-from bot.texts import t
+from bot.texts import t, ui
 
 router = Router(name="common")
 
@@ -56,10 +58,27 @@ def build_sub_status_line(user) -> str:
     return f"🎫 Подписка: <b>активна</b>, осталось дней: <b>{days}</b>"
 
 
-async def send_start_screens(message: Message, user, *, is_new: bool) -> None:
+async def build_menu_state(session: AsyncSession, user) -> MenuState:
+    """Состояние, от которого зависит набор кнопок главного меню.
+
+    Считается в одном месте: меню собирается из /start, /menu и возврата
+    «‹ Меню», и три копии этой логики разъехались бы на первой же правке.
+    """
+    from bot.handlers.devices import _sub_active
+
+    return MenuState(
+        sub_active=_sub_active(user),
+        has_devices=await repo.count_active_devices(session, user.id) > 0,
+        is_trial=bool(user.is_trial),
+    )
+
+
+async def send_start_screens(
+    message: Message, user, *, is_new: bool, session: AsyncSession
+) -> None:
     """Главное меню + подсказка новичку. Вызывается и из /start, и после
     нажатия «Согласен» на экране условий."""
-    await _send_main_menu(message, user.is_admin)
+    await _send_main_menu(message, user.is_admin, await build_menu_state(session, user))
     await _send_onboarding_hint(message, is_new=is_new, is_admin=user.is_admin)
 
 
@@ -101,7 +120,7 @@ async def cmd_start_deep(
                 logger.info("Referral: user {} invited by {}", user.id, referrer.id)
         # Гейт и здесь: иначе новый юзер по реф-ссылке получал бы меню, минуя
         # экран условий. Реферер уже привязан выше — согласие его не отменяет.
-        await send_start_screens(message, user, is_new=not existed)
+        await send_start_screens(message, user, is_new=not existed, session=session)
         return
 
     from bot.handlers.configs import redeem_invite
@@ -112,7 +131,7 @@ async def cmd_start_deep(
             return
         await message.answer(t.invite_invalid)
 
-    await send_start_screens(message, user, is_new=not existed)
+    await send_start_screens(message, user, is_new=not existed, session=session)
 
 
 @router.message(CommandStart())
@@ -129,7 +148,7 @@ async def cmd_start(
         username=message.from_user.username,
         full_name=message.from_user.full_name,
     )
-    await send_start_screens(message, user, is_new=not existed)
+    await send_start_screens(message, user, is_new=not existed, session=session)
 
 
 async def _send_onboarding_hint(message: Message, *, is_new: bool, is_admin: bool) -> None:
@@ -141,15 +160,17 @@ async def _send_onboarding_hint(message: Message, *, is_new: bool, is_admin: boo
     await message.answer(t.onboarding_hint, reply_markup=onboarding_hint_kb())
 
 
-async def _send_main_menu(message: Message, is_admin: bool) -> None:
+async def _send_main_menu(
+    message: Message, is_admin: bool, state: MenuState
+) -> None:
     if is_admin:
-        text = t.start_admin.format(name=message.from_user.full_name or "друг")
+        text = t.start_admin.format(name=ui.safe(message.from_user.full_name) or "друг")
     else:
         from bot.config import settings
         from bot.services.pricing import fmt_rub, monthly_price_kopeks
 
         text = t.start_user.format(
-            name=message.from_user.full_name or "друг",
+            name=ui.safe(message.from_user.full_name) or "друг",
             trial_days=settings.trial_days,
             trial_devices=settings.trial_devices,
             trial_bypass=settings.trial_bypass,
@@ -159,7 +180,7 @@ async def _send_main_menu(message: Message, is_admin: bool) -> None:
             # «от 120», когда есть тариф за 90.
             base_price=fmt_rub(monthly_price_kopeks(1, 0)),
         )
-    await message.answer(text, reply_markup=main_menu(is_admin))
+    await message.answer(text, reply_markup=main_menu(is_admin, state))
 
 
 # Кнопки-заглушки (числа в конструкторе тарифа, «−»/«+» на границах): без этого
@@ -182,7 +203,7 @@ async def cmd_menu(message: Message, session: AsyncSession, state: FSMContext) -
     )
     await message.answer(
         f"{t.menu_title}\n\n{build_sub_status_line(user)}",
-        reply_markup=main_menu(user.is_admin),
+        reply_markup=main_menu(user.is_admin, await build_menu_state(session, user)),
     )
 
 
@@ -197,8 +218,19 @@ async def cb_menu_open(call: CallbackQuery, session: AsyncSession, state: FSMCon
     )
     await call.message.edit_text(
         f"{t.menu_title}\n\n{build_sub_status_line(user)}",
-        reply_markup=main_menu(user.is_admin),
+        reply_markup=main_menu(user.is_admin, await build_menu_state(session, user)),
     )
+    await call.answer()
+
+
+@router.callback_query(F.data == f"{CB_MENU}:more")
+async def cb_menu_more(call: CallbackQuery) -> None:
+    """Раздел «Ещё»: настройки, витрина и документы.
+
+    Своего содержимого у экрана нет — только навигация, поэтому текст короткий
+    и не пытается пересказать то, что написано на кнопках.
+    """
+    await call.message.edit_text(t.more_title, reply_markup=more_menu())
     await call.answer()
 
 
@@ -305,7 +337,10 @@ async def cmd_exit(message: Message, state: FSMContext, session: AsyncSession) -
         username=message.from_user.username,
         full_name=message.from_user.full_name,
     )
-    await message.answer(t.cancelled, reply_markup=main_menu(user.is_admin))
+    await message.answer(
+        t.cancelled,
+        reply_markup=main_menu(user.is_admin, await build_menu_state(session, user)),
+    )
 
 
 @router.callback_query(F.data == CB_CANCEL)
@@ -372,5 +407,8 @@ async def cb_cancel(call: CallbackQuery, state: FSMContext, session: AsyncSessio
         username=call.from_user.username,
         full_name=call.from_user.full_name,
     )
-    await call.message.edit_text(t.cancelled, reply_markup=main_menu(user.is_admin))
+    await call.message.edit_text(
+        t.cancelled,
+        reply_markup=main_menu(user.is_admin, await build_menu_state(session, user)),
+    )
     await call.answer()

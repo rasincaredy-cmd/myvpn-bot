@@ -123,17 +123,26 @@ def invoice_kb(pay_url: str, row_id: int) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def extend_kb(
+def tariff_kb(
     devices: int, bypass: int, term_prices: list[tuple[int, str]],
-    max_devices: int, max_bypass: int,
+    max_devices: int, max_bypass: int, *, switch_days: int | None,
 ) -> InlineKeyboardMarkup:
-    """Экран продления: тариф крутится ±, сроки с ценами. Всё состояние — в
-    callback data (без FSM): ext:<dev>:<byp> перерисовка, buy:<dev>:<byp>:<mes>.
+    """Экран «⚙️ Тариф»: тариф крутится ±, ниже — смена без оплаты и сроки.
+
+    Всё состояние живёт в callback_data, без FSM: `ext:<dev>:<byp>` —
+    перерисовка, `chg:<dev>:<byp>` — смена без оплаты, `buy:<dev>:<byp>:<мес>` —
+    покупка. Иначе экран ломался бы от старого сообщения в истории чата.
+
+    `switch_days` — сколько дней останется после смены без оплаты, или None,
+    если смена сейчас недоступна (тариф не тронут, триал, истёкшая, бессрочная).
+    Число стоит прямо на кнопке: человек меняет тариф и обязан видеть, во что
+    превратится срок, ДО нажатия, а не после.
 
     Подписи средних кнопок — только эмодзи+число («📱 2»): в ряду из трёх кнопок
     длинный текст обрезается на телефоне и числа не видно; расшифровка типов —
     в тексте сообщения. На границах (0, максимум, «последняя позиция») «−»/«+»
-    рисуем заглушкой CB_NOP — не гоняем пустые перерисовки."""
+    рисуем заглушкой CB_NOP — не гоняем пустые перерисовки.
+    """
     kb = InlineKeyboardBuilder()
 
     def _step(cur_d: int, cur_b: int, ok: bool) -> str:
@@ -146,12 +155,42 @@ def extend_kb(
     kb.button(text="−", callback_data=_step(devices, bypass - 1, bypass > 0 and devices + bypass > 1))
     kb.button(text=f"⚡ {bypass}", callback_data=CB_NOP)
     kb.button(text="+", callback_data=_step(devices, bypass + 1, bypass < max_bypass))
+    sizes = [3, 3]
+
+    if switch_days is not None:
+        kb.button(
+            text=f"✅ Сменить без оплаты — {switch_days} дн.",
+            callback_data=f"{CB_BAL}:chg:{devices}:{bypass}",
+            style="primary",
+        )
+        sizes.append(1)
+
     for months, label in term_prices:
         kb.button(text=label, callback_data=f"{CB_BAL}:buy:{devices}:{bypass}:{months}",
                   style="success")
+    sizes.extend([2] * (len(term_prices) // 2))
+    if len(term_prices) % 2:
+        sizes.append(1)
+
     # Выход на пополнение прямо отсюда: юзеру с пустым балансом не нужно
     # догадываться, что пополнение живёт в разделе «Баланс».
     kb.button(text="➕ Пополнить баланс", callback_data=f"{CB_BAL}:dep")
-    kb.button(text="« К подписке", callback_data=f"{CB_SUB}:my")
-    kb.adjust(3, 3, 2, 2, 1, 1)
+    kb.button(text="‹ Подписка", callback_data=f"{CB_SUB}:my")
+    sizes.extend([1, 1])
+    kb.adjust(*sizes)
+    return kb.as_markup()
+
+
+def tariff_confirm_kb(devices: int, bypass: int) -> InlineKeyboardMarkup:
+    """Подтверждение смены тарифа без оплаты.
+
+    Отдельный шаг, потому что действие меняет дату окончания подписки и назад
+    его не отмотать: пересчёт округляется вниз, и «передумал, верни как было»
+    вернёт на день-другой меньше.
+    """
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✅ Да, сменить", callback_data=f"{CB_BAL}:chgok:{devices}:{bypass}",
+              style="primary")
+    kb.button(text="‹ Назад", callback_data=f"{CB_BAL}:ext:{devices}:{bypass}")
+    kb.adjust(1)
     return kb.as_markup()

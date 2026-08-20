@@ -25,6 +25,7 @@ from bot.keyboards.inline import (
     back_to_bypasses_kb,
     back_to_menu,
     cancel_only,
+    limit_reached_kb,
     pick_location_kb,
     server_card,
     wdtt_platform_kb,
@@ -37,7 +38,7 @@ from bot.services import wdtt as wdtt_svc
 from bot.services.crypto import decrypt, encrypt
 from bot.services.ssh import SSHClient, SSHError
 from bot.states.install import WdttStates
-from bot.texts import t
+from bot.texts import t, ui
 from bot.utils.timefmt import as_utc, fmt_msk
 
 router = Router(name="wdtt")
@@ -413,17 +414,26 @@ async def cb_wdtt_new(call: CallbackQuery, state: FSMContext, session: AsyncSess
         return
     used = await repo.count_active_wdtt_for_user(session, user.id)
     if used >= user.sub_max_bypass:
+        # Экран с выходом, а не всплывашка (Блок «Тариф») — как и на устройствах.
         if user.sub_max_bypass == 0:
-            await call.answer(
-                "В твоём тарифе нет резервных подключений. Добавить их можно в "
-                "«🎫 Моя подписка» → «🔁 Продлить / купить».",
-                show_alert=True,
-            )
+            lead = "В твоём тарифе нет резервных подключений."
         else:
-            await call.answer(
-                f"Достигнут лимит резервных подключений ({used}/{user.sub_max_bypass}).",
-                show_alert=True,
+            lead = (
+                f"Все резервные подключения тарифа заняты: "
+                f"{used} из {user.sub_max_bypass}."
             )
+        await call.message.edit_text(
+            ui.screen(
+                ui.title("⚡", "Нужно ещё подключение"),
+                lead=lead,
+                note=(
+                    "Добавь их в тариф — неиспользованные дни не сгорят, они "
+                    "пересчитаются под новый тариф."
+                ),
+            ),
+            reply_markup=limit_reached_kb(f"{CB_WDTT}:my"),
+        )
+        await call.answer()
         return
     groups, load, any_wdtt = await _wdtt_location_groups(session, user)
     if not any_wdtt:

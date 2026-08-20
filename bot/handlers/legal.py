@@ -72,7 +72,7 @@ async def cb_accept(call: CallbackQuery, session: AsyncSession) -> None:
     # на уровне модуля получился бы цикл.
     from bot.handlers.common import send_start_screens
 
-    await send_start_screens(call.message, user, is_new=True)
+    await send_start_screens(call.message, user, is_new=True, session=session)
     await call.answer()
 
 

@@ -138,20 +138,38 @@ def move_confirm_kb(peer_id: int, server_id: int, device_id: int) -> InlineKeybo
 
 def subscription_kb(
     *,
-    can_pay: bool = False,       # показать «Продлить» (Crypto Pay включён)
+    can_pay: bool = False,        # показать оплату (способ пополнения включён)
     autopay: bool | None = None,  # None — тумблер не показывать (нет смысла без оплаты)
+    can_switch: bool = False,     # смена тарифа без оплаты доступна
 ) -> InlineKeyboardMarkup:
+    """Кнопки экрана подписки.
+
+    «⚙️ Сменить тариф» — главная новинка 20.08.2026: до неё сменить тариф можно
+    было ТОЛЬКО купив новый срок, и человек, которому нужно второе устройство,
+    упирался во всплывашку «достигнут лимит» без единого выхода.
+    """
     kb = InlineKeyboardBuilder()
+    sizes: list[int] = []
     if can_pay:
-        kb.button(text="🔁 Продлить / купить", callback_data=f"{CB_BAL}:extend")
+        kb.button(text="🔁 Продлить подписку", callback_data=f"{CB_BAL}:extend",
+                  style="primary")
+        sizes.append(1)
+    if can_switch:
+        kb.button(text="⚙️ Сменить тариф", callback_data=f"{CB_BAL}:extend")
+        sizes.append(1)
     if autopay is not None:
         kb.button(
             text="♻️ Автопродление: ВКЛ" if autopay else "♻️ Автопродление: выкл",
             callback_data=f"{CB_BAL}:autopay",
         )
-    kb.button(text="📱 Мои устройства", callback_data=f"{CB_DEVICE}:list")
-    kb.button(text="« В меню", callback_data=f"{CB_MENU}:open")
-    kb.adjust(1)
+        kb.button(text="📱 Устройства", callback_data=f"{CB_DEVICE}:list")
+        sizes.append(2)
+    else:
+        kb.button(text="📱 Устройства", callback_data=f"{CB_DEVICE}:list")
+        sizes.append(1)
+    kb.button(text="‹ Меню", callback_data=f"{CB_MENU}:open")
+    sizes.append(1)
+    kb.adjust(*sizes)
     return kb.as_markup()
 
 
@@ -173,5 +191,18 @@ def back_to_devices_kb() -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="« Мои устройства", callback_data=f"{CB_DEVICE}:list")
     kb.button(text="« В меню", callback_data=f"{CB_MENU}:open")
+    kb.adjust(1)
+    return kb.as_markup()
+
+def limit_reached_kb(back_to: str) -> InlineKeyboardMarkup:
+    """Выход из тупика «достигнут лимит».
+
+    До 20.08.2026 здесь была всплывашка «Достигнут лимит устройств (1/1)» и
+    больше ничего: человек упирался в стену ровно в тот момент, когда хотел
+    заплатить больше. Теперь у стены есть дверь.
+    """
+    kb = InlineKeyboardBuilder()
+    kb.button(text="⚙️ Сменить тариф", callback_data=f"{CB_BAL}:extend", style="primary")
+    kb.button(text="‹ Назад", callback_data=back_to)
     kb.adjust(1)
     return kb.as_markup()

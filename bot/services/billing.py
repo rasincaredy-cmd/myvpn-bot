@@ -21,6 +21,7 @@ from bot.services.pricing import (
     DEPOSIT_BONUS_PERCENT,
     DEPOSIT_METHOD_LABELS,
     TERM_DISCOUNTS,
+    convert_remaining,
     deposit_bonus_kopeks,
     monthly_price_kopeks,
     term_price_kopeks,
@@ -160,18 +161,171 @@ class ChargeResult:
     wanted_price_kopeks: int = 0
 
 
+def _expiry_aware(user: User) -> datetime | None:
+    """Срок окончания как aware-datetime. SQLite отдаёт naive — сравнивать
+    такое с aware нельзя, а грабли эти в проекте уже случались."""
+    exp = user.sub_expires_at
+    if exp is not None and exp.tzinfo is None:
+        exp = exp.replace(tzinfo=timezone.utc)
+    return exp
+
+
+def remaining_seconds(user: User) -> int:
+    """Сколько секунд подписки осталось. Истёкшая и бессрочная — ноль.
+
+    Бессрочная даёт ноль не потому, что её нет, а потому что «остаток
+    бесконечности» пересчитать не во что: такие подписки в смену тарифа и в
+    покупку не пускают выше по стеку.
+    """
+    exp = _expiry_aware(user)
+    if exp is None:
+        return 0
+    return max(0, int((exp - datetime.now(timezone.utc)).total_seconds()))
+
+
+def remaining_seconds_after_switch(user: User, devices: int, bypass: int) -> int:
+    """Остаток подписки, пересчитанный в тариф `devices`+`bypass`.
+
+    Триал НЕ пересчитывается: экран пробного периода обещает дословно
+    «оплаченный срок прибавится к пробному, ни дня не сгорит», а пересчёт
+    подаренных дней по дорогому тарифу это обещание бы нарушил. Подарок в
+    trial_days эксплойтом не является — он один на юзера и короткий.
+
+    Тариф 0+0 (админ обнулил лимиты) тоже оставляем как есть: цены у него нет,
+    делить не на что, а съедать человеку время из-за админской правки нельзя.
+    """
+    left = remaining_seconds(user)
+    if left <= 0 or user.is_trial:
+        return left
+    if user.sub_max_devices + user.sub_max_bypass < 1:
+        return left
+    old_monthly = monthly_price_kopeks(user.sub_max_devices, user.sub_max_bypass)
+    new_monthly = monthly_price_kopeks(devices, bypass)
+    return convert_remaining(left, old_monthly, new_monthly)
+
+
+@dataclass
+class TariffChangeResult:
+    """Итог смены тарифа без оплаты. reason заполняется только при ok=False —
+    хендлер по нему выбирает объяснение юзеру."""
+    ok: bool
+    reason: str = ""
+    new_expires_at: datetime | None = None
+    old_days: int = 0          # сколько дней было до смены
+    new_days: int = 0          # сколько станет после
+    used_devices: int = 0      # при reason="in_use" — сколько занято сейчас
+    used_bypass: int = 0
+
+
+async def change_tariff(
+    session: AsyncSession, user: User, *, max_devices: int, max_bypass: int,
+    dry_run: bool = False,
+) -> TariffChangeResult:
+    """Смена тарифа БЕЗ оплаты: остаток пересчитывается в новый тариф.
+
+    `dry_run=True` — посчитать и проверить всё то же самое, но ничего не
+    записывать. Экран тарифа рисуется именно так: и текст, и подпись кнопки
+    берут число дней из одного расчёта, поэтому разойтись в цифрах они не
+    могут. Отдельная «функция предпросмотра» рядом с этой разошлась бы с ней
+    на первой же правке правил.
+
+    Дороже тариф — срок сокращается, дешевле — растягивается. Денег не
+    трогаем совсем: ни списаний, ни возвратов на баланс. Возврат деньгами тут
+    был бы вторым денежным потоком, который пришлось бы отдельно защищать от
+    накрутки, — а пересчёт времени защищать не нужно, он симметричен и
+    округляется вниз.
+
+    Не трогаем и `sub_term_months`: это то, что юзер ПОКУПАЛ, ориентир
+    автопродления. Смена тарифа покупкой не является.
+
+    Коммит — на вызывающем, как и у остальных функций сервиса.
+    """
+    if max_devices < 0 or max_bypass < 0 or max_devices + max_bypass < 1:
+        return TariffChangeResult(ok=False, reason="empty")
+    if max_devices == user.sub_max_devices and max_bypass == user.sub_max_bypass:
+        return TariffChangeResult(ok=False, reason="same")
+    if user.is_trial:
+        return TariffChangeResult(ok=False, reason="trial")
+    if _expiry_aware(user) is None:
+        return TariffChangeResult(ok=False, reason="perpetual")
+
+    left = remaining_seconds(user)
+    if left <= 0:
+        return TariffChangeResult(ok=False, reason="expired")
+
+    # Тариф ниже текущего ПОТРЕБЛЕНИЯ не продаём: активные устройства сверх
+    # нового лимита продолжили бы работать (лимит проверяется только при
+    # добавлении), и понижение стало бы способом получить больше за меньше.
+    # Та же проверка стоит на покупке — здесь она не дубль, а свой рубеж:
+    # хендлеру доверять нельзя, сюда ходят два разных экрана.
+    used_dev = await repo.count_active_devices(session, user.id)
+    used_byp = await repo.count_active_wdtt_for_user(session, user.id)
+    if max_devices < used_dev or max_bypass < used_byp:
+        return TariffChangeResult(
+            ok=False, reason="in_use", used_devices=used_dev, used_bypass=used_byp
+        )
+
+    kept = remaining_seconds_after_switch(user, max_devices, max_bypass)
+    if kept < 86400:
+        # Апгрейд, после которого остаются часы, — это обнуление подписки одним
+        # тапом. Лучше отказать и назвать причину, чем оставить человека без VPN
+        # с формально выполненной просьбой.
+        return TariffChangeResult(
+            ok=False, reason="too_short",
+            old_days=left // 86400, new_days=kept // 86400,
+        )
+
+    new_expiry = datetime.now(timezone.utc) + timedelta(seconds=kept)
+    if dry_run:
+        return TariffChangeResult(
+            ok=True, new_expires_at=new_expiry,
+            old_days=left // 86400, new_days=kept // 86400,
+        )
+
+    # Прежний тариф запоминаем ДО записи: после set_subscription + refresh в
+    # полях юзера уже новые числа, и лог показывал бы «2+0 -> 2+0».
+    was = f"{user.sub_max_devices}+{user.sub_max_bypass}"
+    await repo.set_subscription(
+        session, user.id,
+        max_devices=max_devices, max_bypass=max_bypass,
+        expires_at=new_expiry, touch_expires=True,
+    )
+    await session.refresh(user)
+    logger.info(
+        "Tariff changed by user {}: {} -> {}+{}, until {}",
+        user.id, was, max_devices, max_bypass, new_expiry.isoformat(),
+    )
+    await repo.log_action(
+        session, AuditAction.TARIFF_CHANGED,
+        actor_tg_id=user.tg_id,
+        target_user_id=user.id,
+        details=(
+            f"Юзер сменил тариф на {max_devices} устр. + {max_bypass} "
+            f"рез. подключ., срок пересчитан: {left // 86400} → {kept // 86400} дн."
+        ),
+    )
+    return TariffChangeResult(
+        ok=True, new_expires_at=new_expiry,
+        old_days=left // 86400, new_days=kept // 86400,
+    )
+
+
 async def _extend(
     session: AsyncSession, user: User, months: int, devices: int, bypass: int
 ) -> tuple[datetime, "revive_svc.ReviveResult"]:
-    """Общая механика продления для покупки и админской выдачи: срок прибавляется
-    к остатку (активная подписка не сгорает), подписка становится платной, лимит
-    трафика снимается, отозванные по истечению устройства оживают."""
+    """Общая механика продления для покупки и админской выдачи: купленный срок
+    прибавляется к остатку (активная подписка не сгорает), подписка становится
+    платной, лимит трафика снимается, отозванные по истечению устройства оживают.
+
+    Остаток перед сложением пересчитывается в новый тариф
+    (`remaining_seconds_after_switch`). При неизменном тарифе коэффициент 1 и
+    поведение прежнее — так ходят и автопродление, и админская выдача. А вот
+    покупка с ДРУГИМ тарифом до 20.08.2026 поднимала лимиты на весь прошлый
+    остаток бесплатно: год на одном устройстве плюс месяц на десяти давал год
+    на десяти. Теперь старое время честно дешевеет."""
     now = datetime.now(timezone.utc)
-    base = user.sub_expires_at
-    if base is not None and base.tzinfo is None:
-        base = base.replace(tzinfo=timezone.utc)
-    start = base if base is not None and base > now else now
-    new_expiry = start + timedelta(days=DAYS_PER_MONTH * months)
+    kept = remaining_seconds_after_switch(user, devices, bypass)
+    new_expiry = now + timedelta(seconds=kept, days=DAYS_PER_MONTH * months)
     await repo.set_subscription(
         session, user.id,
         max_devices=devices, max_bypass=bypass,

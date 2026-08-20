@@ -421,9 +421,13 @@ async def step_run(
         username=call.from_user.username,
         full_name=call.from_user.full_name,
     )
+    # Импорт внутри функции: common.py тянет клавиатуры, те — конфиг; на уровне
+    # модуля вышел бы цикл (тот же приём, что в legal.py).
+    from bot.handlers.common import build_menu_state
+
     await bot.send_message(
         chat_id,
         t.install_done.format(name=server.name)
         + f"\n\n{security_line}\n{bypass_line}",
-        reply_markup=main_menu(user.is_admin),
+        reply_markup=main_menu(user.is_admin, await build_menu_state(session, user)),
     )

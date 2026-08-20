@@ -39,7 +39,7 @@ from bot.services import amnezia, amnezia_native
 from bot.services.crypto import encrypt
 from bot.services.ssh import SSHClient, SSHError
 from bot.states.install import InviteStates
-from bot.texts import t
+from bot.texts import t, ui
 from bot.utils.timefmt import fmt_msk
 from bot.utils.validators import is_valid_label
 
@@ -473,7 +473,7 @@ async def redeem_invite(
         return False
 
     await message.answer(
-        t.start_with_invite.format(name=message.from_user.full_name or "друг")
+        t.start_with_invite.format(name=ui.safe(message.from_user.full_name) or "друг")
     )
 
     label = invite.label or f"tg-{user.tg_id}"

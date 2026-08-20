@@ -26,12 +26,13 @@ from bot.keyboards.inline import (
     device_card_kb,
     device_created_kb,
     devices_list_kb,
+    limit_reached_kb,
     subscription_kb,
 )
 from bot.services import amnezia, relocate
 from bot.services.ssh import SSHError
 from bot.states.install import DeviceStates
-from bot.texts import t
+from bot.texts import t, ui
 from bot.utils.timefmt import as_utc, fmt_msk
 from bot.utils.validators import is_valid_label
 
@@ -134,18 +135,27 @@ async def cb_dev_add(call: CallbackQuery, state: FSMContext, session: AsyncSessi
         return
     used = await repo.count_active_devices(session, user.id)
     if used >= user.sub_max_devices:
+        # Не всплывашка, а экран с выходом (Блок «Тариф»): человек упирался в
+        # стену ровно в тот момент, когда готов был платить больше, и ему не
+        # предлагали ничего. Теперь у стены есть дверь.
         if user.sub_max_devices == 0:
             # Не «(0/0)» — это читается как баг. Объясняем: таков тариф.
-            await call.answer(
-                "В твоём тарифе нет устройств. Добавить их можно в «🎫 Моя "
-                "подписка» → «🔁 Продлить / купить».",
-                show_alert=True,
-            )
+            lead = "В твоём тарифе нет устройств."
         else:
-            await call.answer(
-                f"Достигнут лимит устройств ({used}/{user.sub_max_devices}).",
-                show_alert=True,
-            )
+            lead = f"Все устройства тарифа заняты: {used} из {user.sub_max_devices}."
+        await call.message.edit_text(
+            ui.screen(
+                ui.title("📱", "Нужно ещё устройство"),
+                lead=lead,
+                note=(
+                    "Добавь их в тариф — неиспользованные дни не сгорят, они "
+                    "пересчитаются под новый тариф. Или освободи место, удалив "
+                    "ненужное устройство."
+                ),
+            ),
+            reply_markup=limit_reached_kb(f"{CB_DEVICE}:list"),
+        )
+        await call.answer()
         return
     if not await repo.list_ready_servers(session, for_user=user):
         await call.answer("Локации сейчас недоступны — попробуй чуть позже.", show_alert=True)
@@ -434,6 +444,12 @@ async def cb_dev_revoke(call: CallbackQuery, session: AsyncSession) -> None:
 
 @router.callback_query(F.data == f"{CB_SUB}:my")
 async def cb_sub_my(call: CallbackQuery, session: AsyncSession) -> None:
+    """Экран подписки.
+
+    Переверстан 20.08.2026 (Блок «Облик»): было пять буллетов и два абзаца
+    курсивом на шестьдесят слов каждый — про триал и про автопродление. Абзацы
+    уехали в свёрнутую справку, факты стали строками-иконками.
+    """
     user = await repo.get_or_create_user(
         session,
         tg_id=call.from_user.id,
@@ -442,72 +458,101 @@ async def cb_sub_my(call: CallbackQuery, session: AsyncSession) -> None:
     )
     used = await repo.count_active_devices(session, user.id)
     bypass = await repo.count_active_wdtt_for_user(session, user.id)
-    trf_line = amnezia.fmt_traffic_line(
-        await repo.sub_traffic_used(session, user),
-        user.sub_traffic_limit_bytes,
-        expired=not _sub_active(user),
-    )
     from bot.config import settings
-    from bot.services import cryptopay
+    from bot.services import billing, cryptopay
     from bot.services.pricing import fmt_rub, monthly_price_kopeks
 
+    active = _sub_active(user)
     can_pay = cryptopay.enabled()
-    on_trial = user.is_trial and _sub_active(user) and user.sub_expires_at is not None
-    title = "🎫 <b>Моя подписка</b>"
+    on_trial = user.is_trial and active and user.sub_expires_at is not None
+    perpetual = user.sub_expires_at is None and not user.is_trial
+
+    facts = [
+        ui.fact("📱", "Устройства", f"{used} из {user.sub_max_devices}"),
+        ui.fact("⚡", "Резервные подключения", f"{bypass} из {user.sub_max_bypass}"),
+        ui.fact("📅", "Срок", _sub_line(user)),
+        ui.fact(
+            "📊", "Трафик",
+            amnezia.fmt_traffic_line(
+                await repo.sub_traffic_used(session, user),
+                user.sub_traffic_limit_bytes,
+                expired=not active,
+            ),
+        ),
+        ui.fact("💰", "Баланс", fmt_rub(user.balance_kopeks)),
+    ]
+
     if on_trial:
-        title += " — пробный период"
-    text = (
-        f"{title}\n"
-        f"• Устройства: <b>{used}/{user.sub_max_devices}</b>\n"
-        f"• Резервное подключение: <b>{bypass}/{user.sub_max_bypass}</b>\n"
-        f"• Срок: <b>{_sub_line(user)}</b>\n"
-        f"• Трафик: <b>{trf_line}</b>\n"
-        f"• Баланс: <b>{fmt_rub(user.balance_kopeks)}</b>"
-    )
+        lead = f"Идёт бесплатный пробный период — {settings.trial_days} дней."
+    elif not active:
+        lead = "Подписка закончилась, VPN на паузе."
+    elif perpetual:
+        lead = "Подписка бессрочная."
+    else:
+        lead = None
+
+    note = None
+    if not active:
+        note = (
+            "Всё сохранено — заново настраивать ничего не придётся. "
+            + ("Жми «🔁 Продлить подписку»: устройства включатся сами."
+               if can_pay else
+               "Напиши в «🆘 Поддержка» — продлим.")
+        )
+
+    # Справка длинная, поэтому свёрнутая: развернёт тот, кому она нужна.
+    help_parts = []
     if on_trial:
-        # Лимиты триала не дублируем — они уже видны строками выше (и могли
-        # быть изменены админом индивидуально).
-        text += (
-            f"\n\n🎁 <i>Это бесплатный пробный период на {settings.trial_days} "
-            "дней. Когда он закончится, VPN просто встанет на паузу — ничего "
-            "настраивать заново не придётся, все конфиги сохранятся. Дальше — "
+        help_parts.append(
+            "🎁 <b>Что будет после пробного периода</b>\n"
+            "VPN просто встанет на паузу — ничего настраивать заново не "
+            "придётся, все конфиги сохранятся. Дальше — "
             # Состав назван прямо, поэтому и цена точная, без «от»: «от 120 ₽
             # за 1 устройство + 1 подключение» читалось бы как «бывает и
             # дороже за то же самое».
             f"{fmt_rub(monthly_price_kopeks(1, 1))}/мес за 1 устройство + "
             "1 резервное подключение, есть тарифы и дешевле."
-            + (" Кстати, продлить можно уже сейчас: оплаченный срок прибавится "
-               "к пробному, ни дня не сгорит." if can_pay else "")
-            + "</i>"
+            + (" Продлить можно уже сейчас: оплаченный срок прибавится к "
+               "пробному, ни дня не сгорит." if can_pay else "")
         )
-    if not _sub_active(user):
-        text += (
-            "\n\n<i>Подписка закончилась — VPN на паузе, но всё сохранено: "
-            "заново ничего настраивать не придётся. "
-            + ("Жми «🔁 Продлить / купить» — устройства включатся сами.</i>" if can_pay
-               else "Напиши в поддержку («🆘 Поддержка» в меню) — продлим.</i>")
-        )
-    # Бессрочным (спец-юзеры/админ) продление и автопродление не показываем.
-    perpetual = user.sub_expires_at is None and not user.is_trial
     if can_pay and not perpetual:
         # Текст нарочно не зависит от user.autopay: тумблер обновляет только
         # кнопки, и «включено/выключено» в тексте после нажатия начало бы врать.
         # Текущее состояние видно прямо на кнопке «♻️ Автопродление: ВКЛ/выкл».
-        text += (
-            "\n\n♻️ <i>Автопродление (кнопка ниже): если включено — когда срок "
-            "закончится, бот сам продлит подписку с баланса <b>на тот же срок, "
-            "что ты покупал в прошлый раз</b> (и с той же скидкой за срок), "
-            "VPN не прервётся. Не хватит на полный срок — продлит на меньший "
-            "и напишет, сколько не хватило. Не хватит даже на месяц — ничего "
-            "не спишется, бот подождёт пополнения и продлит сразу после него. "
-            "Выключено — VPN просто встанет на паузу, пока не продлишь "
-            "вручную.</i>"
+        help_parts.append(
+            "♻️ <b>Автопродление</b>\n"
+            "Включено — когда срок закончится, бот сам продлит подписку с "
+            "баланса на тот же срок, что ты покупал в прошлый раз, и VPN не "
+            "прервётся. Не хватит на полный срок — продлит на меньший и "
+            "напишет, сколько не хватило. Не хватит даже на месяц — ничего не "
+            "спишется, бот подождёт пополнения. Выключено — VPN встанет на "
+            "паузу, пока не продлишь вручную."
         )
+        help_parts.append(
+            "⚙️ <b>Смена тарифа</b>\n"
+            "Менять число устройств и подключений можно в любой момент. "
+            "Неиспользованные дни не сгорают: они пересчитываются в новый "
+            "тариф. Дороже тариф — дней меньше, дешевле — больше."
+        )
+
+    text = ui.screen(
+        ui.title("🎫", "Подписка"),
+        lead=lead,
+        facts=facts,
+        note=note,
+        help=ui.help_block("💡 Подробности", "\n\n".join(help_parts)) if help_parts else None,
+    )
+
+    # Смену тарифа предлагаем только тому, кому есть что менять: у триала дни
+    # подарены, у бессрочной менять нечего, у истёкшей пересчитывать нечего.
+    can_switch = can_pay and not perpetual and not user.is_trial and active
+
     await call.message.edit_text(
         text,
         reply_markup=subscription_kb(
             can_pay=can_pay and not perpetual,
             autopay=user.autopay if (can_pay and not perpetual) else None,
+            can_switch=can_switch,
         ),
     )
     await call.answer()

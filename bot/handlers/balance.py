@@ -29,7 +29,8 @@ from bot.keyboards.inline import (
     cancel_only,
     deposit_amounts_kb,
     deposit_methods_kb,
-    extend_kb,
+    tariff_confirm_kb,
+    tariff_kb,
     invoice_kb,
     platega_amounts_kb,
     platega_invoice_kb,
@@ -48,7 +49,7 @@ from bot.services.pricing import (
     term_price_kopeks,
 )
 from bot.states.install import BalanceStates
-from bot.texts import t
+from bot.texts import t, ui
 from bot.utils.timefmt import fmt_msk
 
 router = Router(name="balance")
@@ -725,25 +726,70 @@ def _clamp_tariff(user, devices: int, bypass: int) -> tuple[int, int]:
     return devices, bypass
 
 
-async def _render_extend(edit, user, devices: int, bypass: int) -> None:
+def build_tariff_text(
+    user, devices: int, bypass: int, *, switch_days: int | None
+) -> str:
+    """Экран «⚙️ Тариф»: что за тариф собран и во что он обойдётся.
+
+    Чистая функция: число дней после смены ей ПЕРЕДАЮТ — ровно то же, что
+    уходит на подпись кнопки. Считать исход дважды (здесь и в клавиатуре)
+    значило бы однажды показать на экране одну цифру, а на кнопке другую.
+
+    Объяснение «как считается цена» уехало в свёрнутую цитату (Блок «Облик»):
+    раньше оно занимало абзац на самом экране, и его прокручивали не читая.
+    """
+    monthly = monthly_price_kopeks(devices, bypass)
+    facts = [
+        ui.fact("📱", "Устройства", devices),
+        ui.fact("⚡", "Резервные подключения", bypass),
+        ui.fact("💳", "Цена", f"{fmt_rub(monthly)}/мес"),
+        ui.fact("💰", "На балансе", fmt_rub(user.balance_kopeks)),
+    ]
+
+    if switch_days is not None:
+        was_days = billing.remaining_seconds(user) // 86400
+        note = (
+            f"Сейчас оплачено дней: <b>{was_days}</b>. Сменишь тариф без "
+            f"оплаты — станет <b>{switch_days}</b>: неиспользованное время не "
+            "сгорает, а пересчитывается в новый тариф."
+        )
+    else:
+        note = "Настрой количество кнопками − и +, потом выбери срок."
+
+    return ui.screen(
+        ui.title("⚙️", "Тариф"),
+        lead="Собери тариф под себя — плати только за то, что нужно.",
+        facts=facts,
+        note=note,
+        help=ui.help_block(
+            "💡 Как это считается",
+            f"{_extend_intro()}\n\n"
+            "Чем длиннее срок, тем больше скидка. Купленный срок прибавляется "
+            "к твоему остатку целиком — ни дня не теряется.",
+        ),
+    )
+
+
+async def _render_tariff(edit, session, user, devices: int, bypass: int) -> None:
+    """Собирает и рисует экран тарифа.
+
+    Доступность смены без оплаты выясняем «сухим прогоном» самой смены: те же
+    правила и тот же расчёт, что при нажатии, — значит кнопка не может обещать
+    того, чего не произойдёт.
+    """
     devices, bypass = _clamp_tariff(user, devices, bypass)
     max_dev, max_byp = _tariff_bounds(user)
-    monthly = monthly_price_kopeks(devices, bypass)
-    text = (
-        "🔁 <b>Продление подписки</b>\n\n"
-        f"{_extend_intro()}\n\n"
-        "Твой тариф:\n"
-        f"📱 Устройств: <b>{devices}</b>\n"
-        f"⚡ Резервных подключений: <b>{bypass}</b>\n"
-        f"Цена: <b>{fmt_rub(monthly)}/мес</b>\n"
-        f"💰 На балансе: <b>{fmt_rub(user.balance_kopeks)}</b>\n\n"
-        "Настрой количество кнопками − и +, потом выбери срок — чем дольше, "
-        "тем дешевле. Оплаченные дни прибавятся к текущей подписке, новый "
-        "тариф заработает сразу."
+    preview = await billing.change_tariff(
+        session, user, max_devices=devices, max_bypass=bypass, dry_run=True
     )
-    await edit(text, reply_markup=extend_kb(
-        devices, bypass, _term_price_rows(devices, bypass), max_dev, max_byp
-    ))
+    switch_days = preview.new_days if preview.ok else None
+    await edit(
+        build_tariff_text(user, devices, bypass, switch_days=switch_days),
+        reply_markup=tariff_kb(
+            devices, bypass, _term_price_rows(devices, bypass),
+            max_dev, max_byp, switch_days=switch_days,
+        ),
+    )
 
 
 @router.callback_query(F.data == f"{CB_BAL}:extend")
@@ -754,8 +800,8 @@ async def cb_bal_extend(call: CallbackQuery, session: AsyncSession) -> None:
         return
     # Нулевые лимиты — это юзер, который ещё ничего не покупал: показываем ему
     # типовой тариф, а не пустой конструктор.
-    await _render_extend(
-        call.message.edit_text, user,
+    await _render_tariff(
+        call.message.edit_text, session, user,
         user.sub_max_devices or _START_DEVICES,
         user.sub_max_bypass or _START_BYPASS,
     )
@@ -770,13 +816,128 @@ async def cb_bal_extend_adjust(call: CallbackQuery, session: AsyncSession) -> No
         return
     user = await _get_user(session, call)
     try:
-        await _render_extend(call.message.edit_text, user, int(parts[2]), int(parts[3]))
+        await _render_tariff(call.message.edit_text, session, user, int(parts[2]), int(parts[3]))
     except TelegramBadRequest as exc:
         # На границах CB_NOP-заглушки перерисовку не дёргают, но старые
         # сообщения с прежней клавиатурой могут прислать то же состояние.
         if "message is not modified" not in str(exc):
             raise
     await call.answer()
+
+
+# ── Смена тарифа без оплаты ──────────────────────────────────────────────────
+
+# Почему отказ объясняем словами, а не прячем кнопку: до подтверждения юзер
+# успевает изменить состояние (добавить устройство в другом окне), и «кнопка
+# просто исчезла» читается как поломка.
+_SWITCH_REFUSALS = {
+    "trial": (
+        "Сейчас идёт пробный период — эти дни подарены, а не куплены, "
+        "обменивать их на другой тариф не на что. Выбери срок ниже: "
+        "пробные дни при покупке не сгорят."
+    ),
+    "perpetual": "У тебя бессрочная подписка — менять в ней нечего 🙂",
+    "expired": (
+        "Подписка закончилась, пересчитывать нечего. Выбери срок ниже — "
+        "новый тариф заработает сразу."
+    ),
+    "same": "Это твой текущий тариф — менять нечего.",
+    "empty": "В тарифе должна остаться хотя бы одна позиция.",
+}
+
+
+def _switch_refusal(res) -> str:
+    """Человеческое объяснение отказа. Два случая считаются по цифрам юзера,
+    поэтому их нет в словаре."""
+    if res.reason == "in_use":
+        return (
+            f"У тебя сейчас занято: {res.used_devices} устр. и "
+            f"{res.used_bypass} рез. подключ. — тариф не может быть меньше. "
+            "Сначала удали лишнее в «📱 Мои устройства» / "
+            "«⚡ Резервное подключение»."
+        )
+    if res.reason == "too_short":
+        return (
+            f"На этом тарифе твоего остатка хватит меньше чем на день "
+            f"({res.old_days} дн. превратятся в {res.new_days}). "
+            "Так подписка обнулится — лучше выбери срок ниже и купи."
+        )
+    return _SWITCH_REFUSALS.get(res.reason, "Сменить тариф сейчас не получится.")
+
+
+def _parse_tariff(data: str) -> tuple[int, int] | None:
+    """`bal:chg:<dev>:<byp>` → (dev, byp). None — callback форжённый."""
+    parts = data.split(":")
+    if len(parts) != 4 or not parts[2].isdigit() or not parts[3].isdigit():
+        return None
+    return int(parts[2]), int(parts[3])
+
+
+@router.callback_query(F.data.startswith(f"{CB_BAL}:chg:"))
+async def cb_bal_change_ask(call: CallbackQuery, session: AsyncSession) -> None:
+    """Спрашиваем подтверждение: смена двигает дату окончания, и обратно её не
+    отмотать — пересчёт округляется вниз, «верни как было» вернёт меньше."""
+    parsed = _parse_tariff(call.data)
+    if parsed is None:
+        await call.answer("Что-то не то с тарифом, начни заново.", show_alert=True)
+        return
+    devices, bypass = parsed
+    user = await _get_user(session, call)
+    res = await billing.change_tariff(
+        session, user, max_devices=devices, max_bypass=bypass, dry_run=True
+    )
+    if not res.ok:
+        await call.answer(_switch_refusal(res), show_alert=True)
+        return
+    text = ui.screen(
+        ui.title("⚙️", "Сменить тариф"),
+        lead=(
+            f"Новый тариф: <b>{devices}</b> устр. + <b>{bypass}</b> рез. "
+            f"подключ., {fmt_rub(monthly_price_kopeks(devices, bypass))}/мес."
+        ),
+        facts=[
+            ui.fact("📅", "Сейчас оплачено", f"{res.old_days} дн."),
+            ui.fact("📅", "Станет", f"{res.new_days} дн."),
+            ui.fact("💰", "Спишется", "0 ₽"),
+        ],
+        note=(
+            "Деньги не списываются и не возвращаются — меняется только дата "
+            "окончания. Отменить смену нельзя: обратный пересчёт вернёт на "
+            "день-другой меньше."
+        ),
+    )
+    await call.message.edit_text(text, reply_markup=tariff_confirm_kb(devices, bypass))
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith(f"{CB_BAL}:chgok:"))
+async def cb_bal_change_apply(call: CallbackQuery, session: AsyncSession) -> None:
+    parsed = _parse_tariff(call.data)
+    if parsed is None:
+        await call.answer("Что-то не то с тарифом, начни заново.", show_alert=True)
+        return
+    devices, bypass = parsed
+    user = await _get_user(session, call)
+    res = await billing.change_tariff(
+        session, user, max_devices=devices, max_bypass=bypass
+    )
+    if not res.ok:
+        # Между подтверждением и нажатием состояние могло измениться.
+        await session.rollback()
+        await call.answer(_switch_refusal(res), show_alert=True)
+        return
+    await session.commit()
+    text = ui.screen(
+        ui.title("✅", "Тариф изменён"),
+        facts=[
+            ui.fact("📱", "Устройства", devices),
+            ui.fact("⚡", "Резервные подключения", bypass),
+            ui.fact("📅", "Подписка до", f"{fmt_msk(res.new_expires_at)} МСК"),
+        ],
+        note=f"Осталось дней: <b>{res.new_days}</b>. Новый тариф работает уже сейчас.",
+    )
+    await call.message.edit_text(text, reply_markup=back_to_menu())
+    await call.answer("Готово 🎉")
 
 
 @router.callback_query(F.data.startswith(f"{CB_BAL}:buy:"))

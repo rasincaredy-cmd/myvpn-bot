@@ -65,3 +65,24 @@ def test_screens_use_the_shared_instruction(attr: str) -> None:
 
     text = getattr(t, attr)
     assert IOS_INSTALL.strip() in text, f"{attr} не подставляет общую инструкцию"
+
+
+def test_instruction_gives_a_direct_app_link() -> None:
+    """Смена страны — только полдела: дальше человеку нужна сама ссылка, а не
+    «ищи в App Store». Влад попросил вставить её 20.08.2026.
+
+    Ссылка проверена живой (200 без редиректов) и взята с amnezia.org/downloads,
+    а не по памяти.
+    """
+    from bot.texts.ru import IOS_INSTALL
+
+    assert "apps.apple.com" in IOS_INSTALL
+    assert "id1600529900" in IOS_INSTALL
+
+
+def test_instruction_explains_the_region_error() -> None:
+    """Прямая ссылка на аккаунте без смены страны отвечает «недоступно в вашем
+    регионе». Без объяснения это читается как «сервис врёт»."""
+    from bot.texts.ru import IOS_INSTALL
+
+    assert "регионе" in IOS_INSTALL

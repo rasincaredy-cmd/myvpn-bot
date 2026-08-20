@@ -72,6 +72,16 @@ def help_block(heading: str, body: str) -> str:
     return _html.expandable_blockquote(f"{heading}\n{body}")
 
 
+def help_block_raw(body: str) -> str:
+    """Свернуть готовый блок, у которого заголовок уже внутри текста.
+
+    Нужен там, где справка живёт отдельной константой в `ru.py` (её удобно
+    править вместе с остальными текстами раздела), а `help_block` требует
+    заголовок и тело порознь.
+    """
+    return _html.expandable_blockquote(body)
+
+
 def screen(
     head: str,
     *,

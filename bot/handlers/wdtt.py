@@ -183,6 +183,10 @@ async def cb_wdtt_my(call: CallbackQuery, state: FSMContext, session: AsyncSessi
     elif not accesses:
         text += "\nПока пусто. Жми «➕ Добавить»."
 
+    # Справка идёт последней и свёрнутой: статусная строка выше должна
+    # оставаться на виду, а «как это работает» нужно ровно один раз.
+    text += "\n\n" + ui.help_block_raw(t.wdtt_intro_help)
+
     await call.message.edit_text(
         text,
         reply_markup=wdtt_user_list_kb(

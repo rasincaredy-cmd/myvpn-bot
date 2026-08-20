@@ -142,8 +142,44 @@ async def send_backup_to_admins() -> str:
 # не шлём дубль и не пропускаем день. Часовой пояс — UTC, как весь планировщик.
 
 
+# Сколько раз за ночь пробуем отправить бэкап, прежде чем сдаться до завтра.
+# Отметка «сделано» ставится только после успеха — иначе разовый сбой съел бы
+# день. Но тик идёт раз в 5 минут, и без бюджета не ушедший бэкап пересобирался
+# бы и переотправлялся ~250 раз до полуночи, каждый раз с полной копией базы и
+# PBKDF2 на 600k итераций (найдено аудитом 20.08.2026). Три попытки закрывают
+# «сеть моргнула» и не превращаются в шторм, когда причина постоянная —
+# например, база переросла лимит Telegram в 50 МБ.
+MAX_ATTEMPTS_PER_DAY = 3
+
+_ATTEMPT_FILE = settings.data_dir / "backup_attempts.txt"
+
+
+def attempts_today(now: datetime) -> int:
+    """Сколько неудачных попыток уже было сегодня."""
+    try:
+        day, _, count = _ATTEMPT_FILE.read_text().strip().partition(" ")
+    except FileNotFoundError:
+        return 0
+    if day != now.strftime("%Y-%m-%d"):
+        return 0            # запись за прошлые сутки — бюджет свежий
+    return int(count or 0)
+
+
+def mark_attempt(now: datetime) -> bool:
+    """Записывает неудачную попытку. True — она ПЕРВАЯ за сегодня.
+
+    По этому True вызывающий шлёт админам тревогу: один раз за ночь, а не на
+    каждой попытке.
+    """
+    used = attempts_today(now)
+    _ATTEMPT_FILE.write_text(f"{now.strftime('%Y-%m-%d')} {used + 1}")
+    return used == 0
+
+
 def nightly_due(now: datetime) -> bool:
     if not enabled() or now.hour < settings.backup_hour_utc:
+        return False
+    if attempts_today(now) >= MAX_ATTEMPTS_PER_DAY:
         return False
     try:
         return _MARKER_FILE.read_text().strip() != now.strftime("%Y-%m-%d")
@@ -153,3 +189,5 @@ def nightly_due(now: datetime) -> bool:
 
 def mark_done(now: datetime) -> None:
     _MARKER_FILE.write_text(now.strftime("%Y-%m-%d"))
+    # Счётчик обнуляем: завтрашний сбой должен получить полный бюджет.
+    _ATTEMPT_FILE.unlink(missing_ok=True)

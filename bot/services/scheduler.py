@@ -115,6 +115,111 @@ async def find_onboard_stuck_users(session, now: datetime) -> list[User]:
     return stuck
 
 
+async def purge_stale_peers(session, stale: list) -> int:
+    """Снимает с серверов и удаляет из БД давно отозванные пиры. Возвращает число
+    удалённых строк.
+
+    Правило одно, и оно важнее экономии строк: **строку удаляем только если пир
+    правда снят с сервера**. В строке лежат единственные ключи, которыми его
+    можно снять; удалив её раньше, мы оставляем на VPS живой конфиг, который
+    больше нечем закрыть — бесплатный VPN навсегда, находимый только ручной
+    сверкой.
+
+    До 20.08.2026 это соблюдалось лишь для сбоя КОННЕКТА. Если коннект
+    поднимался, а снятие конкретного пира падало (`awg set … remove` и
+    `awg-quick save` идут с check=True — упасть может любая из двух), ошибку
+    писали в лог и строку всё равно удаляли. Теперь такой пир тоже остаётся до
+    следующего тика.
+
+    Группируем по серверу: один SSH-коннект на сервер, а не на пир.
+    """
+    by_srv: dict[int, list] = {}
+    for peer in stale:
+        by_srv.setdefault(peer.server_id, []).append(peer)
+
+    kept: set[int] = set()      # id пиров, которые снять не удалось
+    for server_id, plist in by_srv.items():
+        server = await repo.get_server(session, server_id)
+        if not server:
+            continue
+        try:
+            async with SSHClient(repo.creds_from_server(server)) as ssh:
+                for peer in plist:
+                    try:
+                        await amnezia.remove_peer_on_server(ssh, public_key=peer.public_key)
+                    except SSHError as exc:
+                        logger.warning(
+                            "Stale-peer remove SSH error peer {}: {} — строку оставляем",
+                            peer.id, exc,
+                        )
+                        kept.add(peer.id)
+        except SSHError as exc:
+            logger.warning("Stale-peer SSH connect error server {}: {}", server_id, exc)
+            kept.update(p.id for p in plist)
+
+    deleted = 0
+    for peer in stale:
+        if peer.id in kept:
+            logger.warning(
+                "Skipping DB delete peer {} — пир не снят с сервера, повторим на следующем тике",
+                peer.id,
+            )
+            continue
+        await repo.delete_peer(session, peer.id)
+        deleted += 1
+        logger.info("Auto-deleted stale revoked peer {} ({})", peer.id, peer.label)
+    return deleted
+
+
+async def purge_stale_wdtt(session, stale: list) -> int:
+    """Снимает с серверов и удаляет давно отозванные резервные подключения.
+
+    Правило то же, что у пиров (`purge_stale_peers`), и по той же причине: в
+    строке лежит единственный пароль, которым доступ снимается с wdtt-сервера.
+    Удалив строку раньше снятия, мы оставляем рабочее подключение, закрыть
+    которое больше нечем.
+    """
+    by_srv: dict[int, list] = {}
+    for acc in stale:
+        by_srv.setdefault(acc.server_id, []).append(acc)
+
+    kept: set[int] = set()
+    for server_id, alist in by_srv.items():
+        server = await repo.get_server(session, server_id)
+        if not server:
+            continue
+        try:
+            async with SSHClient(repo.creds_from_server(server)) as ssh:
+                for acc in alist:
+                    try:
+                        await wdtt_svc.remove_access(
+                            ssh, password=decrypt(acc.password_enc),
+                            binary=settings.wdtt_binary_path,
+                        )
+                    except SSHError as exc:
+                        logger.warning(
+                            "Stale-wdtt remove SSH error acc {}: {} — строку оставляем",
+                            acc.id, exc,
+                        )
+                        kept.add(acc.id)
+        except SSHError as exc:
+            logger.warning("Stale-wdtt SSH connect error server {}: {}", server_id, exc)
+            kept.update(a.id for a in alist)
+
+    deleted = 0
+    for acc in stale:
+        if acc.id in kept:
+            logger.warning(
+                "Skipping DB delete wdtt {} — доступ не снят с сервера, повторим позже",
+                acc.id,
+            )
+            continue
+        await repo.delete_wdtt_access(session, acc.id)
+        deleted += 1
+        logger.info("Auto-deleted stale revoked wdtt access {} ({})", acc.id, acc.label)
+    return deleted
+
+
 async def _poll_platega_payments(session) -> None:
     """Сверяет неоплаченные счета Platega: CONFIRMED → зачислить (идемпотентно),
     CANCELED/CHARGEBACKED → закрыть. Ошибки API не валят тик.
@@ -445,36 +550,7 @@ async def _run_checks() -> None:
             )).scalars())
 
             if stale:
-                # На случай, если отзыв на сервере когда-то не прошёл по SSH, —
-                # best-effort убираем пир с сервера, затем удаляем строку из БД.
-                # Группируем по серверу: один SSH-коннект на сервер. Если коннект
-                # не поднялся, строку НЕ удаляем: в ней единственные ключи, чтобы
-                # снять пир, — повторим на следующем тике.
-                by_srv: dict[int, list[Peer]] = {}
-                for p in stale:
-                    by_srv.setdefault(p.server_id, []).append(p)
-                failed_srv: set[int] = set()
-                for server_id, plist in by_srv.items():
-                    server = await repo.get_server(session, server_id)
-                    if not server:
-                        continue
-                    try:
-                        async with SSHClient(repo.creds_from_server(server)) as ssh:
-                            for p in plist:
-                                try:
-                                    await amnezia.remove_peer_on_server(ssh, public_key=p.public_key)
-                                except SSHError as exc:
-                                    logger.warning("Stale-peer remove SSH error peer {}: {}", p.id, exc)
-                    except SSHError as exc:
-                        logger.warning("Stale-peer SSH connect error server {}: {}", server_id, exc)
-                        failed_srv.add(server_id)
-
-                for p in stale:
-                    if p.server_id in failed_srv:
-                        logger.warning("Skipping DB delete peer {} — SSH connect failed, retry next tick", p.id)
-                        continue
-                    await repo.delete_peer(session, p.id)
-                    logger.info("Auto-deleted stale revoked peer {} ({})", p.id, p.label)
+                await purge_stale_peers(session, stale)
                 # Фиксируем удаления сразу — как и отзывы выше, чтобы поздний сбой
                 # в секции трафика их не откатил.
                 await session.commit()
@@ -496,34 +572,7 @@ async def _run_checks() -> None:
             )).scalars())
 
             if stale_wdtt:
-                by_srv_sw: dict[int, list[WdttAccess]] = {}
-                for a in stale_wdtt:
-                    by_srv_sw.setdefault(a.server_id, []).append(a)
-                failed_srv_w: set[int] = set()
-                for server_id, alist in by_srv_sw.items():
-                    server = await repo.get_server(session, server_id)
-                    if not server:
-                        continue
-                    try:
-                        async with SSHClient(repo.creds_from_server(server)) as ssh:
-                            for a in alist:
-                                try:
-                                    await wdtt_svc.remove_access(
-                                        ssh, password=decrypt(a.password_enc),
-                                        binary=settings.wdtt_binary_path,
-                                    )
-                                except SSHError as exc:
-                                    logger.warning("Stale-wdtt remove SSH error acc {}: {}", a.id, exc)
-                    except SSHError as exc:
-                        logger.warning("Stale-wdtt SSH connect error server {}: {}", server_id, exc)
-                        failed_srv_w.add(server_id)
-
-                for a in stale_wdtt:
-                    if a.server_id in failed_srv_w:
-                        logger.warning("Skipping DB delete wdtt {} — SSH connect failed, retry next tick", a.id)
-                        continue
-                    await repo.delete_wdtt_access(session, a.id)
-                    logger.info("Auto-deleted stale revoked wdtt access {} ({})", a.id, a.label)
+                await purge_stale_wdtt(session, stale_wdtt)
                 await session.commit()
         except Exception:
             logger.exception("Scheduler section 2a (stale wdtt) failed")
@@ -737,11 +786,33 @@ async def run() -> None:
             now = datetime.now(timezone.utc)
             if backup_svc.nightly_due(now):
                 logger.info("Starting nightly backup")
-                filename = await backup_svc.send_backup_to_admins()
-                backup_svc.mark_done(now)
-                logger.info("Nightly backup sent: {}", filename)
+                try:
+                    filename = await backup_svc.send_backup_to_admins()
+                except Exception as exc:
+                    logger.exception("Nightly backup failed")
+                    # Молчащий бэкап — классический способ однажды потерять всё:
+                    # в логи никто не смотрит, а файл просто перестаёт приходить.
+                    # Текстовую тревогу шлём один раз за ночь и ОТДЕЛЬНЫМ
+                    # сообщением: она пролезет даже тогда, когда не пролезает сам
+                    # архив (например, база переросла лимит Telegram в 50 МБ —
+                    # самая вероятная причина постоянного отказа).
+                    if backup_svc.mark_attempt(now):
+                        left = backup_svc.MAX_ATTEMPTS_PER_DAY - 1
+                        for admin_id in settings.admin_ids:
+                            await _notify(
+                                admin_id,
+                                "⚠️ <b>Ночной бэкап не ушёл</b>\n"
+                                f"<code>{str(exc)[:200]}</code>\n\n"
+                                f"Попробую ещё {left} раз(а) сегодня. "
+                                "Если бэкапов нет несколько дней — проверь "
+                                "размер базы: Telegram не принимает файлы "
+                                "больше 50 МБ.",
+                            )
+                else:
+                    backup_svc.mark_done(now)
+                    logger.info("Nightly backup sent: {}", filename)
         except Exception:
-            logger.exception("Nightly backup failed")
+            logger.exception("Nightly backup section failed")
 
         # ── 5. Проверка живости ссылок на обход-приложения ──────────────────
         # Раз в linkcheck_interval_days дней курлим ссылки из wdtt._PLATFORMS

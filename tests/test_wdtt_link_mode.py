@@ -31,10 +31,13 @@ def _link(platform: str | None) -> str:
 
 class TestCreated:
     def test_android_gets_the_toggle_step(self):
+        """Проверяем НУМЕРАЦИЮ и наличие шагов, а не дословную формулировку:
+        тексты переверстываются, а требование «шаг про тумблер второй, шаг про
+        ссылку третий» — постоянное."""
         text = _created("android")
         assert "Режим ссылки" in text
         assert "2️⃣ Запусти приложение" in text
-        assert "3️⃣ Скопируй ссылку" in text
+        assert text.index("3️⃣") < text.index("<code>")   # шаг со ссылкой — третий
 
     def test_ios_has_no_toggle_step(self):
         text = _created("ios")
@@ -44,8 +47,11 @@ class TestCreated:
         assert "Режим ссылки" not in _created("pc")
 
     def test_numbering_has_no_hole_without_the_step(self):
+        """Без шага про тумблер ссылка становится ВТОРЫМ шагом, а не третьим:
+        нумерация не должна прыгать с «1, 3»."""
         text = _created("ios")
-        assert "2️⃣ Скопируй ссылку" in text
+        assert "2️⃣" in text
+        assert text.index("2️⃣") < text.index("<code>")
         assert "3️⃣" not in text
 
     def test_steps_are_in_order_on_android(self):

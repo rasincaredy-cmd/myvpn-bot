@@ -39,7 +39,11 @@ def build_tariffs_text() -> str:
             f"• {TERM_LABELS[months]} — <b>{fmt_rub(price)}</b> (−{discount}%)"
         )
 
+    year = term_price_kopeks(base, 12)
     return t.tariffs.format(
+        year=fmt_rub(year),
+        year_full=fmt_rub(base * 12),
+        year_discount=TERM_DISCOUNTS[12],
         first=fmt_rub(first),
         extra_device=fmt_rub(settings.price_extra_device_rub * 100),
         extra_bypass=fmt_rub(settings.price_extra_bypass_rub * 100),

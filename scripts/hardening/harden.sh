@@ -39,6 +39,34 @@ OWN_IP="$(ip route get 1.1.1.1 2>/dev/null | awk '{for (i = 1; i <= NF; i++) if 
 is_ipv4 "$OWN_IP" || OWN_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 is_ipv4 "$OWN_IP" || OWN_IP=""
 
+# Адрес управляющего хоста — того, откуда пришёл бот. Он ОБЯЗАН попасть в белый
+# список банилки, иначе пять неудачных попыток SSH подряд (например, во время
+# смены ключа) забанят бота на час: перестанут идти проверки живости, выдача
+# конфигов и отзывы.
+#
+# Раньше в списке был только OWN_IP — собственный адрес ноды. На первой ноде
+# это работало по совпадению: бот живёт на ней же. На второй (Германия) адрес
+# бота в списке уже не оказался, и мина стояла взведённой, невидимая (найдено
+# аудитом 20.08.2026).
+#
+# Берём из SSH_CONNECTION: сценарий запускает бот по SSH, и sshd кладёт туда
+# адрес клиента. Запомненное значение переживает локальные запуски (из cron
+# или руками), где переменной нет.
+MANAGER_IP_FILE="/root/.harden_manager_ip"
+MANAGER_IP="${MANAGER_IP:-}"
+if [ -z "$MANAGER_IP" ] && [ -n "${SSH_CONNECTION:-}" ]; then
+  MANAGER_IP="${SSH_CONNECTION%% *}"
+fi
+is_ipv4 "$MANAGER_IP" || MANAGER_IP=""
+if [ -n "$MANAGER_IP" ]; then
+  printf '%s' "$MANAGER_IP" > "$MANAGER_IP_FILE" 2>/dev/null || true
+elif [ -r "$MANAGER_IP_FILE" ]; then
+  MANAGER_IP="$(cat "$MANAGER_IP_FILE" 2>/dev/null)"
+  is_ipv4 "$MANAGER_IP" || MANAGER_IP=""
+fi
+# Совпал с собственным адресом — второй раз в список не пишем.
+[ "$MANAGER_IP" = "$OWN_IP" ] && MANAGER_IP=""
+
 FAILED=0
 ok()   { echo "OK   $*"; }
 fail() { echo "FAIL $*"; FAILED=1; }
@@ -195,6 +223,11 @@ check_fail2ban() {
   fi
   grep -qF -- "$VPN_SUBNET" "$jail" || missing="${missing}VPN_SUBNET "
   grep -qF -- "$BYPASS_SUBNET" "$jail" || missing="${missing}BYPASS_SUBNET "
+  # Адрес управляющего хоста проверяем, только когда он известен: при локальном
+  # запуске без SSH_CONNECTION и без запомненного файла требовать его нечестно.
+  if [ -n "$MANAGER_IP" ] && ! grep -qF -- "$MANAGER_IP" "$jail"; then
+    missing="${missing}MANAGER_IP "
+  fi
 
   if [ -z "$missing" ]; then
     ok "белый список банилки на месте"
@@ -444,7 +477,7 @@ cmd_apply_fail2ban() {
 
   cat > /etc/fail2ban/jail.local <<CONF
 [DEFAULT]
-ignoreip = 127.0.0.1/8 ::1 ${OWN_IP} ${VPN_SUBNET} ${BYPASS_SUBNET}
+ignoreip = 127.0.0.1/8 ::1 ${OWN_IP}${MANAGER_IP:+ $MANAGER_IP} ${VPN_SUBNET} ${BYPASS_SUBNET}
 bantime  = 1h
 findtime = 10m
 maxretry = 5

@@ -371,19 +371,26 @@ async def charge_and_extend(
         )
         return ChargeResult(ok=False)
     price = term_price_kopeks(monthly_price_kopeks(devices, bypass), months)
-    if user.balance_kopeks < price:
-        return ChargeResult(
-            ok=False, price_kopeks=price,
-            missing_kopeks=price - user.balance_kopeks,
-        )
-
-    await repo.add_balance_tx(
-        session, user.id, -price, "charge",
+    # Списываем УСЛОВНО: проверка «хватает ли» стоит внутри самого UPDATE.
+    # Раздельные «прочитал баланс → списал» оставляли окно на время SSH-оживления
+    # устройств (секунды): второй тап «Купить» читал ещё не изменённый баланс,
+    # проходил проверку и списывал второй раз (аудит 20.08.2026).
+    charged = await repo.charge_balance(
+        session, user.id, price,
         note=(
             f"Подписка {months} мес (устройств: {devices}, "
             f"рез. подключений: {bypass})"
         ),
     )
+    if not charged:
+        # Свежий баланс читаем ПОСЛЕ отказа: тот, что в объекте юзера, мог
+        # устареть — из-за этого «не хватает» и называлось бы неверной цифрой.
+        await session.refresh(user)
+        return ChargeResult(
+            ok=False, price_kopeks=price,
+            missing_kopeks=max(0, price - user.balance_kopeks),
+        )
+
     new_expiry, rv = await _extend(session, user, months, devices, bypass)
     logger.info(
         "Sub charge: user {} -{} kopeks, {} mo, until {}",

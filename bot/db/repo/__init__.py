@@ -17,6 +17,7 @@ from bot.db.repo.audit import (
 )
 from bot.db.repo.billing import (
     add_balance_tx,
+    charge_balance,
     count_referrals,
     create_crypto_invoice,
     create_platega_payment,
@@ -105,6 +106,7 @@ from bot.db.repo.wipe import purge_user_records
 __all__ = [
     "accept_terms",
     "add_balance_tx",
+    "charge_balance",
     "add_support_route",
     "backfill_devices",
     "count_active_devices",

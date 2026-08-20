@@ -30,6 +30,36 @@ async def add_balance_tx(
     await session.flush()
 
 
+async def charge_balance(
+    session: AsyncSession, user_id: int, price_kopeks: int, note: str | None = None
+) -> bool:
+    """Списывает деньги ТОЛЬКО если их хватает. True — списали, False — нет.
+
+    Условие «хватает» стоит внутри самого UPDATE, а не отдельным чтением до
+    него. Иначе между проверкой и списанием остаётся окно: покупка успевает
+    сходить по SSH оживлять устройства (секунды), второй тап «Купить» читает
+    ещё не изменённый баланс, проходит проверку — и списывает второй раз.
+    Троттлинг в 0.7 с это окно не закрывает.
+
+    Строка журнала пишется только при успехе: отказ, оставивший запись о
+    списании, юзер прочитал бы как «деньги сняли».
+
+    Коммит — на вызывающем.
+    """
+    res = await session.execute(
+        update(User)
+        .where(User.id == user_id, User.balance_kopeks >= price_kopeks)
+        .values(balance_kopeks=User.balance_kopeks - price_kopeks)
+    )
+    if res.rowcount == 0:
+        return False
+    session.add(BalanceTx(
+        user_id=user_id, amount_kopeks=-price_kopeks, kind="charge", note=note
+    ))
+    await session.flush()
+    return True
+
+
 async def list_balance_txs(
     session: AsyncSession, user_id: int, limit: int = 10
 ) -> list[BalanceTx]:

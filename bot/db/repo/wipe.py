@@ -8,6 +8,7 @@ from bot.db.models import (
     AuditLog,
     BalanceTx,
     CryptoInvoice,
+    PlategaPayment,
     StarPayment,
     SupportMsg,
     User,
@@ -44,6 +45,13 @@ async def purge_user_records(session: AsyncSession, user_id: int) -> dict[str, i
     # ради идемпотентности зачисления, а зачислять уже некому — юзера нет.
     counts["star_payments"] = (await session.execute(
         delete(StarPayment).where(StarPayment.user_id == user_id)
+    )).rowcount or 0
+    # Карточные платежи чистим по той же причине, что и остальные деньги, и
+    # ещё по одной: `pending`-строка стёртого юзера досталась бы следующему
+    # зарегистрировавшемуся (id переиспользуется, см. выше), и поллинг
+    # планировщика зачислил бы ЕМУ чужую оплату. Найдено аудитом 20.08.2026.
+    counts["platega_payments"] = (await session.execute(
+        delete(PlategaPayment).where(PlategaPayment.user_id == user_id)
     )).rowcount or 0
     counts["support_msgs"] = (await session.execute(
         delete(SupportMsg).where(SupportMsg.user_id == user_id)

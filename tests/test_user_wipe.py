@@ -176,3 +176,56 @@ class TestWipeDeletesClearedConfigs:
 
         assert (await session.get(Peer, peer_id)) is None
         assert (await session.get(WdttAccess, access_id)) is None
+
+
+class TestPlategaRowsArePurged:
+    """Платежи Platega при стирании юзера оставались в базе (аудит 20.08.2026).
+
+    Инвойсы CryptoBot и звёздные платежи чистились, а карточные — нет. Два
+    следствия, и второе денежное:
+
+    1. Обещание «сотрите мои данные» не выполнялось: записи об оплатах
+       оставались лежать с id стёртого человека.
+    2. `users.id` объявлен БЕЗ AUTOINCREMENT, и SQLite переиспользует
+       освободившийся максимальный rowid — этим же файл и мотивирует чистку
+       журналов. Значит `pending`-платёж стёртого юзера доставался следующему
+       зарегистрировавшемуся, и поллинг планировщика зачислял бы ЕМУ чужие
+       деньги.
+    """
+
+    @pytest.mark.asyncio
+    async def test_platega_rows_are_deleted(self, session: AsyncSession) -> None:
+        from sqlalchemy import select
+
+        from bot.db.models import PlategaPayment
+
+        user = await repo.get_or_create_user(
+            session, tg_id=9101, username="u", full_name="U"
+        )
+        await repo.create_platega_payment(
+            session, user_id=user.id, transaction_id="tx-wipe-1",
+            amount_kopeks=50000, url="https://example.com/pay",
+        )
+        await session.flush()
+
+        await repo.purge_user_records(session, user.id)
+
+        left = (await session.execute(
+            select(PlategaPayment).where(PlategaPayment.user_id == user.id)
+        )).scalars().all()
+        assert not left, "платежи Platega пережили стирание юзера"
+
+    @pytest.mark.asyncio
+    async def test_purge_reports_the_count(self, session: AsyncSession) -> None:
+        """Счётчик нужен админу в отчёте о стирании: «удалено N записей»."""
+        user = await repo.get_or_create_user(
+            session, tg_id=9102, username="u", full_name="U"
+        )
+        await repo.create_platega_payment(
+            session, user_id=user.id, transaction_id="tx-wipe-2",
+            amount_kopeks=50000, url="https://example.com/pay",
+        )
+        await session.flush()
+
+        counts = await repo.purge_user_records(session, user.id)
+        assert counts.get("platega_payments") == 1

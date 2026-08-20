@@ -1,7 +1,7 @@
 """Доступы обхода БС (WdttAccess): выдача, выборки, отзыв, возврат, удаление."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -101,3 +101,20 @@ async def delete_wdtt_access(session: AsyncSession, access_id: int) -> None:
     if access is not None:
         await session.delete(access)
         await session.flush()
+
+
+async def strand_wdtt_access(session: AsyncSession, access_id: int) -> None:
+    """Помечает доступ, который не удалось снять с сервера, как ждущий уборки.
+
+    Дата отзыва в прошлом — чтобы уборка планировщика взяла строку на ближайшем
+    тике, а не через месяц: месяц ожидания это месяц бесплатного подключения.
+    """
+    from bot.services.scheduler import REVOKED_RETENTION_DAYS
+
+    stale_ts = datetime.now(timezone.utc) - timedelta(days=REVOKED_RETENTION_DAYS + 1)
+    await session.execute(
+        update(WdttAccess)
+        .where(WdttAccess.id == access_id)
+        .values(status=PeerStatus.REVOKED, revoked_at=stale_ts)
+    )
+    await session.flush()

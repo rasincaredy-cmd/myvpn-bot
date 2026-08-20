@@ -51,6 +51,7 @@ from bot.db.repo.devices import (
     revoke_device,
 )
 from bot.db.repo.peers import (
+    strand_peers,
     delete_peer,
     get_peer,
     list_grace_expired_peers,
@@ -92,6 +93,7 @@ from bot.db.repo.users import (
     set_user_blocked,
 )
 from bot.db.repo.wdtt import (
+    strand_wdtt_access,
     count_active_wdtt_for_user,
     create_wdtt_access,
     delete_wdtt_access,
@@ -168,6 +170,8 @@ __all__ = [
     "revive_peer",
     "revive_wdtt_access",
     "revoke_device",
+    "strand_peers",
+    "strand_wdtt_access",
     "revoke_peer",
     "revoke_wdtt_access",
     "server_labels_map",

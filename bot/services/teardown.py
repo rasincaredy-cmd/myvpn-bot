@@ -39,6 +39,7 @@ async def delete_device(
     актор и текст приходят параметрами. Коммит — на вызывающем, чтобы событие
     откатилось вместе с удалением."""
     device_id, user_id, label = device.id, device.user_id, device.label
+    stranded: list[int] = []          # пиры, которые снять с сервера не вышло
     for peer in await repo.list_peers_for_device(session, device_id):
         if peer.status != PeerStatus.ACTIVE:
             continue
@@ -49,7 +50,25 @@ async def delete_device(
             async with SSHClient(repo.creds_from_server(server)) as ssh:
                 await amnezia.remove_peer_on_server(ssh, public_key=peer.public_key)
         except SSHError as exc:
-            logger.warning("Teardown device {} peer {} ssh err: {}", device_id, peer.id, exc)
+            logger.warning(
+                "Teardown device {} peer {} ssh err: {} — ключи оставляем",
+                device_id, peer.id, exc,
+            )
+            stranded.append(peer.id)
+    # Не снятые пиры НЕ удаляем: в строке лежит единственный ключ, которым пир
+    # снимается с VPS. Удалив её, мы оставляем на сервере вечный рабочий конфиг
+    # (аудит 20.08.2026). Опаснее, чем та же дыра в ретеншне: удаление жмёт сам
+    # юзер, и поймав момент недоступности ноды он освобождал лимит, не теряя
+    # работающий конфиг, — и добавлял ещё одно устройство.
+    #
+    # Строку переводим в REVOKED и отвязываем от устройства: устройство сейчас
+    # исчезнет, лимит освободится, а уборка планировщика повторит снятие и
+    # удалит строку сама. Дату отзыва ставим в прошлое, чтобы уборка взяла её на
+    # БЛИЖАЙШЕМ тике: обычные отозванные ждут месяц ради оживления при
+    # продлении, а здесь оживлять нечего — устройства больше нет, и каждый день
+    # ожидания это день бесплатного VPN.
+    if stranded:
+        await repo.strand_peers(session, stranded)
     await repo.delete_device(session, device_id)
     await repo.log_action(
         session, AuditAction.CONFIG_REVOKED,
@@ -77,9 +96,16 @@ async def revoke_bypass(
     Событие журнала — здесь же и по той же причине, что у delete_device: путей
     удаления обхода три (юзер, карточка юзера в админке, карточка сервера)."""
     access_id, user_id, label = access.id, access.user_id, access.label
+    removed = True
     if access.status == PeerStatus.ACTIVE:
-        await _remove_bypass_on_server(session, access)
-    await repo.delete_wdtt_access(session, access_id)
+        removed = await _remove_bypass_on_server(session, access)
+    if removed:
+        await repo.delete_wdtt_access(session, access_id)
+    else:
+        # Симметрично устройствам: не снятый доступ оставляем со своим паролем,
+        # помечаем отозванным и датой в прошлом — уборка планировщика повторит
+        # снятие на ближайшем тике и удалит строку сама.
+        await repo.strand_wdtt_access(session, access_id)
     await repo.log_action(
         session, AuditAction.CONFIG_REVOKED,
         actor_tg_id=actor_tg_id,
@@ -91,15 +117,22 @@ async def revoke_bypass(
     )
 
 
-async def _remove_bypass_on_server(session: AsyncSession, access: WdttAccess) -> None:
+async def _remove_bypass_on_server(session: AsyncSession, access: WdttAccess) -> bool:
+    """Снимает пароль доступа с wdtt-сервера. False — снять не удалось.
+
+    Ответ важен вызывающему: в строке лежит единственный пароль, которым доступ
+    закрывается. Удалив её после неудачного снятия, мы оставляем рабочее
+    подключение навсегда (аудит 20.08.2026)."""
     server = await repo.get_server(session, access.server_id)
     if server is None:
-        return
+        return True     # сервера нет — снимать нечего и не с чего
     try:
         async with SSHClient(repo.creds_from_server(server)) as ssh:
             await wdtt_svc.remove_access(
                 ssh, password=decrypt(access.password_enc),
                 binary=settings.wdtt_binary_path,
             )
+        return True
     except SSHError as exc:
-        logger.warning("Teardown bypass {} ssh err: {}", access.id, exc)
+        logger.warning("Teardown bypass {} ssh err: {} — ключи оставляем", access.id, exc)
+        return False

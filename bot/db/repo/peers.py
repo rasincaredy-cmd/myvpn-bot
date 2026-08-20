@@ -1,7 +1,7 @@
 """Пиры (конфиги AmneziaWG): выборки, отзыв, возврат, удаление."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -125,3 +125,22 @@ async def delete_peer(session: AsyncSession, peer_id: int) -> None:
     if peer is not None:
         await session.delete(peer)
         await session.flush()
+
+async def strand_peers(session: AsyncSession, peer_ids: list[int]) -> None:
+    """Помечает пиры, которые не удалось снять с сервера, как ждущие уборки.
+
+    Статус REVOKED + отвязка от устройства + дата отзыва В ПРОШЛОМ. Прошлое —
+    намеренно: уборка планировщика берёт отозванные строки старше
+    REVOKED_RETENTION_DAYS, и без этого пир ждал бы своей очереди месяц, работая
+    на сервере бесплатно. Ждать здесь нечего — устройства уже нет, оживлять
+    нечего (оживление ходит по устройствам).
+    """
+    from bot.services.scheduler import REVOKED_RETENTION_DAYS
+
+    stale_ts = datetime.now(timezone.utc) - timedelta(days=REVOKED_RETENTION_DAYS + 1)
+    await session.execute(
+        update(Peer)
+        .where(Peer.id.in_(peer_ids))
+        .values(status=PeerStatus.REVOKED, device_id=None, revoked_at=stale_ts)
+    )
+    await session.flush()

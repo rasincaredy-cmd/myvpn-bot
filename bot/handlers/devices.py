@@ -127,11 +127,20 @@ async def cb_dev_add(call: CallbackQuery, state: FSMContext, session: AsyncSessi
         full_name=call.from_user.full_name,
     )
     if not _sub_active(user):
-        await call.answer(
-            "Подписка закончилась. Продли её в разделе «🎫 Подписка» — "
-            "устройства оживут сами.",
-            show_alert=True,
+        # Экран, а не всплывашка: человек только что нажал «добавить», то есть
+        # готов пользоваться сервисом — ему нужна кнопка оплаты, а не отказ.
+        await call.message.edit_text(
+            ui.screen(
+                ui.title("🎫", "Подписка закончилась"),
+                lead="Добавить устройство сейчас нельзя — VPN на паузе.",
+                note=(
+                    "Продли подписку — прежние устройства оживут сами, "
+                    "заново настраивать ничего не придётся."
+                ),
+            ),
+            reply_markup=limit_reached_kb(f"{CB_DEVICE}:list", "🔁 Продлить подписку"),
         )
+        await call.answer()
         return
     used = await repo.count_active_devices(session, user.id)
     if used >= user.sub_max_devices:
@@ -459,7 +468,7 @@ async def cb_sub_my(call: CallbackQuery, session: AsyncSession) -> None:
     used = await repo.count_active_devices(session, user.id)
     bypass = await repo.count_active_wdtt_for_user(session, user.id)
     from bot.config import settings
-    from bot.services import billing, cryptopay
+    from bot.services import cryptopay
     from bot.services.pricing import fmt_rub, monthly_price_kopeks
 
     active = _sub_active(user)

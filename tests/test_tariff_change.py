@@ -328,3 +328,38 @@ class TestChangeTariff:
         assert res.reason == "in_use"
         assert res.used_devices == 2
         assert user.sub_max_devices == 3
+
+    @pytest.mark.asyncio
+    async def test_ceiling_is_enforced_on_switch(self, session: AsyncSession) -> None:
+        """Потолок тарифа обязан стоять и на смене, а не только на покупке.
+
+        Найдено проверкой безопасности 20.08.2026: callback_data подделывается
+        руками, и `chgok:50:50` проходил все проверки смены — потолок 10/10
+        жил только в хендлере покупки. Денег это не крало (дорогой тариф
+        съедает срок пропорционально), но лимит, записанный в коде, обязан
+        соблюдаться на всех путях.
+        """
+        now = datetime.now(timezone.utc)
+        user = await _make_user(
+            session, tg_id=522,
+            sub_max_devices=1, sub_max_bypass=0,
+            sub_expires_at=now + timedelta(days=365 * 50),  # срока хватит с запасом
+            is_trial=False,
+        )
+        res = await billing.change_tariff(session, user, max_devices=50, max_bypass=0)
+        assert not res.ok
+        assert res.reason == "too_big"
+        assert user.sub_max_devices == 1
+
+    @pytest.mark.asyncio
+    async def test_ceiling_follows_admin_grant(self, session: AsyncSession) -> None:
+        """Если админ выдал юзеру больше стандартного потолка — его тариф и
+        есть его потолок: молча срезать выданное нельзя."""
+        now = datetime.now(timezone.utc)
+        user = await _make_user(
+            session, tg_id=523,
+            sub_max_devices=25, sub_max_bypass=0,
+            sub_expires_at=now + timedelta(days=100), is_trial=False,
+        )
+        res = await billing.change_tariff(session, user, max_devices=24, max_bypass=0)
+        assert res.ok, f"отказ по причине {res.reason}"

@@ -194,15 +194,17 @@ def back_to_devices_kb() -> InlineKeyboardMarkup:
     kb.adjust(1)
     return kb.as_markup()
 
-def limit_reached_kb(back_to: str) -> InlineKeyboardMarkup:
-    """Выход из тупика «достигнут лимит».
+def limit_reached_kb(back_to: str, label: str = "⚙️ Сменить тариф") -> InlineKeyboardMarkup:
+    """Выход из тупика: одна кнопка к экрану тарифа и возврат.
 
-    До 20.08.2026 здесь была всплывашка «Достигнут лимит устройств (1/1)» и
-    больше ничего: человек упирался в стену ровно в тот момент, когда хотел
-    заплатить больше. Теперь у стены есть дверь.
+    До 20.08.2026 на месте таких экранов были всплывашки — «Достигнут лимит
+    устройств (1/1)», «Подписка закончилась» — и больше ничего: человек
+    упирался в стену ровно в тот момент, когда готов был заплатить. Теперь у
+    стены есть дверь, а подпись на ней зависит от того, что человеку нужно:
+    сменить тариф или продлить подписку.
     """
     kb = InlineKeyboardBuilder()
-    kb.button(text="⚙️ Сменить тариф", callback_data=f"{CB_BAL}:extend", style="primary")
+    kb.button(text=label, callback_data=f"{CB_BAL}:extend", style="primary")
     kb.button(text="‹ Назад", callback_data=back_to)
     kb.adjust(1)
     return kb.as_markup()

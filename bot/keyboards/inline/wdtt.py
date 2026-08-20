@@ -4,7 +4,7 @@ from __future__ import annotations
 from aiogram.types import InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from bot.keyboards.inline.prefixes import CB_CANCEL, CB_MENU, CB_WDTT
+from bot.keyboards.inline.prefixes import CB_BAL, CB_CANCEL, CB_MENU, CB_WDTT
 
 
 def wdtt_vk_choice_kb() -> InlineKeyboardMarkup:
@@ -32,6 +32,7 @@ def wdtt_user_list_kb(
     page: int = 0,
     has_prev: bool = False,
     has_next: bool = False,
+    offer_tariff: bool = False,  # в тарифе ноль подключений — предложить добавить
 ) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     for access_id, mark, label, server_name in rows:
@@ -41,6 +42,11 @@ def wdtt_user_list_kb(
         )
     if can_create:
         kb.button(text="➕ Добавить", callback_data=f"{CB_WDTT}:new")
+    elif offer_tariff:
+        # Текст говорил «добавь в подписке», а кнопки не было: человека
+        # отправляли искать раздел руками (Блок «Тариф»).
+        kb.button(text="⚙️ Сменить тариф", callback_data=f"{CB_BAL}:extend",
+                  style="primary")
     if has_prev:
         kb.button(text="← Назад",  callback_data=f"{CB_WDTT}:my:{page - 1}")
     if has_next:

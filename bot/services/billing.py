@@ -22,6 +22,7 @@ from bot.services.pricing import (
     DEPOSIT_METHOD_LABELS,
     TERM_DISCOUNTS,
     convert_remaining,
+    tariff_ceiling,
     deposit_bonus_kopeks,
     monthly_price_kopeks,
     term_price_kopeks,
@@ -242,6 +243,11 @@ async def change_tariff(
     """
     if max_devices < 0 or max_bypass < 0 or max_devices + max_bypass < 1:
         return TariffChangeResult(ok=False, reason="empty")
+    # Потолок проверяем и здесь: callback_data подделывается руками, а до
+    # 20.08.2026 предел 10/10 жил только в хендлере покупки.
+    ceil_dev, ceil_byp = tariff_ceiling(user.sub_max_devices, user.sub_max_bypass)
+    if max_devices > ceil_dev or max_bypass > ceil_byp:
+        return TariffChangeResult(ok=False, reason="too_big")
     if max_devices == user.sub_max_devices and max_bypass == user.sub_max_bypass:
         return TariffChangeResult(ok=False, reason="same")
     if user.is_trial:

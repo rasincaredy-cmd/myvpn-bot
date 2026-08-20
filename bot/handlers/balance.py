@@ -46,6 +46,7 @@ from bot.services.pricing import (
     fmt_rub,
     monthly_price_kopeks,
     stars_for_kopeks,
+    tariff_ceiling,
     term_price_kopeks,
 )
 from bot.states.install import BalanceStates
@@ -80,9 +81,6 @@ def _star_amounts() -> list[tuple[int, str]]:
         for rub, _label in _deposit_amounts()
     ]
 
-
-# Пределы тарифа на экране продления.
-_MAX_DEVICES, _MAX_BYPASS = 10, 10
 
 # Стартовое положение конструктора — типовой тариф, а не витринный. Два
 # устройства с подключением стоят 160 ₽, это выше рыночной медианы ~150 ₽, и
@@ -706,13 +704,13 @@ def _term_price_rows(devices: int, bypass: int) -> list[tuple[int, str]]:
 
 
 def _tariff_bounds(user) -> tuple[int, int]:
-    """Потолки конструктора. Обычно 10/10, но если админ выставил юзеру больше —
-    показываем честно, а не срезаем молча (иначе покупка тихо даунгрейдила бы
-    тариф до 10 и лишние устройства переставали бы оживать)."""
-    return (
-        max(_MAX_DEVICES, user.sub_max_devices),
-        max(_MAX_BYPASS, user.sub_max_bypass),
-    )
+    """Потолки конструктора для этого юзера.
+
+    Само правило живёт в прайсинге (`tariff_ceiling`): его обязаны соблюдать и
+    покупка, и смена тарифа, а два определения одного предела разъехались бы —
+    что и случилось до 20.08.2026, когда смена его вовсе не проверяла.
+    """
+    return tariff_ceiling(user.sub_max_devices, user.sub_max_bypass)
 
 
 def _clamp_tariff(user, devices: int, bypass: int) -> tuple[int, int]:
@@ -842,6 +840,7 @@ _SWITCH_REFUSALS = {
         "новый тариф заработает сразу."
     ),
     "same": "Это твой текущий тариф — менять нечего.",
+    "too_big": "Такой тариф мы не продаём — выбери поменьше.",
     "empty": "В тарифе должна остаться хотя бы одна позиция.",
 }
 

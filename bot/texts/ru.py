@@ -1,6 +1,23 @@
 """Все тексты бота. HTML — бот инициализирован с ParseMode.HTML."""
 from __future__ import annotations
 
+# Айфон — отдельная история, и до 20.08.2026 бот отвечал на неё ссылкой на
+# документацию Amnezia. Ссылка живая и правильная, но это НЕ скачивание: человек
+# уходит на сторонний сайт читать длинную страницу вместо того, чтобы сделать то,
+# что все и так делают, — сменить страну магазина. Влад: «пользователь Айфона
+# имеет 5 извилин, он в настройках меняет регион, сейчас так все делают».
+#
+# Текст один на все четыре экрана, где заходит речь об установке: раньше их было
+# четыре копии, и правка в одной оставляла три старых.
+IOS_INSTALL = (
+    "• 🍏 iPhone — в российском App Store приложения нет, и лечится это сменой "
+    "страны магазина: <b>Настройки → твоё имя → Медиаматериалы и покупки → "
+    "Просмотреть → Страна/регион</b>. Бери, например, Казахстан, способ "
+    "оплаты — «Нет» (нужен нулевой баланс Apple ID и никаких активных "
+    "подписок). Дальше ищи <b>AmneziaVPN</b> в App Store и ставь как обычно. "
+    "Страну потом можно вернуть — приложение останется на месте.\n"
+)
+
 
 class t:
     # ---------- Общее ----------
@@ -50,10 +67,9 @@ class t:
         "🤔 <b>Смотрю, подключиться так и не вышло</b>\n\n"
         "Ты добавил устройство и забрал конфиг, но через VPN не прошло ещё ни "
         "байта. Значит, где-то застопорилось — и почти всегда это одно из трёх:\n\n"
-        "1️⃣ <b>Не встало приложение.</b> На iPhone AmneziaVPN в российском "
-        "App Store скрыт — нужна отдельная инструкция: "
-        "https://docs.amnezia.org/documentation/instructions/installing-amneziavpn-on-ios/\n"
-        "На Android, если Google Play не открывается, бери с сайта: "
+        "1️⃣ <b>Не встало приложение.</b>\n"
+        + IOS_INSTALL +
+        "• 🤖 Android — если Google Play не открывается, бери с сайта: "
         "https://amnezia.org/downloads\n"
         "2️⃣ <b>Конфиг не добавился.</b> В AmneziaVPN нужно нажать «＋» и "
         "выбрать способ — вставить ссылку, открыть файл или снять QR-код.\n"
@@ -84,16 +100,16 @@ class t:
         "напрямую нам, ответ — в этот чат.{contact_block}\n\n"
         "<blockquote expandable>💡 <b>Как подключить VPN — 3 шага</b>\n"
         "1. Установи бесплатное приложение <b>AmneziaVPN</b>:\n"
-        "   • Android — https://play.google.com/store/apps/details?id=org.amnezia.vpn\n"
-        "   • iPhone — в App Store из РФ приложение скрыто, вот инструкция: "
-        "https://docs.amnezia.org/documentation/instructions/installing-amneziavpn-on-ios/\n"
-        "   • Компьютер — https://amnezia.org/downloads\n"
+        "• 🤖 Android — https://play.google.com/store/apps/details?id=org.amnezia.vpn\n"
+        + IOS_INSTALL +
+        "• 💻 Компьютер — https://amnezia.org/downloads\n"
         "2. В боте: «📱 Устройства» → «➕ Добавить устройство» — спрошу, чем "
         "прислать конфиг: файлом, QR-кодом или ссылкой.\n"
         "3. Открой AmneziaVPN, нажми «＋» и добавь конфиг любым способом — "
         "ссылкой, по QR или файлом. Дальше просто жми кнопку подключения.\n\n"
-        "Если основное подключение работает нестабильно — попробуй раздел "
-        "«⚡ Резервное подключение». Сроки и лимиты — в «🎫 Подписка».</blockquote>"
+        "Если интернет опять решит, что тебе хватит госуслуг и погоды — "
+        "загляни в «⚡ Резервное подключение». Сроки и лимиты — "
+        "в «🎫 Подписка».</blockquote>"
     )
 
     # Раздел «Ещё»: только навигация, своего содержимого нет. Пересказывать
@@ -244,10 +260,9 @@ class t:
         "Выше спросил по каждой локации, чем прислать конфиг. Чтобы VPN "
         "заработал:\n"
         "1️⃣ Установи бесплатное приложение <b>AmneziaVPN</b>:\n"
-        "• Android — https://play.google.com/store/apps/details?id=org.amnezia.vpn\n"
-        "• iPhone — в App Store РФ приложение скрыто, вот инструкция: "
-        "https://docs.amnezia.org/documentation/instructions/installing-amneziavpn-on-ios/\n"
-        "• Компьютер — https://amnezia.org/downloads\n"
+        "• 🤖 Android — https://play.google.com/store/apps/details?id=org.amnezia.vpn\n"
+        + IOS_INSTALL +
+        "• 💻 Компьютер — https://amnezia.org/downloads\n"
         "2️⃣ Добавь конфиг: выбери «🔗 Ссылкой», если настраиваешь этот телефон "
         "(нажми ссылку → в AmneziaVPN «＋» → «Вставить из буфера»), «📱 QR-кодом» "
         "для другого устройства или «📄 Файлом» для компьютера.\n"
@@ -276,9 +291,7 @@ class t:
         "• 🤖 Android — Google Play: "
         "https://play.google.com/store/apps/details?id=org.amnezia.vpn\n"
         "  (если Google Play недоступен — скачай с сайта: https://amnezia.org/downloads)\n"
-        "• 🍏 iPhone/iPad — в российском App Store приложение скрыто, вот "
-        "инструкция на 5 минут: "
-        "https://docs.amnezia.org/documentation/instructions/installing-amneziavpn-on-ios/\n"
+        + IOS_INSTALL +
         "• 💻 Компьютер (Windows / Mac / Linux) — https://amnezia.org/downloads\n\n"
         "2️⃣ <b>Добавь VPN в приложение</b> — смотря что выбрал:\n"
         "• 🔗 <b>Ссылкой</b> (настраиваешь этот телефон) — нажми на ссылку "

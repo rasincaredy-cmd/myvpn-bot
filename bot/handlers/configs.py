@@ -463,8 +463,8 @@ async def redeem_invite(
     if used >= user.sub_max_devices:
         await message.answer(
             "🎟 Инвайт принят, но у тебя уже занят весь лимит устройств "
-            f"({used}/{user.sub_max_devices}). Освободи слот в «📱 Мои "
-            "устройства» и открой ссылку ещё раз.",
+            f"({used}/{user.sub_max_devices}). Освободи слот в "
+            "«📱 Устройства» и открой ссылку ещё раз.",
             reply_markup=back_to_menu(),
         )
         return True

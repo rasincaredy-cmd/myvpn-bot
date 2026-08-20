@@ -35,7 +35,7 @@ def server_card(
     server_id: int, wdtt_enabled: bool = False, is_private: bool = False
 ) -> InlineKeyboardMarkup:
     # «➕ Создать peer» убран (Блок «Ревизия»): выдача идёт через подписку юзера
-    # («📱 Мои устройства» — по всем локациям), одиночные пиры — легаси.
+    # («📱 Устройства» — по всем локациям), одиночные пиры — легаси.
     kb = InlineKeyboardBuilder()
     kb.button(text="👥 Peers сервера", callback_data=f"{CB_SERVERS}:peers:{server_id}")
     kb.button(text="🛡 Обходы сервера", callback_data=f"{CB_SERVERS}:wdtt:{server_id}")

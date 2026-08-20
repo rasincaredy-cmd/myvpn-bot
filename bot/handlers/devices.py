@@ -97,8 +97,8 @@ async def cb_dev_list(call: CallbackQuery, session: AsyncSession) -> None:
     elif user.sub_max_devices == 0 and not devices:
         head += (
             "\n\nВ твоём тарифе сейчас нет устройств — только резервное "
-            "подключение. Понадобится VPN — добавь устройства в «🎫 Моя "
-            "подписка» → «🔁 Продлить подписку»."
+            "подключение. Понадобится VPN — добавь их в «🎫 Подписка» → "
+            "«⚙️ Сменить тариф»."
         )
     elif not devices:
         head += (

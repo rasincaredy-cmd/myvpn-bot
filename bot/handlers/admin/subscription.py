@@ -458,7 +458,7 @@ async def cb_panel_sub_give_do(call: CallbackQuery, session: AsyncSession) -> No
             user.tg_id,
             f"🎁 Тебе выдана подписка на <b>{TERM_LABELS.get(months, f'{months} мес')}</b> "
             f"— до {fmt_msk(res.new_expires_at)} МСК.\n"
-            "Загляни в «📱 Мои устройства» — всё уже работает."
+            "Загляни в «📱 Устройства» — всё уже работает."
             + ("\n♻️ Твои устройства восстановлены: прежние конфиги и ссылки "
                "снова действуют." if rv is not None and
                (rv.devices_restored or rv.bypass_restored) else ""),
@@ -536,7 +536,7 @@ async def cb_panel_sub_trial(call: CallbackQuery, session: AsyncSession) -> None
         await tg_bot.send_message(
             user.tg_id,
             f"🎁 Тебе выдан пробный период на {settings.trial_days} дн. — "
-            "загляни в «📱 Мои устройства».",
+            "загляни в «📱 Устройства».",
         )
     except Exception:
         pass
@@ -628,7 +628,7 @@ async def cb_panel_sub_off(call: CallbackQuery, session: AsyncSession) -> None:
                 "⏱ Подписка истекла — устройства и доступы обхода отключены.\n"
                 f"Конфиги сохраняются {REVOKED_RETENTION_DAYS} дней: продлишь "
                 "подписку — всё оживёт само, перенастраивать не придётся.\n"
-                "Продлить: меню → «🎫 Моя подписка» → «🔁 Продлить» "
+                "Продлить: меню → «🎫 Подписка» → «🔁 Продлить подписку» "
                 "(пополнить баланс — «💰 Баланс»).",
             )
         except Exception:

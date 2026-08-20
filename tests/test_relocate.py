@@ -744,7 +744,7 @@ class TestAdminMoveHandler:
         text = call.message.texts[0]
         assert "переехал" in text                  # переезд состоялся — однозначно
         assert "предупредить не вышло" in text     # но юзер об этом не знает
-        assert "Мои устройства" in text            # где он заберёт конфиг сам
+        assert "📱 Устройства" in text             # где он заберёт конфиг сам
         # Сырой текст исключения админу не показываем.
         assert "blocked by the user" not in text
 
@@ -783,7 +783,7 @@ class TestAdminMoveHandler:
         text = call.message.texts[0]
         assert "переехал" in text
         assert "конфиг не отправился" in text
-        assert "Мои устройства" in text
+        assert "📱 Устройства" in text
         assert "upload timeout" not in text
         # Это не тот же случай, что «юзер заблокировал бота».
         assert "предупредить не вышло" not in text

@@ -59,6 +59,7 @@ class Snapshot:
     udp_errors: int = 0          # InErrors + RcvbufErrors, счётчик с загрузки
     banned: tuple[str, ...] = ()
     own_ip: str = ""
+    manager_ip: str = ""   # адрес, с которого пришёл бот
 
 
 _SECTION_RE = re.compile(r"^---([A-Z0-9]+)---$")
@@ -187,6 +188,8 @@ def build_snapshot(
 
     own = sec.get("OWNIP", [])
     snap.own_ip = own[0] if own else ""
+    mine = [ln.strip() for ln in sec.get("MYIP", []) if ln.strip()]
+    snap.manager_ip = mine[0] if mine else ""
     return snap
 
 
@@ -231,7 +234,12 @@ def probe_command(units: list[str]) -> str:
         "echo '---BAN---'; fail2ban-client status sshd 2>/dev/null "
         "| grep -E 'Currently banned|Banned IP list' || true; "
         "echo '---OWNIP---'; ip route get 1.1.1.1 2>/dev/null "
-        "| awk '{for (i = 1; i <= NF; i++) if ($i == \"src\") { print $(i + 1); exit }}'"
+        "| awk '{for (i = 1; i <= NF; i++) if ($i == \"src\") { print $(i + 1); exit }}'; "
+        # Адрес, с которого пришёл САМ БОТ. Он и есть тот, чей бан отрезает нас
+        # от сервера: бот живёт на отдельной машине, а не на ноде. Раньше
+        # тревога искала в бане адрес самой ноды — на первом сервере они
+        # совпадали, и слепота была незаметна (аудит 20.08.2026).
+        "echo '---MYIP---'; echo \"${SSH_CONNECTION%% *}\""
     )
 
 
@@ -266,14 +274,21 @@ def evaluate(snap: Snapshot, prev_udp_errors: int | None) -> list[Alert]:
 
     # 1. Бот забанен собственной банилкой — самая важная тревога из спеки:
     # доступа к серверу нет ни у бота, ни (тем же путём) у админа.
-    if snap.own_ip and snap.own_ip in snap.banned:
+    # Проверяем ОБА адреса: свой у ноды и тот, с которого приходит бот. Это
+    # разные машины — бот живёт отдельно. Раньше сверялся только адрес ноды, и
+    # на первом сервере они совпадали, поэтому слепота не проявлялась: на любой
+    # второй ноде бан бота эта тревога поймать не могла в принципе.
+    for ip, who in ((snap.manager_ip, "бота"), (snap.own_ip, "самого сервера")):
+        if not ip or ip not in snap.banned:
+            continue
         alerts.append(Alert(
-            key=f"{sid}:selfban", level="crit",
-            title="Сервер забанил сам себя",
-            detail=(f"Адрес {snap.own_ip} попал в бан. Бот ходит по SSH сам на "
-                    "себя через него — новые подключения не пройдут.\n"
-                    f"Снять: <code>fail2ban-client set sshd unbanip {snap.own_ip}</code>"),
+            key=f"{sid}:selfban:{ip}", level="crit",
+            title="Банилка забанила своих",
+            detail=(f"Адрес {ip} ({who}) попал в бан — подключения с него "
+                    "больше не проходят.\n"
+                    f"Снять: <code>fail2ban-client set sshd unbanip {ip}</code>"),
         ))
+        break   # хватит одной тревоги: лечение одинаковое
 
     # 2. Упавшие службы. «unknown» — тоже отказ: сервер не ответил на вопрос.
     for unit, state in sorted(snap.services.items()):

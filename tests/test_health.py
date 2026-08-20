@@ -136,9 +136,63 @@ def test_self_ban_is_first_alert():
     """Самая важная тревога спеки идёт первой: без доступа по SSH всё
     остальное чинить нечем."""
     alerts = health.evaluate(
-        snap(banned=("31.77.157.162",), services={"wdtt": "failed"}), 2294
+        snap(banned=("31.77.157.162",), own_ip="31.77.157.162",
+             services={"wdtt": "failed"}), 2294
     )
-    assert alerts[0].key == "1:selfban"
+    assert alerts[0].key.startswith("1:selfban")
+
+
+def test_ban_of_the_bot_is_caught_on_a_foreign_node():
+    """Слепая зона, найденная аудитом 20.08.2026.
+
+    Тревога сверяла с баном ТОЛЬКО адрес самой ноды. Бот живёт на отдельной
+    машине, и на первой ноде адреса совпадали — поэтому слепота не проявлялась.
+    На немецкой ноде бан бота эта тревога поймать не могла в принципе: её
+    собственный адрес чист, а отрезан от сервера именно бот.
+    """
+    alerts = health.evaluate(
+        snap(banned=("31.77.157.162",), own_ip="31.77.148.187",
+             manager_ip="31.77.157.162"),
+        2294,
+    )
+    assert alerts, "бан бота остался незамеченным"
+    assert "31.77.157.162" in alerts[0].detail
+    assert alerts[0].level == "crit"
+
+
+def test_ban_of_a_stranger_is_not_an_alert():
+    """Обычный перебор паролей с чужого адреса — это работа банилки, а не
+    авария. На нодах таких банов сотни."""
+    alerts = health.evaluate(
+        snap(banned=("121.227.31.13",), own_ip="31.77.148.187",
+             manager_ip="31.77.157.162"),
+        2294,
+    )
+    assert alerts == []
+
+
+def test_one_alert_even_if_both_addresses_banned():
+    """Лечение одинаковое — два сообщения об одном и том же только шумят."""
+    alerts = health.evaluate(
+        snap(banned=("31.77.157.162", "31.77.148.187"),
+             own_ip="31.77.148.187", manager_ip="31.77.157.162"),
+        2294,
+    )
+    assert len([a for a in alerts if "selfban" in a.key]) == 1
+
+
+def test_manager_ip_is_parsed_from_the_probe():
+    """Адрес бота приходит из SSH_CONNECTION прямо в пробе."""
+    probe = PROBE + "\n---MYIP---\n31.77.157.162"
+    s = health.build_snapshot(1, "Германия", probe, units=UNITS)
+    assert s.manager_ip == "31.77.157.162"
+
+
+def test_missing_manager_ip_does_not_break_anything():
+    """Старый сервер, где проба ещё без этой секции, обязан работать."""
+    s = health.build_snapshot(1, "Нидерланды", PROBE, units=UNITS)
+    assert s.manager_ip == ""
+    assert health.evaluate(s, 2294) == []
 
 
 def test_disk_threshold():

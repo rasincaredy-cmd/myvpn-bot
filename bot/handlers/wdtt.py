@@ -178,7 +178,7 @@ async def cb_wdtt_my(call: CallbackQuery, state: FSMContext, session: AsyncSessi
     elif user.sub_max_bypass == 0 and not accesses:
         text += (
             "\nВ твоём тарифе сейчас нет резервных подключений. Понадобится — "
-            "добавь в «🎫 Моя подписка» → «🔁 Продлить / купить»."
+            "добавь в «🎫 Подписка» → «🔁 Продлить подписку»."
         )
     elif not accesses:
         text += "\nПока пусто. Жми «➕ Добавить»."

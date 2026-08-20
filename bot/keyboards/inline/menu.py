@@ -53,7 +53,7 @@ def main_menu(is_admin: bool, state: MenuState) -> InlineKeyboardMarkup:
         kb.button(text="🔁 Продлить подписку", callback_data=f"{CB_BAL}:extend",
                   style="primary")
         sizes.append(1)
-        kb.button(text="📱 Мои устройства", callback_data=f"{CB_DEVICE}:list")
+        kb.button(text="📱 Устройства", callback_data=f"{CB_DEVICE}:list")
         sizes.append(1)
     elif not state.has_devices:
         # У новичка «Мои устройства» ведут в пустой список — предлагаем сразу
@@ -62,7 +62,7 @@ def main_menu(is_admin: bool, state: MenuState) -> InlineKeyboardMarkup:
                   style="primary")
         sizes.append(1)
     else:
-        kb.button(text="📱 Мои устройства", callback_data=f"{CB_DEVICE}:list",
+        kb.button(text="📱 Устройства", callback_data=f"{CB_DEVICE}:list",
                   style="primary")
         sizes.append(1)
         kb.button(text="⚡ Резервное подключение", callback_data=f"{CB_WDTT}:my")
@@ -131,7 +131,7 @@ def notify_settings_kb(enabled: bool) -> InlineKeyboardMarkup:
         kb.button(text="🔕 Выключить оповещения", callback_data=f"{CB_MENU}:notify_toggle")
     else:
         kb.button(text="🔔 Включить оповещения", callback_data=f"{CB_MENU}:notify_toggle")
-    kb.button(text="« В меню", callback_data=f"{CB_MENU}:open")
+    kb.button(text="‹ Меню", callback_data=f"{CB_MENU}:open")
     kb.adjust(1)
     return kb.as_markup()
 
@@ -140,12 +140,12 @@ def notify_settings_kb(enabled: bool) -> InlineKeyboardMarkup:
 
 def back_to_menu() -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-    kb.button(text="« В меню", callback_data=f"{CB_MENU}:open")
+    kb.button(text="‹ Меню", callback_data=f"{CB_MENU}:open")
     return kb.as_markup()
 
 
 def to_server(server_id: int) -> InlineKeyboardMarkup:
     """Кнопка возврата на карточку сервера (после создания peer/инвайта)."""
     kb = InlineKeyboardBuilder()
-    kb.button(text="« К серверу", callback_data=f"{CB_SERVERS}:open:{server_id}")
+    kb.button(text="‹ Сервер", callback_data=f"{CB_SERVERS}:open:{server_id}")
     return kb.as_markup()

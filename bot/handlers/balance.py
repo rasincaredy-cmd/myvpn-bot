@@ -126,7 +126,7 @@ async def _render_balance(edit_or_answer, session: AsyncSession, user) -> None:
     text = (
         f"💰 <b>Баланс: {fmt_rub(user.balance_kopeks)}</b>\n\n"
         "С баланса оплачивается подписка: пополни здесь, а продлить можно "
-        "в разделе «🎫 Моя подписка».\n"
+        "в разделе «🎫 Подписка».\n"
         f"Приглашай друзей — {settings.referral_percent}% с их пополнений "
         "тоже падают сюда."
     )
@@ -603,7 +603,7 @@ def autopay_notice(user, res: billing.ChargeResult) -> tuple[str, bool]:
             "Пополни баланс — в следующий раз продлим на полный срок и со "
             "скидкой за него.\n"
             f"Остаток: {fmt_rub(user.balance_kopeks)}. "
-            "Отключить автопродление — в «🎫 Моя подписка»."
+            "Отключить автопродление — в «🎫 Подписка»."
         )
     else:
         text = (
@@ -611,7 +611,7 @@ def autopay_notice(user, res: billing.ChargeResult) -> tuple[str, bool]:
             f"<b>{term_label(res.months)}</b> за {fmt_rub(res.price_kopeks)} "
             f"с баланса ({until}).\n"
             f"Остаток: {fmt_rub(user.balance_kopeks)}. "
-            "Отключить автопродление можно в «🎫 Моя подписка»."
+            "Отключить автопродление можно в «🎫 Подписка»."
         )
     rv = res.revive
     if rv is not None and (rv.devices_restored or rv.bypass_restored):
@@ -657,7 +657,7 @@ async def cb_bal_history(call: CallbackQuery, session: AsyncSession) -> None:
             lines.append(f"{icon} {when}  <b>{fmt_rub(tx.amount_kopeks)}</b>{note}")
     from aiogram.utils.keyboard import InlineKeyboardBuilder as IKB
     kb = IKB()
-    kb.button(text="« К балансу", callback_data=f"{CB_BAL}:my")
+    kb.button(text="‹ Баланс", callback_data=f"{CB_BAL}:my")
     await call.message.edit_text("\n".join(lines), reply_markup=kb.as_markup())
     await call.answer()
 
@@ -686,7 +686,7 @@ async def cb_bal_ref(call: CallbackQuery, session: AsyncSession) -> None:
     )
     from aiogram.utils.keyboard import InlineKeyboardBuilder as IKB
     kb = IKB()
-    kb.button(text="« К балансу", callback_data=f"{CB_BAL}:my")
+    kb.button(text="‹ Баланс", callback_data=f"{CB_BAL}:my")
     await call.message.edit_text(text, reply_markup=kb.as_markup())
     await call.answer()
 
@@ -853,7 +853,7 @@ def _switch_refusal(res) -> str:
         return (
             f"У тебя сейчас занято: {res.used_devices} устр. и "
             f"{res.used_bypass} рез. подключ. — тариф не может быть меньше. "
-            "Сначала удали лишнее в «📱 Мои устройства» / "
+            "Сначала удали лишнее в «📱 Устройства» / "
             "«⚡ Резервное подключение»."
         )
     if res.reason == "too_short":
@@ -963,7 +963,7 @@ async def cb_bal_buy(call: CallbackQuery, session: AsyncSession) -> None:
         await call.answer(
             f"У тебя сейчас активно {used_dev} устр. и {used_byp} рез. "
             "подключ. — тариф не может быть меньше. Сначала удали лишнее в "
-            "«📱 Мои устройства» / «⚡ Резервное подключение».",
+            "«📱 Устройства» / «⚡ Резервное подключение».",
             show_alert=True,
         )
         return

@@ -453,7 +453,7 @@ async def redeem_invite(
         if exp_aware <= datetime.now(timezone.utc):
             await message.answer(
                 "🎟 Инвайт принят, но твоя подписка закончилась — сначала продли "
-                "её в «🎫 Моя подписка», потом открой ссылку ещё раз.",
+                "её в «🎫 Подписка», потом открой ссылку ещё раз.",
                 reply_markup=back_to_menu(),
             )
             return True

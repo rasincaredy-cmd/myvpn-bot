@@ -45,7 +45,7 @@ def wdtt_user_list_kb(
         kb.button(text="← Назад",  callback_data=f"{CB_WDTT}:my:{page - 1}")
     if has_next:
         kb.button(text="Вперёд →", callback_data=f"{CB_WDTT}:my:{page + 1}")
-    kb.button(text="« В меню", callback_data=f"{CB_MENU}:open")
+    kb.button(text="‹ Меню", callback_data=f"{CB_MENU}:open")
     kb.adjust(1)
     return kb.as_markup()
 
@@ -57,11 +57,13 @@ def wdtt_user_card_kb(access_id: int, can_get: bool) -> InlineKeyboardMarkup:
         # Отвязка от устройства — рядом со ссылкой, а не в поддержке: человек с
         # новым телефоном видит от приложения «неверный пароль» и первым делом
         # идёт именно сюда, за ссылкой.
-        kb.button(text="📱 Подключаюсь с другого устройства",
+        # Подпись короткая: длинная обрезается на телефоне многоточием, и
+        # человек не видит, что кнопка вообще про смену устройства.
+        kb.button(text="📱 Сменить устройство",
                   callback_data=f"{CB_WDTT}:myunbind:{access_id}")
         kb.button(text="🗑 Удалить", callback_data=f"{CB_WDTT}:myrevoke:{access_id}",
                   style="danger")
-    kb.button(text="« К списку", callback_data=f"{CB_WDTT}:my")
+    kb.button(text="‹ Подключения", callback_data=f"{CB_WDTT}:my")
     kb.adjust(1)
     return kb.as_markup()
 
@@ -80,7 +82,7 @@ def back_to_bypasses_kb() -> InlineKeyboardMarkup:
     """Возврат после удаления своего резервного подключения — в список доступов,
     а не в меню (Блок «Мелочи 2»). То же, что back_to_devices_kb у устройств."""
     kb = InlineKeyboardBuilder()
-    kb.button(text="« К списку", callback_data=f"{CB_WDTT}:my")
-    kb.button(text="« В меню", callback_data=f"{CB_MENU}:open")
+    kb.button(text="‹ Подключения", callback_data=f"{CB_WDTT}:my")
+    kb.button(text="‹ Меню", callback_data=f"{CB_MENU}:open")
     kb.adjust(1)
     return kb.as_markup()

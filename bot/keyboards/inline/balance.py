@@ -13,7 +13,7 @@ def balance_kb(can_deposit: bool) -> InlineKeyboardMarkup:
         kb.button(text="➕ Пополнить", callback_data=f"{CB_BAL}:dep", style="success")
     kb.button(text="📜 История", callback_data=f"{CB_BAL}:hist")
     kb.button(text="👥 Реферальная программа", callback_data=f"{CB_BAL}:ref")
-    kb.button(text="« В меню", callback_data=f"{CB_MENU}:open")
+    kb.button(text="‹ Меню", callback_data=f"{CB_MENU}:open")
     kb.adjust(1)
     return kb.as_markup()
 
@@ -46,7 +46,7 @@ def deposit_methods_kb(
             callback_data=f"{CB_BAL}:dep:cb", style="success",
         )
     kb.button(text="⭐ Звёзды Telegram", callback_data=f"{CB_BAL}:dep:stars")
-    kb.button(text="« К балансу", callback_data=f"{CB_BAL}:my")
+    kb.button(text="‹ Баланс", callback_data=f"{CB_BAL}:my")
     kb.adjust(1)
     return kb.as_markup()
 
@@ -58,7 +58,7 @@ def deposit_amounts_kb(amounts: list[tuple[int, str]]) -> InlineKeyboardMarkup:
     for rub, label in amounts:
         kb.button(text=label, callback_data=f"{CB_BAL}:dep:{rub}")
     kb.button(text="✏️ Своя сумма", callback_data=f"{CB_BAL}:dep:custom")
-    kb.button(text="« Назад", callback_data=f"{CB_BAL}:dep")
+    kb.button(text="‹ Назад", callback_data=f"{CB_BAL}:dep")
     kb.adjust(2, 2, 1, 1)
     return kb.as_markup()
 
@@ -71,7 +71,7 @@ def star_amounts_kb(amounts: list[tuple[int, str]]) -> InlineKeyboardMarkup:
     for rub, label in amounts:
         kb.button(text=label, callback_data=f"{CB_BAL}:star:{rub}")
     kb.button(text="✏️ Своя сумма", callback_data=f"{CB_BAL}:star:custom")
-    kb.button(text="« Назад", callback_data=f"{CB_BAL}:dep")
+    kb.button(text="‹ Назад", callback_data=f"{CB_BAL}:dep")
     kb.adjust(2, 2, 1, 1)
     return kb.as_markup()
 
@@ -83,7 +83,7 @@ def platega_amounts_kb(amounts: list[tuple[int, str]]) -> InlineKeyboardMarkup:
     for rub, label in amounts:
         kb.button(text=label, callback_data=f"{CB_BAL}:pg:{rub}")
     kb.button(text="✏️ Своя сумма", callback_data=f"{CB_BAL}:pg:custom")
-    kb.button(text="« Назад", callback_data=f"{CB_BAL}:dep")
+    kb.button(text="‹ Назад", callback_data=f"{CB_BAL}:dep")
     kb.adjust(2, 2, 1, 1)
     return kb.as_markup()
 
@@ -92,7 +92,7 @@ def platega_invoice_kb(pay_url: str, row_id: int) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="💳 Перейти к оплате", url=pay_url, style="success")
     kb.button(text="✅ Я оплатил — проверить", callback_data=f"{CB_BAL}:pgchk:{row_id}")
-    kb.button(text="« К балансу", callback_data=f"{CB_BAL}:my")
+    kb.button(text="‹ Баланс", callback_data=f"{CB_BAL}:my")
     kb.adjust(1)
     return kb.as_markup()
 
@@ -118,7 +118,7 @@ def invoice_kb(pay_url: str, row_id: int) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="💳 Оплатить в @CryptoBot", url=pay_url, style="success")
     kb.button(text="✅ Я оплатил — проверить", callback_data=f"{CB_BAL}:check:{row_id}")
-    kb.button(text="« К балансу", callback_data=f"{CB_BAL}:my")
+    kb.button(text="‹ Баланс", callback_data=f"{CB_BAL}:my")
     kb.adjust(1)
     return kb.as_markup()
 

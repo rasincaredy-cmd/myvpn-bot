@@ -64,7 +64,7 @@ class TestByState:
         assert any("Тарифы" in t for t in texts)
 
     def test_active_user_gets_devices_first(self) -> None:
-        assert _primary(main_menu(is_admin=False, state=ACTIVE)) == ["📱 Мои устройства"]
+        assert _primary(main_menu(is_admin=False, state=ACTIVE)) == ["📱 Устройства"]
 
     def test_active_user_has_no_showcase(self) -> None:
         """Тарифы и локации — витрина. Тому, кто уже платит, они место не занимают."""

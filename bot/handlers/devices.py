@@ -91,14 +91,14 @@ async def cb_dev_list(call: CallbackQuery, session: AsyncSession) -> None:
     if not _sub_active(user):
         head += (
             "\n<i>Подписка закончилась — устройства на паузе, конфиги хранятся "
-            "30 дней. Продли её в «🎫 Моя подписка» (кнопка ниже) — всё "
+            "30 дней. Продли её в «🎫 Подписка» (кнопка ниже) — всё "
             "заработает само, заново ничего настраивать не нужно.</i>"
         )
     elif user.sub_max_devices == 0 and not devices:
         head += (
             "\n\nВ твоём тарифе сейчас нет устройств — только резервное "
             "подключение. Понадобится VPN — добавь устройства в «🎫 Моя "
-            "подписка» → «🔁 Продлить / купить»."
+            "подписка» → «🔁 Продлить подписку»."
         )
     elif not devices:
         head += (
@@ -128,7 +128,7 @@ async def cb_dev_add(call: CallbackQuery, state: FSMContext, session: AsyncSessi
     )
     if not _sub_active(user):
         await call.answer(
-            "Подписка закончилась. Продли её в разделе «🎫 Моя подписка» — "
+            "Подписка закончилась. Продли её в разделе «🎫 Подписка» — "
             "устройства оживут сами.",
             show_alert=True,
         )
@@ -186,7 +186,7 @@ async def step_device_label(message: Message, state: FSMContext, session: AsyncS
     if not _sub_active(user) or await repo.count_active_devices(session, user.id) >= user.sub_max_devices:
         await message.answer(
             "Не получилось добавить устройство: достигнут лимит по подписке "
-            "или она закончилась. Загляни в «🎫 Моя подписка».",
+            "или она закончилась. Загляни в «🎫 Подписка».",
             reply_markup=back_to_menu(),
         )
         return
@@ -396,7 +396,7 @@ async def step_device_rename(message: Message, state: FSMContext, session: Async
     logger.info("User {} renamed device {}: {} -> {}", user.id, device.id, old, label)
     from aiogram.utils.keyboard import InlineKeyboardBuilder as IKB
     kb = IKB()
-    kb.button(text="« К устройству", callback_data=f"{CB_DEVICE}:open:{device.id}")
+    kb.button(text="‹ Устройство", callback_data=f"{CB_DEVICE}:open:{device.id}")
     await message.answer(
         f"✅ Устройство теперь называется <b>{label}</b>.\n"
         "<i>Конфиги на твоих устройствах перенастраивать не нужно — название "
@@ -440,7 +440,7 @@ async def cb_dev_revoke(call: CallbackQuery, session: AsyncSession) -> None:
     await call.answer()
 
 
-# --- Моя подписка ------------------------------------------------------------
+# --- Подписка ------------------------------------------------------------
 
 @router.callback_query(F.data == f"{CB_SUB}:my")
 async def cb_sub_my(call: CallbackQuery, session: AsyncSession) -> None:

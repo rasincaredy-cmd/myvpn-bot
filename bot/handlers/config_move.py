@@ -61,7 +61,7 @@ async def _own_peer(
         return None
     if not _sub_active(user):
         await call.answer(
-            "Подписка закончилась — сначала продли её в «🎫 Моя подписка».",
+            "Подписка закончилась — сначала продли её в «🎫 Подписка».",
             show_alert=True,
         )
         return None
@@ -92,7 +92,7 @@ async def cb_move_start(call: CallbackQuery, session: AsyncSession) -> None:
         return
     if not _sub_active(user):
         await call.answer(
-            "Подписка закончилась — сначала продли её в «🎫 Моя подписка».",
+            "Подписка закончилась — сначала продли её в «🎫 Подписка».",
             show_alert=True,
         )
         return

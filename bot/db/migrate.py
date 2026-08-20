@@ -1,4 +1,4 @@
-"""Лёгкие авто-миграции схемы: добавляет недостающие колонки в существующие таблицы.
+"""Лёгкие авто-миграции схемы: добавляет недостающие колонки и индексы.
 
 `Base.metadata.create_all` создаёт только отсутствующие *таблицы*, но не умеет
 добавлять новые *колонки* в уже существующие. Поэтому при обновлении бота
@@ -8,6 +8,11 @@
 для недостающих колонок. Идемпотентно и безопасно для боевой базы; работает на
 SQLite и Postgres. Добавляем только nullable-колонки или колонки с DEFAULT —
 `ADD COLUMN NOT NULL` без значения по умолчанию невозможен для непустой таблицы.
+
+Индексы добираем отдельно: `ADD COLUMN` их не создаёт, и уникальность,
+объявленная в модели, в боевой базе просто не существовала бы. Поймано на
+`users.ref_code` (Блок «Рефка», 20.08.2026) — без индекса два человека могли бы
+занять одно имя реферальной ссылки.
 """
 from __future__ import annotations
 
@@ -77,3 +82,38 @@ async def run_migrations(conn: AsyncConnection) -> None:
             ddl = _column_ddl(dialect, column)
             logger.info("Миграция: ALTER TABLE {} ADD COLUMN {}", table_name, ddl)
             await conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {ddl}"))
+
+    await _create_missing_indexes(conn)
+
+
+async def _create_missing_indexes(conn: AsyncConnection) -> None:
+    """Создаёт индексы, объявленные в моделях, но отсутствующие в базе.
+
+    Уникальный индекс на колонке, где дубли уже есть, создать нельзя — такую
+    ошибку логируем и идём дальше: падать на старте из-за индекса нельзя, бот
+    без него работает, а разбираться с дублями всё равно человеку.
+    """
+    def _existing(sync_conn) -> dict[str, set[str]]:
+        insp = inspect(sync_conn)
+        found: dict[str, set[str]] = {}
+        for table_name in Base.metadata.tables:
+            if insp.has_table(table_name):
+                found[table_name] = {i["name"] for i in insp.get_indexes(table_name)}
+        return found
+
+    existing = await conn.run_sync(_existing)
+    for table_name, table in Base.metadata.tables.items():
+        have = existing.get(table_name)
+        if have is None:
+            continue  # таблицу целиком создаст create_all — вместе с индексами
+        for index in table.indexes:
+            if index.name in have:
+                continue
+            unique = "UNIQUE " if index.unique else ""
+            cols = ", ".join(c.name for c in index.columns)
+            sql = f"CREATE {unique}INDEX IF NOT EXISTS {index.name} ON {table_name} ({cols})"
+            try:
+                await conn.execute(text(sql))
+                logger.info("Миграция: создан индекс {}", index.name)
+            except Exception as exc:  # noqa: BLE001 — старт важнее индекса
+                logger.warning("Индекс {} не создался: {}", index.name, exc)

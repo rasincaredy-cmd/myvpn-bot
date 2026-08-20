@@ -13,7 +13,6 @@ from bot.db import repo
 from bot.db.models import (
     BalanceTx,
     Device,
-    Invite,
     Peer,
     PeerStatus,
     Server,
@@ -115,9 +114,6 @@ async def cb_panel_stats(call: CallbackQuery, session: AsyncSession) -> None:
     peers_active = await _cnt(
         select(func.count(Peer.id)).where(Peer.status == PeerStatus.ACTIVE)
     )
-    invites_pending = await _cnt(
-        select(func.count(Invite.id)).where(Invite.used_at.is_(None))
-    )
     # Конверсия и деньги — только по чужим людям: свои тесты и бесплатные
     # друзья не должны выдавать себя за продажи (см. collect_money_stats).
     from bot.services.pricing import fmt_rub
@@ -147,8 +143,7 @@ async def cb_panel_stats(call: CallbackQuery, session: AsyncSession) -> None:
         f"📱 Устройств: {_split(dev_active, dev_total)}\n"
         f"🛡 Обходов БС: {_split(byp_active, byp_total)}\n"
         f"📄 Конфигов на серверах: <b>{peers_active}</b>\n"
-        f"🖥 Серверов: <b>{servers_ready}</b> готовых / {servers_total} всего\n"
-        f"🎟 Инвайтов не погашено: <b>{invites_pending}</b>",
+        f"🖥 Серверов: <b>{servers_ready}</b> готовых / {servers_total} всего",
         reply_markup=back_to_panel(),
     )
     await call.answer()

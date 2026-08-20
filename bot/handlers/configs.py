@@ -16,7 +16,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from bot.db import repo
 from bot.db.models import (
     AuditAction,
-    Invite,
     Peer,
     PeerStatus,
     Server,
@@ -26,11 +25,8 @@ from bot.db.models import (
 from bot.filters.admin import AdminFilter
 from bot.handlers.config_delivery import ask_config_format, build_conf_for_peer
 from bot.keyboards.inline import (
-    CB_INVITES,
     back_to_menu,
     cancel_only,
-    invite_card_kb,
-    invites_list_kb,
     pick_server,
     to_server,
 )
@@ -38,14 +34,12 @@ from bot.loader import bot
 from bot.services import amnezia, amnezia_native
 from bot.services.crypto import encrypt
 from bot.services.ssh import SSHClient, SSHError
-from bot.states.install import InviteStates
 from bot.texts import t, ui
 from bot.utils.timefmt import fmt_msk
 from bot.utils.validators import is_valid_label
 
 router = Router(name="configs")
 
-_INVITES_PER_PAGE = 8
 
 # Блокировки на каждый сервер: сериализуют аллокацию IP, чтобы два параллельных
 # создания пира (устройство юзера и redeem инвайта) не выбрали один и тот же IP.
@@ -206,309 +200,10 @@ router_admin.message.filter(AdminFilter())
 router_admin.callback_query.filter(AdminFilter())
 
 
-# --- Инвайты (одноразовые ссылки для друзей) --------------------------------
-
-@router_admin.message(Command("invite"))
-@router_admin.callback_query(F.data == f"{CB_INVITES}:new")
-async def cb_invite_new(
-    event: Message | CallbackQuery, state: FSMContext, session: AsyncSession
-) -> None:
-    msg = event.message if isinstance(event, CallbackQuery) else event
-    servers = await repo.list_all_servers(session)
-    ready = [s for s in servers if s.status == ServerStatus.READY]
-    if not ready:
-        await msg.answer("Нет готовых серверов.", reply_markup=back_to_menu())
-        if isinstance(event, CallbackQuery):
-            await event.answer()
-        return
-    await state.set_state(InviteStates.pick_server)
-    await state.update_data(cancel_to="panel")  # отмена на выборе сервера → админка
-    text = t.invite_ask_server
-    if isinstance(event, CallbackQuery):
-        await msg.edit_text(text, reply_markup=pick_server(ready, f"{CB_INVITES}:pick"))
-        await event.answer()
-    else:
-        await msg.answer(text, reply_markup=pick_server(ready, f"{CB_INVITES}:pick"))
-
-
-@router_admin.callback_query(F.data.startswith(f"{CB_INVITES}:new:"))
-async def cb_invite_new_for_server(
-    call: CallbackQuery, state: FSMContext, session: AsyncSession
-) -> None:
-    server_id = int(call.data.rsplit(":", 1)[-1])
-    server = await repo.get_server(session, server_id)
-    if server is None or server.status != ServerStatus.READY:
-        await call.answer("Сервер недоступен", show_alert=True)
-        return
-    await state.set_state(InviteStates.label)
-    await state.update_data(server_id=server_id)
-    await call.message.edit_text(t.invite_ask_label, reply_markup=cancel_only())
-    await call.answer()
-
-
-@router_admin.callback_query(InviteStates.pick_server, F.data.startswith(f"{CB_INVITES}:pick:"))
-async def cb_invite_pick(call: CallbackQuery, state: FSMContext) -> None:
-    server_id = int(call.data.rsplit(":", 1)[-1])
-    await state.update_data(server_id=server_id)
-    await state.set_state(InviteStates.label)
-    await call.message.edit_text(t.invite_ask_label, reply_markup=cancel_only())
-    await call.answer()
-
-
-@router_admin.callback_query(F.data.startswith(f"{CB_INVITES}:list:"))
-async def cb_invites_list(call: CallbackQuery, session: AsyncSession) -> None:
-    # callback: "inv:list:<server_id>" (стр. 0) или "inv:list:<server_id>:<page>"
-    parts = call.data.split(":")
-    server_id = int(parts[2])
-    page = int(parts[3]) if len(parts) > 3 else 0
-    server = await repo.get_server(session, server_id)
-    if server is None:
-        await call.answer("Не найдено", show_alert=True)
-        return
-
-    invites = await repo.list_invites_for_server(session, server_id)
-    now = datetime.now(timezone.utc)
-    pending = sum(1 for i in invites if i.used_at is None)
-
-    def _icon(inv) -> str:
-        if inv.used_at:
-            return "✅"
-        if inv.expires_at and inv.expires_at < now:
-            return "⌛"
-        return "⏳"
-
-    # Активные (непогашенные) сверху, затем по id; режем на страницы.
-    invites.sort(key=lambda i: (i.used_at is not None, i.id))
-    total = len(invites)
-    start = page * _INVITES_PER_PAGE
-    page_invites = invites[start:start + _INVITES_PER_PAGE]
-    rows = [(i.id, _icon(i), i.label or i.token[:8]) for i in page_invites]
-
-    await call.message.edit_text(
-        f"🎟 <b>Инвайты — {server.name}</b>\n"
-        f"Всего: <b>{total}</b> | "
-        f"⏳ Активных: <b>{pending}</b> | "
-        f"✅ Использованных: <b>{total - pending}</b>",
-        reply_markup=invites_list_kb(
-            rows,
-            server_id,
-            page,
-            has_prev=page > 0,
-            has_next=start + _INVITES_PER_PAGE < total,
-        ),
-    )
-    await call.answer()
-
-
-@router_admin.callback_query(F.data.startswith(f"{CB_INVITES}:open:"))
-async def cb_invite_open(call: CallbackQuery, session: AsyncSession) -> None:
-    invite_id = int(call.data.rsplit(":", 1)[-1])
-    invite = await session.get(Invite, invite_id)
-    if invite is None:
-        await call.answer("Не найдено", show_alert=True)
-        return
-    server = await repo.get_server(session, invite.server_id)
-    if server is None:
-        await call.answer("Нет доступа", show_alert=True)
-        return
-
-    now = datetime.now(timezone.utc)
-    if invite.used_at:
-        status = "✅ Использован"
-        extra = (
-            f"\n• Кем: tg_id <code>{invite.used_by_tg_id}</code>"
-            f"\n• Когда: {fmt_msk(invite.used_at)} МСК"
-        )
-        can_revoke = False
-    elif invite.expires_at and invite.expires_at < now:
-        status = "⌛ Истёк"
-        extra = f"\n• Истёк: {fmt_msk(invite.expires_at)} МСК"
-        can_revoke = True
-    else:
-        status = "⏳ Активен"
-        extra = ""
-        can_revoke = True
-
-    text = (
-        f"🎟 <b>{invite.label or 'Без метки'}</b>\n"
-        f"• Статус: {status}{extra}\n"
-        f"• Сервер: <code>{server.name}</code>\n"
-        f"• Создан: {fmt_msk(invite.created_at)} МСК"
-    )
-    if not invite.used_at:
-        me = await bot.get_me()
-        link = f"https://t.me/{me.username}?start={invite.token}"
-        text += f"\n• Ссылка: <code>{link}</code>"
-
-    await call.message.edit_text(
-        text,
-        reply_markup=invite_card_kb(
-            invite.id, server.id, can_revoke, used=bool(invite.used_at)
-        ),
-    )
-    await call.answer()
-
-
-@router_admin.callback_query(F.data.startswith(f"{CB_INVITES}:del:"))
-async def cb_invite_delete(call: CallbackQuery, session: AsyncSession) -> None:
-    invite_id = int(call.data.rsplit(":", 1)[-1])
-    invite = await session.get(Invite, invite_id)
-    if invite is None:
-        await call.answer("Не найдено", show_alert=True)
-        return
-    server = await repo.get_server(session, invite.server_id)
-    if server is None:
-        await call.answer("Нет доступа", show_alert=True)
-        return
-
-    # Использованные инвайты тоже можно убрать — из истории (пир выдан отдельно).
-    was_used = invite.used_at is not None
-    label = invite.label or invite.token[:8]
-    server_id = server.id
-    await repo.delete_invite(session, invite.id)
-    await session.commit()
-
-    # Обновляем список
-    invites = await repo.list_invites_for_server(session, server_id)
-    now = datetime.now(timezone.utc)
-    pending = sum(1 for i in invites if i.used_at is None)
-
-    def _icon(inv) -> str:
-        if inv.used_at:
-            return "✅"
-        if inv.expires_at and inv.expires_at < now:
-            return "⌛"
-        return "⏳"
-
-    action = "удалён из истории" if was_used else "отозван"
-    invites.sort(key=lambda i: (i.used_at is not None, i.id))
-    total = len(invites)
-    rows = [(i.id, _icon(i), i.label or i.token[:8]) for i in invites[:_INVITES_PER_PAGE]]
-    await call.message.edit_text(
-        f"🗑 Инвайт <code>{label}</code> {action}.\n\n"
-        f"🎟 <b>Инвайты — {server.name}</b>\n"
-        f"Всего: <b>{total}</b> | "
-        f"⏳ Активных: <b>{pending}</b> | "
-        f"✅ Использованных: <b>{total - pending}</b>",
-        reply_markup=invites_list_kb(
-            rows, server_id, page=0, has_prev=False, has_next=_INVITES_PER_PAGE < total
-        ),
-    )
-    await call.answer()
-    
-
-@router_admin.message(InviteStates.label, F.text)
-async def step_invite_label(
-    message: Message, state: FSMContext, session: AsyncSession
-) -> None:
-    label = message.text.strip()
-    if not is_valid_label(label):
-        await message.answer("Метка невалидна. Ещё раз:")
-        return
-    data = await state.get_data()
-    await state.clear()
-
-    token = secrets.token_urlsafe(16)
-    invite = Invite(
-        token=token,
-        server_id=data["server_id"],
-        issued_by_tg_id=message.from_user.id,
-        label=label,
-    )
-    session.add(invite)
-    await session.commit()
-
-    me = await bot.get_me()
-    link = f"https://t.me/{me.username}?start={token}"
-    await message.answer(
-        t.invite_created.format(link=link),
-        reply_markup=to_server(data["server_id"]),
-    )
-
-
-# --- Redeem invite (вызывается из common.cmd_start_deep) --------------------
-
-async def redeem_invite(
-    message: Message,
-    session: AsyncSession,
-    user: User,
-    token: str,
-) -> bool:
-    """Погашение инвайта (Блок «Ревизия» — переведён на подписочную модель).
-
-    Раньше инвайт создавал одиночный пир на ОДНОМ сервере в обход лимитов
-    подписки. Теперь это обычное устройство: все READY-локации (кроме приватных
-    серверов), лимит sub_max_devices уважается, конфиги приходят с QR и
-    vpn://-ссылкой — как при «➕ Добавить устройство». Server_id инвайта остался
-    учётным якорем (у какого сервера в админке лежит список инвайтов)."""
-    invite = await repo.get_invite(session, token)
-    if invite is None or invite.used_at is not None:
-        return False
-
-    # Истёкшая подписка: устройство создалось бы и тут же было отозвано тиком
-    # планировщика. Не жжём инвайт — пусть сначала продлит.
-    exp = user.sub_expires_at
-    if exp is not None:
-        exp_aware = exp if exp.tzinfo else exp.replace(tzinfo=timezone.utc)
-        if exp_aware <= datetime.now(timezone.utc):
-            await message.answer(
-                "🎟 Инвайт принят, но твоя подписка закончилась — сначала продли "
-                "её в «🎫 Подписка», потом открой ссылку ещё раз.",
-                reply_markup=back_to_menu(),
-            )
-            return True
-
-    # Лимит подписки уважаем и здесь: инвайт — приглашение, а не обход лимитов.
-    used = await repo.count_active_devices(session, user.id)
-    if used >= user.sub_max_devices:
-        await message.answer(
-            "🎟 Инвайт принят, но у тебя уже занят весь лимит устройств "
-            f"({used}/{user.sub_max_devices}). Освободи слот в "
-            "«📱 Устройства» и открой ссылку ещё раз.",
-            reply_markup=back_to_menu(),
-        )
-        return True
-
-    if not await repo.list_ready_servers(session, for_user=user):
-        return False
-
-    await message.answer(
-        t.start_with_invite.format(name=ui.safe(message.from_user.full_name) or "друг")
-    )
-
-    label = invite.label or f"tg-{user.tg_id}"
-    device = await repo.create_device(session, user_id=user.id, label=label)
-    try:
-        made = await provision_device_peers(session, user, device)
-        if not made:
-            raise SSHError("не удалось создать конфиг ни на одной локации")
-        await repo.mark_invite_used(session, invite, user.tg_id)
-        await session.commit()
-    except SSHError as exc:
-        await session.rollback()
-        # Сырой exc юзеру не показываем (техножаргон + может раскрыть host).
-        logger.warning("Invite redeem failed: {}", exc)
-        await message.answer(
-            "⚠️ Не получилось создать конфиг. Попробуй открыть ссылку ещё раз "
-            "чуть позже — или напиши в поддержку («🆘 Поддержка» в меню).",
-            reply_markup=back_to_menu(),
-        )
-        # Возвращаем True: токен погасить не успели, но redeem был валидным —
-        # не показываем пользователю «инвайт некорректен».
-        return True
-    except Exception:
-        await session.rollback()
-        logger.exception("Unexpected invite redeem error")
-        await message.answer(t.error_generic, reply_markup=back_to_menu())
-        return True
-
-    for _server, peer in made:
-        await ask_config_format(message.chat.id, session, peer)
-    await message.answer(
-        t.invite_config_created.format(label=label),
-        reply_markup=back_to_menu(),
-    )
-    return True
-
+# Инвайты (одноразовые ссылки для друзей) удалены 20.08.2026 по решению
+# Влада: за всё время их выдали шесть штук, последний — 9 июля, и все
+# погашены. Раздача доступов теперь идёт через реферальные ссылки, которые
+# ещё и приводят деньги. Таблица `invites` в боевой базе НЕ удалена — там
+# лежит история, кто по какому инвайту пришёл.
 
 router.include_router(router_admin)

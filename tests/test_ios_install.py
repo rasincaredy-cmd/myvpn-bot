@@ -57,7 +57,8 @@ def test_instruction_warns_about_apple_id_balance() -> None:
 # test_instruction_lives_in_one_place поймает саму копию.
 @pytest.mark.parametrize(
     "attr",
-    ["help_text", "onboard_help", "device_created", "invite_config_created"],
+    # `invite_config_created` выбыл 20.08.2026 вместе с самими инвайтами.
+    ["help_text", "onboard_help", "device_created"],
 )
 def test_screens_use_the_shared_instruction(attr: str) -> None:
     from bot.texts import t

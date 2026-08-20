@@ -8,7 +8,6 @@ from bot.db.models import Peer, Server
 from bot.keyboards.inline.prefixes import (
     CB_ADMIN,
     CB_CANCEL,
-    CB_INVITES,
     CB_PANEL,
     CB_SERVERS,
     CB_WDTT,
@@ -39,8 +38,6 @@ def server_card(
     kb = InlineKeyboardBuilder()
     kb.button(text="👥 Peers сервера", callback_data=f"{CB_SERVERS}:peers:{server_id}")
     kb.button(text="🛡 Обходы сервера", callback_data=f"{CB_SERVERS}:wdtt:{server_id}")
-    kb.button(text="🎟 Инвайт",        callback_data=f"{CB_INVITES}:new:{server_id}")
-    kb.button(text="📋 Инвайты",       callback_data=f"{CB_INVITES}:list:{server_id}")
     kb.button(text="📊 Трафик",        callback_data=f"{CB_SERVERS}:traffic:{server_id}")
     kb.button(text="🖥 Состояние",     callback_data=f"{CB_SERVERS}:stats:{server_id}")
     # Скорость и объём канала: упираемся мы в трафик, а не в процессор, и
@@ -156,44 +153,6 @@ def location_choice_kb(
     kb.adjust(1)
     return kb.as_markup()
 
-
-def invites_list_kb(
-    rows: list[tuple[int, str, str]],  # (invite_id, icon, label) — уже срез страницы
-    server_id: int,
-    page: int = 0,
-    has_prev: bool = False,
-    has_next: bool = False,
-) -> InlineKeyboardMarkup:
-    kb = InlineKeyboardBuilder()
-    for invite_id, icon, label in rows:
-        kb.button(
-            text=f"{icon} {label}",
-            callback_data=f"{CB_INVITES}:open:{invite_id}",
-        )
-    if has_prev:
-        kb.button(text="← Назад",  callback_data=f"{CB_INVITES}:list:{server_id}:{page - 1}")
-    if has_next:
-        kb.button(text="Вперёд →", callback_data=f"{CB_INVITES}:list:{server_id}:{page + 1}")
-    kb.button(text="« К серверу", callback_data=f"{CB_SERVERS}:open:{server_id}")
-    kb.adjust(1)
-    return kb.as_markup()
-
-
-def invite_card_kb(
-    invite_id: int, server_id: int, can_revoke: bool, used: bool = False
-) -> InlineKeyboardMarkup:
-    kb = InlineKeyboardBuilder()
-    if can_revoke:
-        kb.button(text="🗑 Отозвать", callback_data=f"{CB_INVITES}:del:{invite_id}")
-    elif used:
-        # Использованный инвайт: пир выдан отдельно, а запись висит в истории —
-        # даём убрать её.
-        kb.button(text="🗑 Удалить из истории", callback_data=f"{CB_INVITES}:del:{invite_id}")
-    kb.button(text="« К инвайтам", callback_data=f"{CB_INVITES}:list:{server_id}")
-    kb.adjust(1)
-    return kb.as_markup()
-
-# --- Admin: управление пирами любого юзера -----------------------------------
 
 def server_peers_admin(
     peers: list[Peer],

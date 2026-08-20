@@ -113,6 +113,11 @@ class User(Base):
     # Кто привёл (users.id). Ставится один раз при ПЕРВОМ /start по реф-ссылке;
     # без FK-констрейнта — SQLite ADD COLUMN на живой базе не умеет REFERENCES.
     referrer_id: Mapped[int | None] = mapped_column(Integer)
+    # Именная реферальная ссылка: `?start=ref_vlad` вместо `?start=ref_7`
+    # (20.08.2026). Влад распространяет её на форумах, и номер строки в базе
+    # выглядит там мусором. Nullable: код выдаётся при первом заходе в раздел,
+    # а старым юзерам колонку добавит авто-миграция пустой.
+    ref_code: Mapped[str | None] = mapped_column(String(32), index=True, unique=True)
     # Автопродление при истечении: если хватает баланса — планировщик списывает
     # месяц текущего тарифа вместо отзыва устройств. Юзер может выключить.
     autopay: Mapped[bool] = mapped_column(
@@ -309,25 +314,10 @@ class Device(Base):
     )
 
 
-class Invite(Base):
-    """Одноразовый токен для друзей: /start <token> привязывает peer к новому юзеру."""
-
-    __tablename__ = "invites"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    token: Mapped[str] = mapped_column(String(64), unique=True, index=True)
-    server_id: Mapped[int] = mapped_column(
-        ForeignKey("servers.id", ondelete="CASCADE")
-    )
-    issued_by_tg_id: Mapped[int] = mapped_column(BigInteger)
-    label: Mapped[str | None] = mapped_column(String(64))
-    used_by_tg_id: Mapped[int | None] = mapped_column(BigInteger)
-    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
-
+# Модель Invite удалена 20.08.2026 вместе с самой механикой одноразовых
+# ссылок (решение Влада). Таблица `invites` в БОЕВОЙ базе оставлена как
+# есть: там история шести погашенных инвайтов, а сносить данные ради
+# чистоты схемы — плохой размен.
 
 class WdttAccess(Base):
     """Доступ обхода белых списков (wdtt): пароль на wdtt-сервере + wdtt://-ссылка.

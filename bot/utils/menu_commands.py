@@ -12,12 +12,11 @@ _BASE_COMMANDS = [
 ]
 
 # Блок «Ревизия»: /servers (не имел хендлера) и /newpeer (легаси-выдача вне
-# подписочной модели) убраны — всё живёт в /admin; /invite оставлен как шорткат.
+# подписочной модели) убраны — всё живёт в /admin.
 _ADMIN_EXTRA = [
     BotCommand(command="admin", description="👮 Админ-панель"),
     BotCommand(command="exit", description="✖️ Отменить текущее действие"),
     BotCommand(command="install", description="🛠 Установить VPN на VPS"),
-    BotCommand(command="invite", description="🎟 Создать инвайт"),
 ]
 
 

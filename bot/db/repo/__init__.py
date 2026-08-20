@@ -49,12 +49,6 @@ from bot.db.repo.devices import (
     list_wdtt_for_device,
     revoke_device,
 )
-from bot.db.repo.invites import (
-    delete_invite,
-    get_invite,
-    list_invites_for_server,
-    mark_invite_used,
-)
 from bot.db.repo.peers import (
     delete_peer,
     get_peer,
@@ -129,13 +123,11 @@ __all__ = [
     "creds_from_server",
     "delete_audit_older_than",
     "delete_device",
-    "delete_invite",
     "delete_peer",
     "delete_wdtt_access",
     "find_support_route_by_admin_msg",
     "get_crypto_invoice",
     "get_device",
-    "get_invite",
     "get_or_create_user",
     "get_peer",
     "get_platega_payment",
@@ -156,7 +148,6 @@ __all__ = [
     "list_broadcast_targets",
     "list_devices_for_user",
     "list_grace_expired_peers",
-    "list_invites_for_server",
     "list_known_locations",
     "list_open_invoices",
     "list_open_platega_payments",
@@ -170,7 +161,6 @@ __all__ = [
     "list_wdtt_for_server",
     "list_wdtt_for_user",
     "log_action",
-    "mark_invite_used",
     "purge_old_support_routes",
     "purge_user_records",
     "revive_peer",

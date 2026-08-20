@@ -106,14 +106,13 @@ async def cmd_start_deep(
 
     token = (command.args or "").strip()
 
-    # Реф-ссылка t.me/<bot>?start=ref_<user.id> (Блок «Баланс»).
+    # Реф-ссылка t.me/<bot>?start=ref_<код> — код именной («ref_vlad»), но
+    # старые числовые ссылки понимаются тоже: они уже разосланы (Блок «Рефка»).
     if token.startswith("ref_"):
         if not existed and user.referrer_id is None:
-            ref_raw = token[4:]
-            referrer = (
-                await repo.get_user_by_id(session, int(ref_raw))
-                if ref_raw.isdigit() else None
-            )
+            from bot.services import referral
+
+            referrer = await referral.resolve(session, token[4:])
             if referrer is not None and referrer.id != user.id:
                 user.referrer_id = referrer.id
                 await session.commit()
@@ -123,14 +122,9 @@ async def cmd_start_deep(
         await send_start_screens(message, user, is_new=not existed, session=session)
         return
 
-    from bot.handlers.configs import redeem_invite
-
-    if token:
-        ok = await redeem_invite(message, session, user, token)
-        if ok:
-            return
-        await message.answer(t.invite_invalid)
-
+    # Незнакомый токен в /start больше ничего не значит: инвайты удалены
+    # 20.08.2026, а реферальные ссылки разобраны выше. Молча показываем меню —
+    # ругаться на ссылку, которой просто нет, незачем.
     await send_start_screens(message, user, is_new=not existed, session=session)
 
 
@@ -350,6 +344,7 @@ async def cb_cancel(call: CallbackQuery, state: FSMContext, session: AsyncSessio
     Приоритет назначения (`cancel_to` кладут сами потоки в FSM-данные):
       • wdtt   → список обхода БС;
       • dev    → список устройств;
+      • ref    → реферальный экран (ввод своего имени в ссылке);
       • server_id → карточка сервера (создание peer/инвайта с карточки);
       • panel  → админ-панель (установка VPN, выбор сервера из панели);
       • иначе  → главное меню.
@@ -371,6 +366,10 @@ async def cb_cancel(call: CallbackQuery, state: FSMContext, session: AsyncSessio
     if dest == "bal":
         from bot.handlers.balance import cb_bal_my
         await cb_bal_my(call, state, session)
+        return
+    if dest == "ref":
+        from bot.handlers.balance import cb_bal_ref
+        await cb_bal_ref(call, session)
         return
     if server_id is not None:
         server = await repo.get_server(session, server_id)

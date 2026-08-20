@@ -5,7 +5,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.db import repo
 from bot.db.models import (
-    Invite,
     Peer,
     PeerStatus,
     Server,
@@ -142,30 +141,6 @@ class TestPeers:
         assert peer.revoked_at is not None
 
 
-class TestInvites:
-    async def test_get_invite_and_mark_used(self, session: AsyncSession) -> None:
-        server = await repo.create_server(
-            session, name="s", host="1.1.1.1", wg_port=585,
-            owner_tg_id=111, status=ServerStatus.READY,
-        )
-        invite = Invite(
-            token="tok-123",
-            server_id=server.id,
-            issued_by_tg_id=111,
-            label="vasya",
-        )
-        session.add(invite)
-        await session.flush()
-
-        found = await repo.get_invite(session, "tok-123")
-        assert found is not None
-        assert found.used_at is None
-
-        await repo.mark_invite_used(session, found, tg_id=555)
-        assert found.used_by_tg_id == 555
-        assert found.used_at is not None
-
-    async def test_get_invite_returns_none_for_unknown_token(
-        self, session: AsyncSession
-    ) -> None:
-        assert await repo.get_invite(session, "nope") is None
+# TestInvites удалён 20.08.2026 вместе с самой механикой одноразовых
+# ссылок: за всё время их выдали шесть, последний — 9 июля, и все
+# погашены. Раздача идёт реферальными ссылками — tests/test_referral_code.py.

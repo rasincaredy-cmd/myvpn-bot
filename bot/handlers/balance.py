@@ -29,6 +29,7 @@ from bot.keyboards.inline import (
     cancel_only,
     deposit_amounts_kb,
     deposit_methods_kb,
+    referral_kb,
     tariff_confirm_kb,
     tariff_kb,
     invoice_kb,
@@ -38,7 +39,7 @@ from bot.keyboards.inline import (
     topup_kb,
 )
 from bot.loader import bot
-from bot.services import billing, cryptopay, platega
+from bot.services import billing, cryptopay, platega, referral
 from bot.services.pricing import (
     DEPOSIT_BONUS_PERCENT,
     TERM_DISCOUNTS,
@@ -664,29 +665,86 @@ async def cb_bal_history(call: CallbackQuery, session: AsyncSession) -> None:
 
 @router.callback_query(F.data == f"{CB_BAL}:ref")
 async def cb_bal_ref(call: CallbackQuery, session: AsyncSession) -> None:
+    """Реферальная программа с ИМЕННОЙ ссылкой.
+
+    До 20.08.2026 ссылка была вида `?start=ref_7` — номер строки в базе. Влад
+    распространяет её на форумах, где такой номер выглядит мусором.
+    """
     user = await _get_user(session, call)
-    username = await _get_bot_username()
-    link = f"https://t.me/{username}?start=ref_{user.id}"
+    code = await referral.ensure_code(session, user)
+    await session.commit()
+    link = f"https://t.me/{await _get_bot_username()}?start=ref_{code}"
     invited = await repo.count_referrals(session, user.id)
     earned = await repo.sum_ref_earned(session, user.id)
-    text = (
-        f"👥 <b>Приведи друга — получай {settings.referral_percent}% "
-        "с каждого его пополнения</b>\n\n"
-        "Отправь другу свою ссылку. Каждый раз, когда он пополняет баланс, "
-        f"тебе приходит <b>{settings.referral_percent}%</b> от суммы — "
-        "настоящими деньгами на твой баланс, ими можно оплачивать свою "
-        "подписку. Не разово, а с каждого пополнения, всегда.\n\n"
-        f"Твоя ссылка (нажми, чтобы скопировать):\n<code>{link}</code>\n\n"
-        f"• Приглашено: <b>{invited}</b>\n"
-        f"• Заработано: <b>{fmt_rub(earned)}</b>\n\n"
-        "<i>Можно просто переслать другу: «Держи VPN, который работает: "
-        f"{link} — первые {settings.trial_days} дней бесплатно»</i>"
+    text = ui.screen(
+        ui.title("👥", "Приведи друга"),
+        lead=(
+            f"С каждого пополнения приглашённого тебе приходит "
+            f"<b>{settings.referral_percent}%</b> — настоящими деньгами на "
+            "баланс, не разово, а всегда."
+        ),
+        facts=[
+            ui.fact("👤", "Приглашено", invited),
+            ui.fact("💰", "Заработано", fmt_rub(earned)),
+        ],
+        note=(
+            "🔗 <b>Твоя ссылка</b> (нажми, чтобы скопировать):\n"
+            f"<code>{link}</code>\n"
+            "<i>Ссылка постоянная: сменишь ник в Telegram — она продолжит "
+            "работать.</i>"
+        ),
     )
-    from aiogram.utils.keyboard import InlineKeyboardBuilder as IKB
-    kb = IKB()
-    kb.button(text="‹ Баланс", callback_data=f"{CB_BAL}:my")
-    await call.message.edit_text(text, reply_markup=kb.as_markup())
+    await call.message.edit_text(text, reply_markup=referral_kb())
     await call.answer()
+
+
+@router.callback_query(F.data == f"{CB_BAL}:refedit")
+async def cb_bal_ref_edit(call: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(BalanceStates.ref_code)
+    await state.update_data(cancel_to="ref")
+    await call.message.edit_text(
+        ui.screen(
+            ui.title("✏️", "Своё имя в ссылке"),
+            lead="Пришли, каким словом хочешь заменить хвост ссылки.",
+            note=(
+                "Латиница, цифры и подчёркивание, от 3 до 32 символов, начинать "
+                "с буквы. Например: <code>moschata_vlad</code> — тогда ссылка "
+                "станет <code>…?start=ref_moschata_vlad</code>.\n"
+                "<i>Старая ссылка после смены перестанет работать — если ты уже "
+                "разослал её, лучше оставь как есть.</i>"
+            ),
+        ),
+        reply_markup=cancel_only(),
+    )
+    await call.answer()
+
+
+@router.message(BalanceStates.ref_code, F.text)
+async def step_ref_code(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    user = await _get_user(session, message)
+    result = await referral.set_code(session, user, message.text)
+    if result == "invalid":
+        await message.answer(
+            "Так не подойдёт. Нужна латиница, цифры или подчёркивание, от 3 до "
+            "32 символов, первым символом — буква. Попробуй ещё раз:"
+        )
+        return
+    if result == "taken":
+        await message.answer(
+            "Это имя уже занято. Придумай другое — например, добавь цифру:"
+        )
+        return
+    await state.clear()
+    await session.commit()
+    link = f"https://t.me/{await _get_bot_username()}?start=ref_{user.ref_code}"
+    await message.answer(
+        ui.screen(
+            ui.title("✅", "Готово"),
+            lead="Теперь твоя ссылка выглядит так:",
+            note=f"<code>{link}</code>",
+        ),
+        reply_markup=referral_kb(),
+    )
 
 
 # ── Продление / покупка подписки ─────────────────────────────────────────────

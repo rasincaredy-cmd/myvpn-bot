@@ -17,9 +17,6 @@ class InstallStates(StatesGroup):
     confirm = State()
 
 
-class InviteStates(StatesGroup):
-    pick_server = State()
-    label = State()
 
 
 class BroadcastStates(StatesGroup):
@@ -64,6 +61,7 @@ class SubAdminStates(StatesGroup):
 
 class BalanceStates(StatesGroup):
     custom_amount = State()  # своя сумма пополнения
+    ref_code = State()       # своё имя в реферальной ссылке (Блок «Рефка»)
 
 
 class SupportStates(StatesGroup):

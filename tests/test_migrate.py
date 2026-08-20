@@ -5,8 +5,15 @@ import pytest
 from sqlalchemy import inspect, text
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from bot.db import models  # noqa: F401 — регистрирует таблицы в Base.metadata
 from bot.db.base import Base
 from bot.db.migrate import run_migrations
+
+# Импорт `models` выше обязателен и не является лишним: без него
+# `Base.metadata.tables` пуст, create_all не создаёт ничего, миграции нечего
+# добавлять — и тест проходил только когда модели успевал импортировать
+# какой-нибудь другой тест-модуль. В одиночку `pytest tests/test_migrate.py`
+# падал (найдено 20.08.2026).
 
 
 @pytest.mark.asyncio
@@ -65,3 +72,62 @@ async def test_idempotent_second_run() -> None:
         await run_migrations(conn)
         await run_migrations(conn)  # второй раз — no-op
     await engine.dispose()
+
+
+class TestIndexes:
+    """`ALTER TABLE ADD COLUMN` не создаёт индексы — их надо добирать отдельно.
+
+    Поймано на `users.ref_code` (Блок «Рефка», 20.08.2026): уникальность была
+    объявлена в модели, а в боевой базе её бы просто не существовало, и два
+    человека заняли бы одно имя реферальной ссылки.
+    """
+
+    @pytest.mark.asyncio
+    async def test_missing_unique_index_is_created(self) -> None:
+        from sqlalchemy import inspect, text
+        from sqlalchemy.ext.asyncio import create_async_engine
+
+        from bot.db.base import Base
+        from bot.db.migrate import run_migrations
+
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+            # Имитируем боевую базу: индекс уронили, колонка осталась.
+            await conn.execute(text("DROP INDEX IF EXISTS ix_users_ref_code"))
+            names = await conn.run_sync(
+                lambda c: {i["name"] for i in inspect(c).get_indexes("users")}
+            )
+            assert "ix_users_ref_code" not in names, "индекс не удалился, тест бессмыслен"
+
+            await run_migrations(conn)
+
+            names = await conn.run_sync(
+                lambda c: {i["name"] for i in inspect(c).get_indexes("users")}
+            )
+            assert "ix_users_ref_code" in names
+        await engine.dispose()
+
+    @pytest.mark.asyncio
+    async def test_duplicate_rows_do_not_break_startup(self) -> None:
+        """Уникальный индекс поверх дублей не создастся — но старт бота из-за
+        этого падать не должен: без индекса он работает, а дубли разбирает
+        человек."""
+        from sqlalchemy import text
+        from sqlalchemy.ext.asyncio import create_async_engine
+
+        from bot.db.base import Base
+        from bot.db.migrate import run_migrations
+
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:", future=True)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+            await conn.execute(text("DROP INDEX IF EXISTS ix_users_ref_code"))
+            # NOT NULL-поля заполняем явно: в боевой базе их проставляет
+            # ORM, а здесь мы пишем в обход неё.
+            await conn.execute(text(
+                "INSERT INTO users (tg_id, ref_code, is_admin, is_vip, is_blocked) "
+                "VALUES (9001, 'dup', 0, 0, 0), (9002, 'dup', 0, 0, 0)"
+            ))
+            await run_migrations(conn)  # не должно бросить
+        await engine.dispose()

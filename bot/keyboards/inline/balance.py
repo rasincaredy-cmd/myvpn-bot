@@ -194,3 +194,16 @@ def tariff_confirm_kb(devices: int, bypass: int) -> InlineKeyboardMarkup:
     kb.button(text="‹ Назад", callback_data=f"{CB_BAL}:ext:{devices}:{bypass}")
     kb.adjust(1)
     return kb.as_markup()
+
+
+def referral_kb() -> InlineKeyboardMarkup:
+    """Реферальный экран: сменить имя в ссылке и выход.
+
+    Смена имени — отдельная кнопка, а не «настройка где-то там»: ссылку несут
+    на форумы, и человек хочет, чтобы она называлась им, а не номером.
+    """
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✏️ Изменить ссылку", callback_data=f"{CB_BAL}:refedit")
+    kb.button(text="‹ Баланс", callback_data=f"{CB_BAL}:my")
+    kb.adjust(1)
+    return kb.as_markup()

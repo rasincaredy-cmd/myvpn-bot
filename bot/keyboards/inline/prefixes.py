@@ -6,7 +6,6 @@ from __future__ import annotations
 CB_MENU = "menu"
 CB_INSTALL = "install"
 CB_SERVERS = "srv"
-CB_INVITES = "inv"
 CB_ADMIN = "adm"          # admin-панель: управление пирами любого юзера
 CB_PANEL = "pnl"   # admin-панель
 CB_WDTT = "wdtt"   # обход белых списков (wdtt / proxy-turn-vk)

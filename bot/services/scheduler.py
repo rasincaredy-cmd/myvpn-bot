@@ -13,6 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
+from bot.texts import ui
 from bot.db import repo
 from bot.db.base import session_scope
 from bot.db.models import Device, Peer, PeerStatus, User, WdttAccess
@@ -22,7 +23,7 @@ from bot.services import amnezia
 from bot.services import wdtt as wdtt_svc
 from bot.services.crypto import decrypt
 from bot.services.ssh import SSHClient, SSHError
-from bot.texts import t
+from bot.texts import t, ui
 from bot.utils.timefmt import as_utc
 
 
@@ -802,7 +803,7 @@ async def run() -> None:
                             await _notify(
                                 admin_id,
                                 "⚠️ <b>Ночной бэкап не ушёл</b>\n"
-                                f"<code>{str(exc)[:200]}</code>\n\n"
+                                f"<code>{ui.safe(str(exc)[:200])}</code>\n\n"
                                 f"Попробую ещё {left} раз(а) сегодня. "
                                 "Если бэкапов нет несколько дней — проверь "
                                 "размер базы: Telegram не принимает файлы "

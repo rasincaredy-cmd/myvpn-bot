@@ -238,6 +238,19 @@ async def cb_menu_locations(call: CallbackQuery, session: AsyncSession) -> None:
         username=call.from_user.username,
         full_name=call.from_user.full_name,
     )
+    await call.message.edit_text(
+        await build_locations_text(session, user), reply_markup=back_to_menu()
+    )
+    await call.answer()
+
+
+async def build_locations_text(session: AsyncSession, user) -> str:
+    """Витрина доступных стран.
+
+    Названия локаций ЭКРАНИРУЕМ: их вводит админ свободным текстом, они нигде
+    не проверяются, а этот экран видят все юзеры — одна угловая скобка в
+    названии обрушила бы его целиком (аудит 20.08.2026).
+    """
     servers = await repo.list_ready_servers(session, for_user=user)
     lines = [t.locations_intro]
     if not servers:
@@ -249,10 +262,9 @@ async def cb_menu_locations(call: CallbackQuery, session: AsyncSession) -> None:
             if loc not in seen:
                 seen.append(loc)
         for loc in seen:
-            lines.append(f"{loc} — ✅ Доступно")
+            lines.append(f"{ui.safe(loc)} — ✅ Доступно")
     lines.append(t.locations_footer)
-    await call.message.edit_text("\n".join(lines), reply_markup=back_to_menu())
-    await call.answer()
+    return "\n".join(lines)
 
 
 def _notify_text(enabled: bool) -> str:
@@ -376,7 +388,7 @@ async def cb_cancel(call: CallbackQuery, state: FSMContext, session: AsyncSessio
         if server is not None:
             peers = await repo.list_peers_for_server(session, server.id)
             error_block = (
-                f"\n<i>Last error:</i> <code>{server.last_error[:200]}</code>"
+                f"\n<i>Last error:</i> <code>{ui.safe(server.last_error[:200])}</code>"
                 if server.last_error
                 else ""
             )
@@ -388,7 +400,7 @@ async def cb_cancel(call: CallbackQuery, state: FSMContext, session: AsyncSessio
                 peers=len(peers),
                 error_block=error_block,
             )
-            text += f"\n🌍 Локация: {server.location or '—'}"
+            text += f"\n🌍 Локация: {ui.safe(server.location) or '—'}"
             await call.message.edit_text(
                 text,
                 reply_markup=server_card(server.id, server.wdtt_enabled, server.is_private),

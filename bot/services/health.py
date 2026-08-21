@@ -29,6 +29,7 @@ from cryptography import x509
 from loguru import logger
 
 from bot.config import settings
+from bot.texts import ui
 
 _STATE_FILE = settings.data_dir / "health_state.json"
 
@@ -554,7 +555,7 @@ async def run_round(session) -> None:
             collected.append(Alert(
                 key=f"{server.id}:ssh", level="crit",
                 title="Сервер не отвечает",
-                detail=f"Не удалось подключиться по SSH: <code>{exc}</code>",
+                detail=f"Не удалось подключиться по SSH: <code>{ui.safe(exc)}</code>",
             ))
             names[f"{server.id}:ssh"] = server.name
             continue

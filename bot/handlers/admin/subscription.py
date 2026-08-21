@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
 from bot.db import repo
+from bot.texts import ui
 from bot.db.models import AuditAction
 from bot.handlers.admin.common import trial_line
 from bot.keyboards.inline import (
@@ -47,7 +48,7 @@ async def _render_sub_card(call: CallbackQuery, session: AsyncSession, user, pag
     trf = amnezia.fmt_traffic_line(await repo.sub_traffic_used(session, user),
                                    user.sub_traffic_limit_bytes, sub_expired)
     await call.message.edit_text(
-        f"🎫 <b>Подписка — {user.full_name or user.tg_id}</b>\n"
+        f"🎫 <b>Подписка — {ui.safe(user.full_name) or user.tg_id}</b>\n"
         f"• Устройства: <b>{used}/{user.sub_max_devices}</b>\n"
         f"• Обход БС: <b>{bypass}/{user.sub_max_bypass}</b>\n"
         f"• Срок: <b>{srok}</b>\n"
@@ -406,7 +407,7 @@ async def cb_panel_sub_give(call: CallbackQuery, session: AsyncSession) -> None:
         for m in sorted(TERM_DISCOUNTS)
     ]
     await call.message.edit_text(
-        f"🎫 <b>Выдать подписку — {user.full_name or user.tg_id}</b>\n\n"
+        f"🎫 <b>Выдать подписку — {ui.safe(user.full_name) or user.tg_id}</b>\n\n"
         f"Тариф юзера: <b>{user.sub_max_devices}</b> устр. + "
         f"<b>{user.sub_max_bypass}</b> обх. = <b>{fmt_rub(monthly)}/мес</b>.\n"
         "Деньги <b>не списываются</b> — суммы на кнопках лишь показывают, "

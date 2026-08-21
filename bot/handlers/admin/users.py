@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
 from bot.db import repo
+from bot.texts import ui
 from bot.db.models import AuditAction
 from bot.handlers.admin.common import PER_PAGE, user_card_text
 from bot.keyboards.inline import (
@@ -178,7 +179,7 @@ async def cb_panel_user_delete_ask(call: CallbackQuery, session: AsyncSession) -
     bypass = await repo.count_active_wdtt_for_user(session, user.id)
     from bot.services.pricing import fmt_rub
     await call.message.edit_text(
-        f"🗑 <b>Стереть юзера {user.full_name or user.tg_id} из БД?</b>\n\n"
+        f"🗑 <b>Стереть юзера {ui.safe(user.full_name) or user.tg_id} из БД?</b>\n\n"
         "Будет удалено безвозвратно:\n"
         f"• устройств: <b>{devices}</b>, обходов: <b>{bypass}</b> "
         "(конфиги отзываются с серверов сразу)\n"

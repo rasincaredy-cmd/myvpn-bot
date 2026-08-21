@@ -18,6 +18,7 @@ from datetime import datetime
 from loguru import logger
 
 from bot.config import settings
+from bot.texts import ui
 
 _MARKER_FILE = settings.data_dir / "last_linkcheck_date.txt"
 
@@ -76,7 +77,10 @@ async def run_check() -> list[str]:
         for label, url in _collect_urls():
             issue = await _check_url(http, url)
             if issue:
-                problems.append(f"• <b>{label}</b> — {url}\n  {issue}")
+                # Текст исключения экранируем: в repr сетевых ошибок попадаются
+                # угловые скобки, и тогда Telegram не примет саму тревогу —
+                # проблема осталась бы невидимой из-за формы сообщения о ней.
+                problems.append(f"• <b>{label}</b> — {url}\n  {ui.safe(issue)}")
                 logger.warning("Linkcheck: {} {} -> {}", label, url, issue)
     return problems
 

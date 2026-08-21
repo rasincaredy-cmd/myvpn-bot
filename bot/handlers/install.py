@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
 from bot.db import repo
+from bot.texts import ui
 from bot.db.models import ServerStatus
 from bot.filters.admin import AdminFilter
 from bot.keyboards.inline import (
@@ -29,8 +30,9 @@ from bot.services import amnezia, hardening, wdtt_install
 from bot.services.crypto import encrypt
 from bot.services.ssh import SSHClient, SSHCredentials, SSHError
 from bot.states.install import InstallStates
-from bot.texts import t
+from bot.texts import t, ui
 from bot.utils.validators import (
+    clean_location,
     is_valid_host,
     is_valid_port,
     is_valid_server_name,
@@ -97,7 +99,17 @@ async def step_name(message: Message, state: FSMContext, session: AsyncSession) 
 @router.message(InstallStates.location, F.text)
 async def step_location(message: Message, state: FSMContext) -> None:
     raw = message.text.strip()
-    location = None if raw == "-" else raw[:64]
+    if raw == "-":
+        location = None
+    else:
+        location = clean_location(raw)
+        if location is None:
+            await message.answer(
+                "Локация: до 64 символов, без символов <code>&lt; &gt; &amp;</code> "
+                "(они ломают экраны бота). Например: <code>🇩🇪 Германия</code>. "
+                "Ещё раз:"
+            )
+            return
     await state.update_data(location=location)
     await state.set_state(InstallStates.host)
     await message.answer(t.install_ask_host, reply_markup=cancel_only())
@@ -336,7 +348,7 @@ async def step_run(
             session, server.id, ServerStatus.FAILED, last_error=str(exc)
         )
         await session.commit()
-        await bot.send_message(chat_id, t.install_failed.format(error=str(exc)[:1500]))
+        await bot.send_message(chat_id, t.install_failed.format(error=ui.safe(str(exc)[:1500])))
         return
     except Exception as exc:
         logger.exception("Unexpected install error")
@@ -344,7 +356,7 @@ async def step_run(
             session, server.id, ServerStatus.FAILED, last_error=repr(exc)
         )
         await session.commit()
-        await bot.send_message(chat_id, t.install_failed.format(error=str(exc)[:1500]))
+        await bot.send_message(chat_id, t.install_failed.format(error=ui.safe(str(exc)[:1500])))
         return
 
     server.server_public_key = result.server_public_key

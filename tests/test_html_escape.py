@@ -76,3 +76,43 @@ def test_no_raw_full_name_in_user_facing_formats() -> None:
                 if "full_name" in src and "safe" not in src:
                     offenders.append(f"{path.name}:{node.lineno} → {src}")
     assert not offenders, "имя подставлено в разметку без экранирования: " + "; ".join(offenders)
+
+def test_full_name_is_never_put_into_markup_raw() -> None:
+    """Сторож шире прежнего: имя нельзя вставлять в разметку НИКАК.
+
+    Первая версия смотрела только подстановку через шаблон (`format(name=...)`)
+    и пропустила пять f-строк в админке — включая карточку юзера, из-за которой
+    админ вообще не мог открыть человека с угловой скобкой в имени
+    (найдено аудитом 20.08.2026).
+
+    Смотрим все f-строки: если в куске подставляется `full_name` без `safe`,
+    это ошибка. Кнопки не считаем — их текст Telegram как разметку не разбирает.
+    """
+    import ast
+    from pathlib import Path as _Path
+
+    root = _Path(__file__).resolve().parent.parent
+    offenders: list[str] = []
+    for path in sorted((root / "bot").rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        # Подписи кнопок пропускаем: там разметки нет.
+        button_lines = {
+            node.lineno
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            for kw in node.keywords
+            if kw.arg == "text"
+        }
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.JoinedStr) or node.lineno in button_lines:
+                continue
+            for part in node.values:
+                if not isinstance(part, ast.FormattedValue):
+                    continue
+                src = ast.unparse(part.value)
+                if "full_name" in src and "safe" not in src:
+                    offenders.append(f"{path.relative_to(root)}:{node.lineno} → {src}")
+    assert not offenders, (
+        "имя из профиля Telegram попадает в разметку без экранирования: "
+        + "; ".join(offenders)
+    )

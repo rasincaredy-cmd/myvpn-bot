@@ -8,6 +8,7 @@ from aiogram.types import CallbackQuery
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.db import repo
+from bot.texts import ui
 from bot.db.models import PeerStatus
 from bot.keyboards.inline import (
     CB_SERVERS,
@@ -18,6 +19,7 @@ from bot.keyboards.inline import (
 )
 from bot.services import amnezia, health
 from bot.services.ssh import SSHClient, SSHError
+from bot.utils.tgtext import fit_to_message
 
 router = Router(name="servers_metrics")
 
@@ -39,7 +41,7 @@ async def cb_server_traffic(call: CallbackQuery, session: AsyncSession) -> None:
             traffic_list = await amnezia.get_peer_traffic(ssh)
     except SSHError as exc:
         await call.message.edit_text(
-            f"❌ SSH-ошибка: <code>{exc}</code>",
+            f"❌ SSH-ошибка: <code>{ui.safe(exc)}</code>",
             reply_markup=server_card(server.id, server.wdtt_enabled, server.is_private),
         )
         return
@@ -103,7 +105,8 @@ async def cb_server_traffic(call: CallbackQuery, session: AsyncSession) -> None:
             lines.append(f"  <code>{ti.public_key[:24]}…</code>")
 
     await call.message.edit_text(
-        "\n".join(lines), reply_markup=traffic_nav(server_id, has_orphans=bool(orphans))
+        fit_to_message(lines),
+        reply_markup=traffic_nav(server_id, has_orphans=bool(orphans)),
     )
 
 # --- Состояние сервера -------------------------------------------------------
@@ -126,7 +129,7 @@ async def cb_server_stats(call: CallbackQuery, session: AsyncSession) -> None:
             extras = health.parse_extras((await ssh.run(health.extras_command())).stdout)
     except SSHError as exc:
         await call.message.edit_text(
-            f"❌ SSH-ошибка: <code>{exc}</code>",
+            f"❌ SSH-ошибка: <code>{ui.safe(exc)}</code>",
             reply_markup=server_card(server.id, server.wdtt_enabled, server.is_private),
         )
         return
@@ -168,7 +171,7 @@ async def cb_server_channel(call: CallbackQuery, session: AsyncSession) -> None:
             res = await ssh.run(health.channel_command())
     except SSHError as exc:
         await call.message.edit_text(
-            f"❌ SSH-ошибка: <code>{exc}</code>",
+            f"❌ SSH-ошибка: <code>{ui.safe(exc)}</code>",
             reply_markup=server_card(server.id, server.wdtt_enabled, server.is_private),
         )
         return
@@ -195,7 +198,7 @@ async def cb_server_cleanup(call: CallbackQuery, session: AsyncSession) -> None:
             traffic_list = await amnezia.get_peer_traffic(ssh)
     except SSHError as exc:
         await call.message.edit_text(
-            f"❌ SSH-ошибка: <code>{exc}</code>",
+            f"❌ SSH-ошибка: <code>{ui.safe(exc)}</code>",
             reply_markup=server_card(server.id, server.wdtt_enabled, server.is_private),
         )
         return
@@ -221,7 +224,7 @@ async def cb_server_cleanup(call: CallbackQuery, session: AsyncSession) -> None:
                     failed += 1
     except SSHError as exc:
         await call.message.edit_text(
-            f"❌ SSH-ошибка: <code>{exc}</code>",
+            f"❌ SSH-ошибка: <code>{ui.safe(exc)}</code>",
             reply_markup=traffic_nav(server_id),
         )
         return

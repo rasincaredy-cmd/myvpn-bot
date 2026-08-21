@@ -11,6 +11,7 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.db import repo
+from bot.texts import ui
 from bot.db.models import ServerStatus
 from bot.filters.admin import AdminFilter
 from bot.keyboards.inline import (
@@ -25,8 +26,8 @@ from bot.keyboards.inline import (
 from bot.services import amnezia, hardening
 from bot.services.ssh import SSHClient, SSHError
 from bot.states.install import ServerEditStates
-from bot.texts import t
-from bot.utils.validators import is_valid_label
+from bot.texts import t, ui
+from bot.utils.validators import clean_location, is_valid_label
 
 router = Router(name="servers_card")
 
@@ -64,7 +65,7 @@ async def cb_server_open(
         return
     peers = await repo.list_peers_for_server(session, server.id)
     error_block = (
-        f"\n<i>Last error:</i> <code>{server.last_error[:200]}</code>"
+        f"\n<i>Last error:</i> <code>{ui.safe(server.last_error[:200])}</code>"
         if server.last_error
         else ""
     )
@@ -76,7 +77,7 @@ async def cb_server_open(
         peers=len(peers),
         error_block=error_block,
     )
-    text += f"\n🌍 Локация: {server.location or '—'}"
+    text += f"\n🌍 Локация: {ui.safe(server.location) or '—'}"
     text += f"\n🌐 DNS: <code>{server.dns or '1.1.1.1, 1.0.0.1'}</code>"
     if server.is_private:
         text += "\n🔒 <b>Приватный</b> — конфиги отсюда получают только админы и «друзья» (⭐ в карточке юзера)"
@@ -104,7 +105,7 @@ async def cb_server_location(
     await state.update_data(server_id=server_id, loc_names=known)
     await call.message.edit_text(
         "🌍 <b>Локация сервера</b>\n\n"
-        f"Текущая: {server.location or '—'}\n\n"
+        f"Текущая: {ui.safe(server.location) or '—'}\n\n"
         "Выбери из списка или введи текстом — страна с флагом "
         "(напр. <code>🇩🇪 Германия</code>). <code>-</code> — очистить.",
         reply_markup=location_choice_kb(
@@ -130,7 +131,12 @@ async def _finish_server_location(
     from aiogram.utils.keyboard import InlineKeyboardBuilder as IKB
     kb = IKB()
     kb.button(text="« К серверу", callback_data=f"{CB_SERVERS}:open:{server.id}")
-    await send(f"✅ Локация: {server.location or '—'}", reply_markup=kb.as_markup())
+    # Экранируем: локация — свободный текст, а сохранение уже прошло выше.
+    # Сообщение с угловой скобкой Telegram не примет, и админ решит, что смена
+    # не сработала, хотя она сработала (аудит 20.08.2026).
+    await send(
+        f"✅ Локация: {ui.safe(server.location) or '—'}", reply_markup=kb.as_markup()
+    )
 
 
 @router.message(ServerEditStates.location, F.text, AdminFilter())
@@ -138,9 +144,17 @@ async def step_server_location(
     message: Message, state: FSMContext, session: AsyncSession
 ) -> None:
     raw = message.text.strip()
-    await _finish_server_location(
-        message.answer, state, session, None if raw == "-" else raw[:64]
-    )
+    if raw == "-":
+        await _finish_server_location(message.answer, state, session, None)
+        return
+    location = clean_location(raw)
+    if location is None:
+        await message.answer(
+            "Локация: до 64 символов, без символов <code>&lt; &gt; &amp;</code> "
+            "(они ломают экраны бота). Например: <code>🇩🇪 Германия</code>. Ещё раз:"
+        )
+        return
+    await _finish_server_location(message.answer, state, session, location)
 
 
 @router.callback_query(ServerEditStates.location, F.data.startswith(f"{CB_SERVERS}:locpick:"))
@@ -334,7 +348,7 @@ async def cb_server_del_ok(call: CallbackQuery, session: AsyncSession) -> None:
                 )
         except SSHError as exc:
             logger.warning("Server {} remote cleanup ssh-failed: {}", server.id, exc)
-            cleanup_text = t.server_deleted_ssh_failed.format(error=str(exc)[:400])
+            cleanup_text = t.server_deleted_ssh_failed.format(error=ui.safe(str(exc)[:400]))
         except Exception:
             logger.exception("Server {} remote cleanup crashed", server.id)
             cleanup_text = t.server_deleted_ssh_failed.format(error="внутренняя ошибка")
@@ -381,7 +395,7 @@ async def cb_server_harden(call: CallbackQuery, session: AsyncSession) -> None:
         logger.warning("Проверка защиты сервера id={} сорвалась: {}", server_id, exc)
         with contextlib.suppress(TelegramBadRequest):
             await call.message.edit_text(
-                f"🛡 <b>Защита сервера</b>\n\nНе удалось подключиться: {exc}",
+                f"🛡 <b>Защита сервера</b>\n\nНе удалось подключиться: {ui.safe(exc)}",
                 reply_markup=back_to_servers_kb(),
             )
         return
@@ -443,7 +457,7 @@ async def cb_server_harden_run(call: CallbackQuery, session: AsyncSession) -> No
         logger.warning("Приведение сервера id={} к эталону сорвалось: {}", server_id, exc)
         with contextlib.suppress(TelegramBadRequest):
             await msg.edit_text(
-                f"🛡 <b>Защита сервера</b>\n\nСорвалось: {exc}",
+                f"🛡 <b>Защита сервера</b>\n\nСорвалось: {ui.safe(exc)}",
                 reply_markup=back_to_servers_kb(),
             )
         return

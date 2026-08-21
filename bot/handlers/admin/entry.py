@@ -9,6 +9,7 @@ from loguru import logger
 
 from bot.keyboards.inline import CB_PANEL, admin_panel_menu
 from bot.loader import bot as tg_bot
+from bot.texts import ui
 
 router = Router(name="admin_entry")
 
@@ -45,5 +46,5 @@ async def cb_panel_backup(call: CallbackQuery) -> None:
     except Exception as exc:
         logger.exception("Manual backup failed")
         await tg_bot.send_message(
-            call.message.chat.id, f"❌ Бэкап не получился: {exc}"
+            call.message.chat.id, f"❌ Бэкап не получился: {ui.safe(exc)}"
         )

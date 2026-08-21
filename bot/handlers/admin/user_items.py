@@ -14,7 +14,7 @@ from bot.keyboards.inline import (
     admin_user_items_kb,
 )
 from bot.services import amnezia
-from bot.texts import t
+from bot.texts import t, ui
 from bot.utils.timefmt import fmt_ago
 
 router = Router(name="admin_user_items")
@@ -151,7 +151,7 @@ async def cb_panel_user_bypass_open(call: CallbackQuery, session: AsyncSession) 
         f"🛡 <b>{access.label}</b>\n"
         f"• Платформа: <b>{plat}</b>\n"
         f"• VK-ссылка: <b>{vk}</b>\n"
-        f"• Сервер: <code>{labels.get(access.server_id, '?')}</code>\n"
+        f"• Сервер: <code>{ui.safe(labels.get(access.server_id, '?'))}</code>\n"
         f"• Статус: <b>{access.status}</b>\n"
         f"• 📊 Трафик: {amnezia.fmt_bytes(access.traffic_used_bytes)}\n"
         f"• 🕐 Последний трафик: {fmt_ago(access.last_seen_at)}",

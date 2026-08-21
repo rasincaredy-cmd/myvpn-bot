@@ -17,6 +17,7 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
+from bot.texts import ui
 from bot.db import repo
 from bot.db.models import AuditAction, PeerStatus
 from bot.filters.admin import AdminFilter
@@ -215,7 +216,7 @@ async def cb_wdtt_my_open(call: CallbackQuery, session: AsyncSession) -> None:
         f"⚡ <b>{access.label}</b>\n"
         f"• Платформа: <b>{plat}</b>\n"
         + (f"• Адрес подключения: <b>{vk}</b>\n" if vk else "")
-        + f"• 🌍 Локация: <b>{labels.get(access.server_id, '—')}</b>\n"
+        + f"• 🌍 Локация: <b>{ui.safe(labels.get(access.server_id, '—'))}</b>\n"
         f"• Статус: <b>{t.STATUS_RU.get(access.status, access.status)}</b>\n"
         f"• 📊 Трафик: {amnezia.fmt_bytes(access.traffic_used_bytes)}"
     )

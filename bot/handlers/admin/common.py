@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.db import repo
+from bot.texts import ui
 from bot.services import amnezia
 from bot.utils.timefmt import as_utc, fmt_msk
 
@@ -63,7 +64,10 @@ async def user_card_text(session: AsyncSession, user) -> str:
         status += " · ⭐ друг"
     from bot.services.pricing import fmt_rub
     return (
-        f"👤 <b>{user.full_name or '—'}</b>\n"
+        # Имя из профиля Telegram — чужой текст. Без экранирования админ не
+        # смог бы ОТКРЫТЬ карточку юзера с угловой скобкой в имени: Telegram
+        # такое сообщение не принимает (аудит 20.08.2026).
+        f"👤 <b>{ui.safe(user.full_name) or '—'}</b>\n"
         f"• Username: {('@' + user.username) if user.username else '—'}\n"
         f"• Telegram ID: <code>{user.tg_id}</code>\n"
         f"• Статус: {status}\n"

@@ -66,9 +66,9 @@ def _safe_filename_base(name: str) -> str:
 
 
 def _conf_filename(server: Server, label: str) -> str:
-    from bot.handlers.configs import config_display_base
+    from bot.handlers.configs import config_display_base_raw
 
-    base = _safe_filename_base(config_display_base(server))
+    base = _safe_filename_base(config_display_base_raw(server))
     return f"{base}-{label}.conf".replace(" ", "_")
 
 

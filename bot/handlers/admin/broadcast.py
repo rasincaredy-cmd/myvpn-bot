@@ -9,6 +9,7 @@ from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.db import repo
+from bot.texts import ui
 from bot.keyboards.inline import (
     CB_PANEL,
     back_to_panel,
@@ -50,7 +51,7 @@ async def _render_bc_select(call: CallbackQuery, state: FSMContext, session: Asy
     users = await repo.list_all_users(session, offset=page * _BC_SEL_PER_PAGE, limit=_BC_SEL_PER_PAGE)
     rows = []
     for u in users:
-        name = (f"@{u.username}" if u.username else None) or u.full_name or f"id{u.tg_id}"
+        name = (f"@{u.username}" if u.username else None) or ui.safe(u.full_name) or f"id{u.tg_id}"
         rows.append((u.id, u.id in selected, name))
     await call.message.edit_text(
         f"✍️ <b>Выбор получателей</b>\nОтмечено: <b>{len(selected)}</b>\n"

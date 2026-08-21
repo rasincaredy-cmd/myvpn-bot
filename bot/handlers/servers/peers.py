@@ -8,6 +8,7 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.db import repo
+from bot.texts import ui
 from bot.db.models import PeerStatus
 from bot.filters.admin import AdminFilter
 from bot.keyboards.inline import (
@@ -20,7 +21,7 @@ from bot.loader import bot
 from bot.services import amnezia, relocate
 from bot.services.ssh import SSHClient, SSHError
 from bot.states.install import PeerRenameStates, ServerEditStates
-from bot.texts import t
+from bot.texts import t, ui
 from bot.utils.timefmt import fmt_msk
 from bot.utils.validators import is_valid_label
 
@@ -441,7 +442,7 @@ async def cb_admin_peer_revive(call: CallbackQuery, session: AsyncSession) -> No
     except SSHError as exc:
         logger.warning("Peer revive ssh error: {}", exc)
         await call.message.edit_text(
-            f"❌ SSH-ошибка: <code>{exc}</code>",
+            f"❌ SSH-ошибка: <code>{ui.safe(exc)}</code>",
             reply_markup=admin_peer_card(peer.id, server.id, can_revoke=False),
         )
         return

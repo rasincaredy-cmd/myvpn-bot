@@ -38,7 +38,7 @@ from bot.keyboards.inline import (
 )
 from bot.services import relocate
 from bot.services.ssh import SSHError
-from bot.texts import t
+from bot.texts import t, ui
 
 router = Router(name="config_move")
 
@@ -139,7 +139,7 @@ async def _render_locations(
     labels = await repo.server_labels_map(session)
     await call.message.edit_text(
         f"🔀 <b>Куда переселить «{peer.label}»</b>\n\n"
-        f"Сейчас конфиг живёт здесь: <b>{labels.get(peer.server_id, '?')}</b>.\n"
+        f"Сейчас конфиг живёт здесь: <b>{ui.safe(labels.get(peer.server_id, '?'))}</b>.\n"
         "Выбери страну:",
         reply_markup=move_pick_location_kb(peer.id, names, device_id),
     )

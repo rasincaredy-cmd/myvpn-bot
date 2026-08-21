@@ -176,12 +176,24 @@ def _split_dns(dns: str | None) -> tuple[str, str]:
     return (parts[0] if parts else "1.1.1.1"), (parts[1] if len(parts) > 1 else "")
 
 
+def config_display_base_raw(server: Server) -> str:
+    """Локация БЕЗ экранирования — только туда, где HTML не разбирается:
+    имена файлов и подписи к вложениям."""
+    return server.location or server.name
+
+
 def config_display_base(server: Server) -> str:
     """Имя конфига для юзера: локация БЕЗ номера сервера («🇳🇱 Нидерланды», а не
     «🇳🇱 Нидерланды 2») — юзеру не важно, какой именно сервер локации ему достался.
     В интерфейсе бота нумерация «Локация N» остаётся (server_labels_map).
-    Фолбэк — имя сервера, если локация не задана."""
-    return server.location or server.name
+    Фолбэк — имя сервера, если локация не задана.
+
+    Результат ЭКРАНИРОВАН: локацию админ вводит свободным текстом и она нигде не
+    проверяется, а подставляется в разметку экранов, которые видят все юзеры.
+    Одна угловая скобка в названии — и Telegram отказывается принимать
+    сообщение, то есть опечатка админа ломает выдачу конфигов всем сразу
+    (аудит 20.08.2026)."""
+    return ui.safe(config_display_base_raw(server))
 
 
 async def make_vpn_link(session: AsyncSession, server: Server, label: str, conf: str) -> str:

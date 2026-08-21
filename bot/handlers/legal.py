@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
 from bot.db import repo
-from bot.keyboards.inline import CB_LEGAL, back_to_menu, consent_kb
+from bot.keyboards.inline import CB_LEGAL, back_to_menu, consent_kb, origin_of
 from bot.services.pricing import (
     TERM_DISCOUNTS,
     TERM_LABELS,
@@ -56,9 +56,12 @@ def build_tariffs_text() -> str:
     )
 
 
-@router.callback_query(F.data == f"{CB_LEGAL}:tariffs")
+@router.callback_query(F.data.in_({f"{CB_LEGAL}:tariffs", f"{CB_LEGAL}:tariffs:more"}))
 async def cb_tariffs(call: CallbackQuery) -> None:
-    await call.message.edit_text(build_tariffs_text(), reply_markup=back_to_menu())
+    # Возврат — туда, откуда пришли: из «⚙️ Ещё» в «Ещё», с главного в меню.
+    await call.message.edit_text(
+        build_tariffs_text(), reply_markup=back_to_menu(origin_of(call.data))
+    )
     await call.answer()
 
 

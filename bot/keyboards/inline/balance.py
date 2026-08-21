@@ -4,6 +4,7 @@ from __future__ import annotations
 from aiogram.types import InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
+from bot.keyboards.inline.menu import ORIGIN_MORE
 from bot.keyboards.inline.prefixes import CB_BAL, CB_MENU, CB_NOP, CB_SUB
 
 
@@ -12,7 +13,7 @@ def balance_kb(can_deposit: bool) -> InlineKeyboardMarkup:
     if can_deposit:
         kb.button(text="➕ Пополнить", callback_data=f"{CB_BAL}:dep", style="success")
     kb.button(text="📜 История", callback_data=f"{CB_BAL}:hist")
-    kb.button(text="👥 Реферальная программа", callback_data=f"{CB_BAL}:ref")
+    kb.button(text="👥 Пригласить друга", callback_data=f"{CB_BAL}:ref")
     kb.button(text="‹ Меню", callback_data=f"{CB_MENU}:open")
     kb.adjust(1)
     return kb.as_markup()
@@ -196,14 +197,21 @@ def tariff_confirm_kb(devices: int, bypass: int) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def referral_kb() -> InlineKeyboardMarkup:
+def referral_kb(origin: str | None = None) -> InlineKeyboardMarkup:
     """Реферальный экран: сменить имя в ссылке и выход.
 
     Смена имени — отдельная кнопка, а не «настройка где-то там»: ссылку несут
     на форумы, и человек хочет, чтобы она называлась им, а не номером.
+
+    Возврат зависит от того, откуда пришли: из «⚙️ Ещё» — обратно в «Ещё».
+    Раньше он всегда вёл в «Баланс», где человек мог вообще не быть.
     """
+    tail = f":{origin}" if origin else ""
     kb = InlineKeyboardBuilder()
-    kb.button(text="✏️ Изменить ссылку", callback_data=f"{CB_BAL}:refedit")
-    kb.button(text="‹ Баланс", callback_data=f"{CB_BAL}:my")
+    kb.button(text="✏️ Изменить ссылку", callback_data=f"{CB_BAL}:refedit{tail}")
+    if origin == ORIGIN_MORE:
+        kb.button(text="‹ Ещё", callback_data=f"{CB_MENU}:more")
+    else:
+        kb.button(text="‹ Баланс", callback_data=f"{CB_BAL}:my")
     kb.adjust(1)
     return kb.as_markup()

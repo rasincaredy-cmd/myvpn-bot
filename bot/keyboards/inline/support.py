@@ -20,7 +20,10 @@ def support_intro_kb() -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="✍️ Написать в поддержку", callback_data=f"{CB_SUPPORT}:start",
               style="primary")
-    sizes = [1]
+    # Инструкция по подключению — кнопкой, а не свёрнутой стеной в тексте:
+    # большинство приходит сюда за живым человеком, а не за мануалом.
+    kb.button(text="📖 Как подключить", callback_data=f"{CB_MENU}:howto")
+    sizes = [1, 1]
     if settings.legal_privacy_url:
         kb.button(text="📄 Политика конфиденциальности", url=settings.legal_privacy_url)
         sizes.append(1)

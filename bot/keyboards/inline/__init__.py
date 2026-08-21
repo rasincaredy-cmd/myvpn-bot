@@ -24,6 +24,7 @@ from bot.keyboards.inline.admin import (
     user_history_kb,
     user_wipe_confirm_kb,
     users_list_kb,
+    wdtt_nodes_kb,
 )
 from bot.keyboards.inline.balance import (
     balance_kb,
@@ -46,6 +47,7 @@ from bot.keyboards.inline.devices import (
     device_card_kb,
     device_created_kb,
     devices_list_kb,
+    howto_kb,
     limit_reached_kb,
     move_confirm_kb,
     move_pick_config_kb,
@@ -60,7 +62,10 @@ from bot.keyboards.inline.install import (
 )
 from bot.keyboards.inline.legal import consent_kb
 from bot.keyboards.inline.menu import (
+    ORIGIN_MORE,
+    back_target,
     back_to_menu,
+    origin_of,
     MenuState,
     main_menu,
     more_menu,
@@ -111,6 +116,7 @@ from bot.keyboards.inline.wdtt import (
 )
 
 __all__ = [
+    "ORIGIN_MORE",
     "CB_ADMIN",
     "CB_BAL",
     "CB_CANCEL",
@@ -136,6 +142,8 @@ __all__ = [
     "back_to_bypasses_kb",
     "back_to_devices_kb",
     "back_to_menu",
+    "back_target",
+    "origin_of",
     "back_to_panel",
     "back_to_servers_kb",
     "channel_nav",
@@ -155,6 +163,7 @@ __all__ = [
     "device_card_kb",
     "device_created_kb",
     "devices_list_kb",
+    "howto_kb",
     "limit_reached_kb",
     "tariff_confirm_kb",
     "tariff_kb",
@@ -194,6 +203,7 @@ __all__ = [
     "user_history_kb",
     "user_wipe_confirm_kb",
     "users_list_kb",
+    "wdtt_nodes_kb",
     "wdtt_pick_device_kb",
     "wdtt_platform_kb",
     "wdtt_user_card_kb",

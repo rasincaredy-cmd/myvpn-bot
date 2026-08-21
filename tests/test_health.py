@@ -502,3 +502,70 @@ def test_certificate_alert_keeps_one_key():
     warn = health.evaluate_cert(now + timedelta(hours=10), now)
     crit = health.evaluate_cert(now - timedelta(hours=10), now)
     assert warn.key == crit.key
+
+
+# --- Расхождение версий обхода (21.08.2026) ----------------------------------
+
+class TestWdttVersionDrift:
+    """Отставшая нода снаружи выглядит идеально: служба active, сокет отвечает,
+    доступы выдаются. Отличается только программа — и узнать об этом можно было
+    единственным способом: сходить руками и сравнить отпечатки.
+    """
+
+    class _Srv:
+        def __init__(self, wdtt_enabled: bool = True, sid: int = 7) -> None:
+            self.id = sid
+            self.wdtt_enabled = wdtt_enabled
+
+    def _snap(self, sha: str):
+        from bot.services.health import Snapshot
+
+        snap = Snapshot(server_id=7, server_name="de1")
+        snap.wdtt_sha = sha
+        return snap
+
+    def test_alerts_when_node_lags(self, monkeypatch) -> None:
+        from bot.services import health, wdtt_update
+
+        monkeypatch.setattr(wdtt_update, "reference_sha256", lambda: "a" * 64)
+        alert = health.wdtt_version_alert(self._Srv(), self._snap("b" * 64))
+        assert alert is not None and alert.level == "warn"
+        assert "bbbbbbbb" in alert.detail and "aaaaaaaa" in alert.detail
+
+    def test_silent_when_versions_match(self, monkeypatch) -> None:
+        from bot.services import health, wdtt_update
+
+        monkeypatch.setattr(wdtt_update, "reference_sha256", lambda: "a" * 64)
+        assert health.wdtt_version_alert(self._Srv(), self._snap("a" * 64)) is None
+
+    def test_silent_where_bypass_is_off(self, monkeypatch) -> None:
+        """Нода без резервного подключения не обязана нести эту программу."""
+        from bot.services import health, wdtt_update
+
+        monkeypatch.setattr(wdtt_update, "reference_sha256", lambda: "a" * 64)
+        assert health.wdtt_version_alert(
+            self._Srv(wdtt_enabled=False), self._snap("b" * 64)
+        ) is None
+
+    def test_silent_without_a_reference(self, monkeypatch) -> None:
+        """Нет эталона на машине бота — сравнивать не с чем, будить админа
+        нечем: выдуманная авария хуже пропущенной."""
+        from bot.services import health, wdtt_update
+
+        monkeypatch.setattr(wdtt_update, "reference_sha256", lambda: None)
+        assert health.wdtt_version_alert(self._Srv(), self._snap("b" * 64)) is None
+
+    def test_probe_asks_for_the_fingerprint(self) -> None:
+        """Отпечаток снимается тем же заходом по SSH, что и остальной снимок:
+        лишнее подключение — лишняя попытка входа в журнале ноды."""
+        from bot.services.health import probe_command
+
+        assert "---WDTTBIN---" in probe_command(["wdtt"])
+        assert "sha256sum" in probe_command(["wdtt"])
+
+    def test_snapshot_reads_the_fingerprint(self) -> None:
+        from bot.services.health import build_snapshot
+
+        out = "---SERVICES---\nwdtt active\n---WDTTBIN---\n" + "c" * 64 + "\n"
+        snap = build_snapshot(1, "nl1", out, units=["wdtt"])
+        assert snap.wdtt_sha == "c" * 64

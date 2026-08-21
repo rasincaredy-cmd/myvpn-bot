@@ -70,6 +70,7 @@ class Snapshot:
     banned: tuple[str, ...] = ()
     own_ip: str = ""
     manager_ip: str = ""   # адрес, с которого пришёл бот
+    wdtt_sha: str = ""     # отпечаток программы резервного подключения
 
 
 _SECTION_RE = re.compile(r"^---([A-Z0-9]+)---$")
@@ -200,6 +201,8 @@ def build_snapshot(
     snap.own_ip = own[0] if own else ""
     mine = [ln.strip() for ln in sec.get("MYIP", []) if ln.strip()]
     snap.manager_ip = mine[0] if mine else ""
+    binsha = [ln.strip() for ln in sec.get("WDTTBIN", []) if ln.strip()]
+    snap.wdtt_sha = binsha[0] if binsha else ""
     return snap
 
 
@@ -249,7 +252,41 @@ def probe_command(units: list[str]) -> str:
         # от сервера: бот живёт на отдельной машине, а не на ноде. Раньше
         # тревога искала в бане адрес самой ноды — на первом сервере они
         # совпадали, и слепота была незаметна (аудит 20.08.2026).
-        "echo '---MYIP---'; echo \"${SSH_CONNECTION%% *}\""
+        "echo '---MYIP---'; echo \"${SSH_CONNECTION%% *}\"; "
+        # Отпечаток программы резервного подключения — в тот же снимок, чтобы
+        # заметить отставшую ноду без отдельного захода по SSH. Сравнивать не
+        # с чем прямо здесь: эталон лежит на машине бота, поэтому сравнение —
+        # в run(), а сюда попадает только факт.
+        f"echo '---WDTTBIN---'; sha256sum {settings.wdtt_binary_path} "
+        "2>/dev/null | cut -d' ' -f1 || true"
+    )
+
+
+def wdtt_version_alert(server, snap: Snapshot) -> "Alert | None":
+    """Нода отстала по версии программы резервного подключения.
+
+    Отдельно от `evaluate`, потому что сравнивать надо с тем, чего в снимке
+    нет: эталон лежит на машине бота. Тревога мягкая — «warn»: отстающая нода
+    работает, просто не тем, чем остальные, и разъезд версий иначе не видно
+    ниоткуда. Отпустит сама после обновления: ключ стабильный, а `decide`
+    шлёт отбой, когда проблема исчезла.
+    """
+    if not getattr(server, "wdtt_enabled", False) or not snap.wdtt_sha:
+        return None
+    from bot.services.wdtt_update import reference_sha256
+
+    ref = reference_sha256()
+    if not ref or snap.wdtt_sha == ref:
+        return None
+    return Alert(
+        key=f"{server.id}:wdttver",
+        level="warn",
+        title="Резервное подключение: версия отстаёт",
+        detail=(
+            f"На ноде <code>{snap.wdtt_sha[:8]}</code>, эталон "
+            f"<code>{ref[:8]}</code>. Обновить: «👮 Админ-панель» → "
+            "«⚡ Версии обхода»."  # wording: ok — экран админа
+        ),
     )
 
 
@@ -563,6 +600,9 @@ async def run_round(session) -> None:
         snap = build_snapshot(server.id, server.name, res.stdout, units=units)
         prev = counters.get(str(server.id))
         alerts = evaluate(snap, prev)
+        drift = wdtt_version_alert(server, snap)
+        if drift is not None:
+            alerts.append(drift)
         counters[str(server.id)] = snap.udp_errors
         for alert in alerts:
             names[alert.key] = server.name

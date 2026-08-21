@@ -52,14 +52,11 @@ def test_instruction_warns_about_apple_id_balance() -> None:
     assert "баланс" in IOS_INSTALL.lower()
 
 
-# Все четыре экрана, где заходит речь об установке. Список явный: если
-# появится пятый со своей копией текста, тест о нём не узнает, зато
-# test_instruction_lives_in_one_place поймает саму копию.
-@pytest.mark.parametrize(
-    "attr",
-    # `invite_config_created` выбыл 20.08.2026 вместе с самими инвайтами.
-    ["help_text", "onboard_help", "device_created"],
-)
+# 21.08.2026 инструкция осталась в ОДНОМ экране: справка «📖 Как подключить»
+# (t.howto), к которой ведут кнопки с экрана поддержки и из сообщения о
+# созданном устройстве. Раньше её подставляли три экрана — и каждый успевал
+# обрасти своим вступлением.
+@pytest.mark.parametrize("attr", ["howto"])
 def test_screens_use_the_shared_instruction(attr: str) -> None:
     from bot.texts import t
     from bot.texts.ru import IOS_INSTALL

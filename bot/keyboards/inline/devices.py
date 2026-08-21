@@ -174,13 +174,26 @@ def subscription_kb(
 
 
 def device_created_kb() -> InlineKeyboardMarkup:
-    """После создания устройства: даём кнопку в резервное подключение прямо
-    здесь, а не заставляем идти через меню."""
+    """После создания устройства: справка и резервное подключение — кнопками.
+
+    Инструкция уехала за «📖 Как подключить» (21.08.2026): в самом сообщении
+    остались три шага, а всё, что длиннее, открывает тот, кому оно нужно.
+    """
     kb = InlineKeyboardBuilder()
+    kb.button(text="📖 Как подключить", callback_data=f"{CB_MENU}:howto")
     kb.button(text="⚡ Резервное подключение", callback_data=f"{CB_WDTT}:my")
     kb.button(text="📱 Устройства", callback_data=f"{CB_DEVICE}:list")
     kb.button(text="‹ Меню", callback_data=f"{CB_MENU}:open")
-    kb.adjust(1)
+    kb.adjust(1, 1, 2)
+    return kb.as_markup()
+
+
+def howto_kb() -> InlineKeyboardMarkup:
+    """Справка «как подключить»: выход в поддержку и в меню."""
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🆘 Поддержка", callback_data=f"{CB_MENU}:help")
+    kb.button(text="‹ Меню", callback_data=f"{CB_MENU}:open")
+    kb.adjust(2)
     return kb.as_markup()
 
 

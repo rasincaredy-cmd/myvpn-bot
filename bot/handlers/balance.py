@@ -24,6 +24,7 @@ from bot.db import repo
 from bot.handlers.stars import send_star_invoice
 from bot.keyboards.inline import (
     CB_BAL,
+    origin_of,
     balance_kb,
     back_to_menu,
     cancel_only,
@@ -663,8 +664,10 @@ async def cb_bal_history(call: CallbackQuery, session: AsyncSession) -> None:
 
 # ── Рефералка ────────────────────────────────────────────────────────────────
 
-@router.callback_query(F.data == f"{CB_BAL}:ref")
-async def cb_bal_ref(call: CallbackQuery, session: AsyncSession) -> None:
+@router.callback_query(F.data.in_({f"{CB_BAL}:ref", f"{CB_BAL}:ref:more"}))
+async def cb_bal_ref(
+    call: CallbackQuery, session: AsyncSession, origin: str | None = None
+) -> None:
     """Реферальная программа с ИМЕННОЙ ссылкой.
 
     До 20.08.2026 ссылка была вида `?start=ref_7` — номер строки в базе. Влад
@@ -676,8 +679,11 @@ async def cb_bal_ref(call: CallbackQuery, session: AsyncSession) -> None:
     link = f"https://t.me/{await _get_bot_username()}?start=ref_{code}"
     invited = await repo.count_referrals(session, user.id)
     earned = await repo.sum_ref_earned(session, user.id)
+    # origin приходит извне только из отмены переименования: там callback_data
+    # уже не наш («cancel»), а вернуть человека надо туда же, откуда он зашёл.
+    origin = origin or origin_of(call.data)
     text = ui.screen(
-        ui.title("👥", "Приведи друга"),
+        ui.title("👥", "Пригласить друга"),
         lead=(
             f"С каждого пополнения приглашённого тебе приходит "
             f"<b>{settings.referral_percent}%</b> — настоящими деньгами на "
@@ -694,14 +700,16 @@ async def cb_bal_ref(call: CallbackQuery, session: AsyncSession) -> None:
             "работать.</i>"
         ),
     )
-    await call.message.edit_text(text, reply_markup=referral_kb())
+    await call.message.edit_text(text, reply_markup=referral_kb(origin))
     await call.answer()
 
 
-@router.callback_query(F.data == f"{CB_BAL}:refedit")
+@router.callback_query(F.data.in_({f"{CB_BAL}:refedit", f"{CB_BAL}:refedit:more"}))
 async def cb_bal_ref_edit(call: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(BalanceStates.ref_code)
-    await state.update_data(cancel_to="ref")
+    # Откуда пришли, помним в FSM: после сохранения имени человек должен
+    # вернуться туда же, а у экрана «готово» своего callback_data уже нет.
+    await state.update_data(cancel_to="ref", ref_origin=origin_of(call.data))
     await call.message.edit_text(
         ui.screen(
             ui.title("✏️", "Своё имя в ссылке"),
@@ -721,6 +729,7 @@ async def cb_bal_ref_edit(call: CallbackQuery, state: FSMContext) -> None:
 
 @router.message(BalanceStates.ref_code, F.text)
 async def step_ref_code(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    origin = (await state.get_data()).get("ref_origin")
     user = await _get_user(session, message)
     result = await referral.set_code(session, user, message.text)
     if result == "invalid":
@@ -743,7 +752,7 @@ async def step_ref_code(message: Message, state: FSMContext, session: AsyncSessi
             lead="Теперь твоя ссылка выглядит так:",
             note=f"<code>{link}</code>",
         ),
-        reply_markup=referral_kb(),
+        reply_markup=referral_kb(origin),
     )
 
 

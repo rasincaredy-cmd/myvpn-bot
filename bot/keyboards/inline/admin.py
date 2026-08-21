@@ -21,6 +21,7 @@ def admin_panel_menu() -> InlineKeyboardMarkup:
     kb.button(text="📝 Журнал",       callback_data=f"{CB_PANEL}:audit:0")
     kb.button(text="👤 Пользователи", callback_data=f"{CB_PANEL}:users:0")
     kb.button(text="📢 Рассылка",     callback_data=f"{CB_PANEL}:broadcast")
+    kb.button(text="⚡ Версии обхода", callback_data=f"{CB_PANEL}:wdtt")  # wording: ok
     kb.button(text="📦 Бэкап сейчас", callback_data=f"{CB_PANEL}:backup_now")
     kb.button(text="« В меню",        callback_data=f"{CB_MENU}:open")
     kb.adjust(1)
@@ -76,6 +77,31 @@ def broadcast_confirm_kb() -> InlineKeyboardMarkup:
     kb.button(text="📢 Разослать", callback_data=f"{CB_PANEL}:bc_send")
     kb.button(text="✖️ Отмена", callback_data=f"{CB_PANEL}:main")
     kb.adjust(2)
+    return kb.as_markup()
+
+
+def wdtt_nodes_kb(
+    servers: list[tuple[int, str]], stale: list[int]
+) -> InlineKeyboardMarkup:
+    """Список версий обхода: обновить всё отстающее или отдельную ноду.
+
+    Кнопка «обновить всё» появляется, только если есть что обновлять: кнопка,
+    которая ничего не делает, приучает жать её на всякий случай — а тут каждое
+    нажатие рвёт живые подключения.
+    """
+    kb = InlineKeyboardBuilder()
+    sizes: list[int] = []
+    if stale:
+        kb.button(text=f"🔄 Обновить отстающие ({len(stale)})",
+                  callback_data=f"{CB_PANEL}:wdttup:all", style="primary")
+        sizes.append(1)
+    for server_id, name in servers:
+        kb.button(text=f"🔄 {name}"[:30], callback_data=f"{CB_PANEL}:wdttup:{server_id}")
+        sizes.append(1)
+    kb.button(text="🔁 Обновить список", callback_data=f"{CB_PANEL}:wdtt")
+    kb.button(text="« Админ-панель", callback_data=f"{CB_PANEL}:main")
+    sizes += [1, 1]
+    kb.adjust(*sizes)
     return kb.as_markup()
 
 

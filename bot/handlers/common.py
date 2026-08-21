@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.db import repo
 from bot.keyboards.inline import (
+    origin_of,
     CB_CANCEL,
     CB_MENU,
     CB_NOP,
@@ -228,7 +229,7 @@ async def cb_menu_more(call: CallbackQuery) -> None:
     await call.answer()
 
 
-@router.callback_query(F.data == f"{CB_MENU}:locations")
+@router.callback_query(F.data.in_({f"{CB_MENU}:locations", f"{CB_MENU}:locations:more"}))
 async def cb_menu_locations(call: CallbackQuery, session: AsyncSession) -> None:
     # Реальные локации сервиса из БД (Блок 8): готовые серверы = доступные страны.
     # Приватные серверы в витрине видят только админы и «друзья».
@@ -239,7 +240,8 @@ async def cb_menu_locations(call: CallbackQuery, session: AsyncSession) -> None:
         full_name=call.from_user.full_name,
     )
     await call.message.edit_text(
-        await build_locations_text(session, user), reply_markup=back_to_menu()
+        await build_locations_text(session, user),
+        reply_markup=back_to_menu(origin_of(call.data)),
     )
     await call.answer()
 
@@ -279,7 +281,7 @@ def _notify_text(enabled: bool) -> str:
     )
 
 
-@router.callback_query(F.data == f"{CB_MENU}:notify")
+@router.callback_query(F.data.in_({f"{CB_MENU}:notify", f"{CB_MENU}:notify:more"}))
 async def cb_menu_notify(call: CallbackQuery, session: AsyncSession) -> None:
     user = await repo.get_or_create_user(
         session,
@@ -289,12 +291,14 @@ async def cb_menu_notify(call: CallbackQuery, session: AsyncSession) -> None:
     )
     await call.message.edit_text(
         _notify_text(user.expiry_warn_enabled),
-        reply_markup=notify_settings_kb(user.expiry_warn_enabled),
+        reply_markup=notify_settings_kb(user.expiry_warn_enabled, origin_of(call.data)),
     )
     await call.answer()
 
 
-@router.callback_query(F.data == f"{CB_MENU}:notify_toggle")
+@router.callback_query(
+    F.data.in_({f"{CB_MENU}:notify_toggle", f"{CB_MENU}:notify_toggle:more"})
+)
 async def cb_menu_notify_toggle(call: CallbackQuery, session: AsyncSession) -> None:
     user = await repo.get_or_create_user(
         session,
@@ -306,9 +310,22 @@ async def cb_menu_notify_toggle(call: CallbackQuery, session: AsyncSession) -> N
     await session.commit()
     await call.message.edit_text(
         _notify_text(user.expiry_warn_enabled),
-        reply_markup=notify_settings_kb(user.expiry_warn_enabled),
+        reply_markup=notify_settings_kb(user.expiry_warn_enabled, origin_of(call.data)),
     )
     await call.answer("Готово")
+
+
+@router.callback_query(F.data == f"{CB_MENU}:howto")
+async def cb_menu_howto(call: CallbackQuery) -> None:
+    """Справка «как подключить» — отдельным экраном, а не стеной в сообщении.
+
+    Один текст на все места, где он нужен: сообщение о созданном устройстве,
+    экран поддержки, письмо застрявшему. Раньше это были три копии.
+    """
+    from bot.keyboards.inline import howto_kb
+
+    await call.message.edit_text(t.howto, reply_markup=howto_kb())
+    await call.answer()
 
 
 @router.message(Command("help"))
@@ -381,7 +398,7 @@ async def cb_cancel(call: CallbackQuery, state: FSMContext, session: AsyncSessio
         return
     if dest == "ref":
         from bot.handlers.balance import cb_bal_ref
-        await cb_bal_ref(call, session)
+        await cb_bal_ref(call, session, origin=data.get("ref_origin"))
         return
     if server_id is not None:
         server = await repo.get_server(session, server_id)

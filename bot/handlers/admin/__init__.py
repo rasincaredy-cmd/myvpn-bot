@@ -19,6 +19,7 @@ from bot.handlers.admin import (
     subscription,
     user_items,
     users,
+    wdtt_nodes,
 )
 from bot.handlers.admin.entry import cmd_admin
 
@@ -35,5 +36,6 @@ router.include_router(users.router)
 router.include_router(user_items.router)
 router.include_router(subscription.router)
 router.include_router(broadcast.router)
+router.include_router(wdtt_nodes.router)
 
 __all__ = ["cmd_admin", "router"]

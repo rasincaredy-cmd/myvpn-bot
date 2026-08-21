@@ -48,9 +48,15 @@ _WDTT_PER_PAGE = 8
 
 # platform → (подпись, название приложения, URL установки / инструкция).
 _PLATFORMS = {
+    # 21.08.2026: с мёртвого WDTT перешли на qWDTT. Прежнее приложение
+    # архивировано автором («разработка и поддержка прекращены»), а qWDTT —
+    # его развитие и обновляется до сих пор. Наши ссылки оно понимает: в
+    # исходниках приложения старый формат `wdtt://` разбирается отдельной
+    # веткой («legacy original WDTT scheme»), и кадр на проводе тот же —
+    # 12-байтный RTP-заголовок и chacha20poly1305 с тем же nonce.
     "android": (
-        "Android", "WDTT (Android)",
-        "https://github.com/amurcanov/proxy-turn-vk-android/releases",
+        "Android", "qWDTT",
+        "https://github.com/SpaceNeuroX/proxy-turn-vk-android/releases",
     ),
     "ios": (
         "iOS", "VK Turn Proxy (iOS)",
@@ -67,15 +73,25 @@ _PLATFORMS = {
 }
 
 
-# Платформы, где в приложении есть тумблер «Режим ссылки»: пока он выключен,
-# полей для ссылки на экране нет. Проверено на Android 17.08.2026; про iOS и ПК
-# достоверно не известно, поэтому там шаг не показываем — лучше промолчать, чем
-# отправить человека искать несуществующую настройку.
-_LINK_MODE_PLATFORMS = {"android"}
+# Платформы, для которых мы знаем ТОЧНЫЙ путь импорта ссылки в приложении.
+# Для остальных формулировка общая: отправить человека искать кнопку, которой
+# у него нет, — тот же тупик, что и промолчать.
+_KNOWN_IMPORT_PLATFORMS = {"android"}
 
 
-def _link_mode(platform: str | None) -> bool:
-    return platform in _LINK_MODE_PLATFORMS
+def _import_step(platform: str | None) -> str:
+    """Третий шаг инструкции: куда вставлять ссылку."""
+    return (
+        t.wdtt_import_android if platform in _KNOWN_IMPORT_PLATFORMS
+        else t.wdtt_import_generic
+    )
+
+
+def _import_hint(platform: str | None) -> str:
+    """Короткое напоминание тому, кто вернулся за ссылкой."""
+    return (
+        t.wdtt_import_hint_android if platform in _KNOWN_IMPORT_PLATFORMS else ""
+    )
 
 
 def _app_block(platform: str) -> str:
@@ -252,7 +268,7 @@ async def cb_wdtt_my_link(call: CallbackQuery, session: AsyncSession) -> None:
     app = _PLATFORMS.get(access.platform, ("", "", None))[1] if access.platform else ""
     app_line = (
         f"Импортируй её в приложение резервного подключения — <b>{app}</b>." if app
-        else "Импортируй её в приложение резервного подключения (WDTT — Android, VK Turn Proxy — iOS, PWDTT — ПК)."
+        else "Импортируй её в приложение резервного подключения (qWDTT — Android, VK Turn Proxy — iOS, PWDTT — ПК)."
     )
     # Адрес подставляем из карточки сервера, а не из того, что записано в
     # ссылке: после смены IP у хостера в базе лежит мёртвый адрес, и юзер
@@ -260,7 +276,7 @@ async def cb_wdtt_my_link(call: CallbackQuery, session: AsyncSession) -> None:
     await call.message.answer(
         t.wdtt_link.format(
             link=await _link_for(session, access), app_line=app_line,
-            link_mode=t.wdtt_link_mode_short if _link_mode(access.platform) else "",
+            import_hint=_import_hint(access.platform),
         )
     )
     await call.answer("Отправил ссылку")
@@ -644,8 +660,7 @@ async def cb_wdtt_platform(call: CallbackQuery, state: FSMContext, session: Asyn
         t.wdtt_created.format(
             label=label, server=labels.get(server.id, server.name),
             app=app_name, app_block=_app_block(platform), link=link,
-            link_mode=t.wdtt_link_mode if _link_mode(platform) else "",
-            n="3️⃣" if _link_mode(platform) else "2️⃣",
+            import_step=_import_step(platform),
         ),
         reply_markup=back_to_menu(),
     )

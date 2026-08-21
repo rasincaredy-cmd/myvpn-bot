@@ -31,6 +31,30 @@ class MenuState:
     is_trial: bool
 
 
+# Откуда человек пришёл на вложенный экран. Метка едет хвостом callback_data,
+# потому что своего состояния у инлайн-кнопки нет, а FSM ради одной кнопки
+# возврата заводить дороже, чем дописать шесть символов.
+ORIGIN_MORE = "more"
+
+
+def origin_of(data: str) -> str | None:
+    """Метка происхождения из callback_data, если она там есть."""
+    return ORIGIN_MORE if data.endswith(f":{ORIGIN_MORE}") else None
+
+
+def back_target(origin: str | None) -> tuple[str, str]:
+    """Подпись и адрес кнопки возврата — ТУДА, ОТКУДА ПРИШЛИ.
+
+    До 21.08.2026 всё вложенное в «⚙️ Ещё» возвращало в главное меню (а
+    рефералка — в «Баланс», где человек вообще не был). Один шаг назад
+    сбрасывал на первый этаж, и до второй кнопки раздела человек добирался
+    заново через «Ещё».
+    """
+    if origin == ORIGIN_MORE:
+        return "‹ Ещё", f"{CB_MENU}:more"
+    return "‹ Меню", f"{CB_MENU}:open"
+
+
 def main_menu(is_admin: bool, state: MenuState) -> InlineKeyboardMarkup:
     """Главное меню, собранное под состояние юзера.
 
@@ -98,10 +122,12 @@ def more_menu() -> InlineKeyboardMarkup:
     from bot.config import settings
 
     kb = InlineKeyboardBuilder()
-    kb.button(text="🔔 Оповещения", callback_data=f"{CB_MENU}:notify")
-    kb.button(text="🌍 Локации", callback_data=f"{CB_MENU}:locations")
-    kb.button(text="💳 Тарифы", callback_data=f"{CB_LEGAL}:tariffs")
-    kb.button(text="👥 Пригласить друга", callback_data=f"{CB_BAL}:ref")
+    # Метка ORIGIN_MORE в конце callback_data: экран, открытый отсюда, обязан
+    # вернуть человека СЮДА, а не в главное меню (см. back_target).
+    kb.button(text="🔔 Оповещения", callback_data=f"{CB_MENU}:notify:{ORIGIN_MORE}")
+    kb.button(text="🌍 Локации", callback_data=f"{CB_MENU}:locations:{ORIGIN_MORE}")
+    kb.button(text="💳 Тарифы", callback_data=f"{CB_LEGAL}:tariffs:{ORIGIN_MORE}")
+    kb.button(text="👥 Пригласить друга", callback_data=f"{CB_BAL}:ref:{ORIGIN_MORE}")
     sizes = [2, 2]
 
     if settings.legal_privacy_url:
@@ -125,22 +151,30 @@ def onboarding_hint_kb() -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def notify_settings_kb(enabled: bool) -> InlineKeyboardMarkup:
+def notify_settings_kb(enabled: bool, origin: str | None = None) -> InlineKeyboardMarkup:
+    # Метку происхождения тащим и на переключателе: после нажатия экран
+    # перерисовывается, и возврат не должен внезапно поменять адрес.
+    tail = f":{origin}" if origin else ""
     kb = InlineKeyboardBuilder()
     if enabled:
-        kb.button(text="🔕 Выключить оповещения", callback_data=f"{CB_MENU}:notify_toggle")
+        kb.button(text="🔕 Выключить оповещения",
+                  callback_data=f"{CB_MENU}:notify_toggle{tail}")
     else:
-        kb.button(text="🔔 Включить оповещения", callback_data=f"{CB_MENU}:notify_toggle")
-    kb.button(text="‹ Меню", callback_data=f"{CB_MENU}:open")
+        kb.button(text="🔔 Включить оповещения",
+                  callback_data=f"{CB_MENU}:notify_toggle{tail}")
+    back_text, back_data = back_target(origin)
+    kb.button(text=back_text, callback_data=back_data)
     kb.adjust(1)
     return kb.as_markup()
 
 
 # --- Навигация ----------------------------------------------------------------
 
-def back_to_menu() -> InlineKeyboardMarkup:
+def back_to_menu(origin: str | None = None) -> InlineKeyboardMarkup:
+    """Кнопка возврата. Без аргумента — в главное меню, как раньше."""
+    text, data = back_target(origin)
     kb = InlineKeyboardBuilder()
-    kb.button(text="‹ Меню", callback_data=f"{CB_MENU}:open")
+    kb.button(text=text, callback_data=data)
     return kb.as_markup()
 
 

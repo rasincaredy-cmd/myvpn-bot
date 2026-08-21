@@ -481,6 +481,23 @@ def evaluate_cert(expires_at: datetime, now: datetime) -> Alert | None:
 
 # ── Антиспам ─────────────────────────────────────────────────────────────────
 
+async def _upstream_release_notice(state: dict) -> None:
+    """Сообщить админу о новом релизе — по одному разу на версию.
+
+    Первый запуск ничего не шлёт, только запоминает: иначе бот начал бы с
+    новости о версии, которая у нас и так стоит.
+    """
+    from bot.services import upstream
+
+    tag = await upstream.latest_release()
+    if tag is None:
+        return
+    seen = state.get("qwdtt_release")
+    state["qwdtt_release"] = tag
+    if seen and seen != tag:
+        await _notify_admins(upstream.release_message(tag))
+
+
 def _load_state() -> dict:
     # OSError, а не только FileNotFoundError: нечитаемый файл состояния не
     # должен останавливать тревоги — хуже потерять историю, чем аварию.
@@ -618,6 +635,11 @@ async def run_round(session) -> None:
             if cert_alert is not None:
                 names[cert_alert.key] = "приём оплат"
                 collected.append(cert_alert)
+
+    # Новая версия приложения резервного подключения — не авария, а новость,
+    # поэтому мимо машинерии тревог: у неё есть «отбой» и повторы, а новость
+    # нужна ровно один раз на версию.
+    await _upstream_release_notice(state)
 
     active = state.setdefault("active", {})
     titles = {key: rec.get("title", key) for key, rec in active.items()}

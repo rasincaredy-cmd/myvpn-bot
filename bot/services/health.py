@@ -23,7 +23,9 @@ import json
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
+from cryptography import x509
 from loguru import logger
 
 from bot.config import settings
@@ -36,6 +38,13 @@ DISK_FREE_MIN_PCT = 15      # спека: меньше 15% свободного 
 RAM_FREE_MIN_PCT = 10       # памяти на исходе
 STEAL_ALERT_PCT = 10.0      # доля процессора, отъедаемая соседом
 UDP_ERR_ALERT = 500         # прирост потерь UDP между замерами
+
+# Сертификат приёма оплат живёт 160 часов, продление начинается, когда
+# осталась треть, — в здоровом цикле остаток не падает ниже ~53 часов. Порог
+# 36 стоит заметно ниже этого дна (тревога не придёт зря) и при этом даёт
+# полтора дня на починку. Взят с крови: сертификат от 11.08.2026 протух 18.08
+# и три дня никто не знал, потому что следить было нечем.
+CERT_WARN_HOURS = 36
 
 REPEAT_AFTER = timedelta(hours=1)
 
@@ -352,6 +361,86 @@ def evaluate(snap: Snapshot, prev_udp_errors: int | None) -> list[Alert]:
     return alerts
 
 
+# ── Сертификат приёма оплат ──────────────────────────────────────────────────
+#
+# Живёт не на ноде, а на самой машине бота, поэтому проверяется файлом, а не
+# по SSH: лишний обход серверов ради локального файла — это ещё одна попытка
+# входа в журнале и ещё один повод банилке нервничать.
+
+def cert_path() -> Path | None:
+    """Файл сертификата, за которым следим. None — следить не за чем.
+
+    Обычно путь искать не надо: приёмник поднимается один, и в
+    /etc/letsencrypt/live лежит ровно одна папка. Ищем сами, чтобы установка
+    с нуля не требовала помнить про ещё одну настройку. Если папок несколько,
+    угадывать не берёмся — тогда путь задаётся явно в WEBHOOK_CERT_PATH.
+    """
+    if settings.webhook_cert_path:
+        return Path(settings.webhook_cert_path)
+    if not settings.webhook_port:   # приёмник выключен — и сертификат не нужен
+        return None
+    try:
+        found = sorted(Path("/etc/letsencrypt/live").glob("*/fullchain.pem"))
+    except OSError:
+        return None
+    return found[0] if len(found) == 1 else None
+
+
+def cert_expiry(path: Path) -> datetime | None:
+    """До какого момента сертификат действителен. None — прочитать не вышло.
+
+    Молчим на любой беде с файлом: нечитаемый сертификат это повод разбираться
+    руками, а не будить админа выдуманной аварией. Настоящую беду — что он
+    протух — поймает Platega, и её ловит тревога ниже.
+    """
+    try:
+        cert = x509.load_pem_x509_certificate(path.read_bytes())
+    except (OSError, ValueError):
+        return None
+    # not_valid_after_utc появился в cryptography 42, на сервере стоит 49. На
+    # телефоне, где гоняются тесты, — 41, там его нет. Порядок важен: старое
+    # поле на свежей версии ругается в журнал устареванием, а бот трогает
+    # сертификат каждые 10 минут. Оно отдаёт наивное время, но всегда в UTC.
+    aware = getattr(cert, "not_valid_after_utc", None)
+    if aware is not None:
+        return aware
+    naive = getattr(cert, "not_valid_after", None)
+    return naive.replace(tzinfo=timezone.utc) if naive else None
+
+
+def evaluate_cert(expires_at: datetime, now: datetime) -> Alert | None:
+    """Тревога о сертификате. None — всё в порядке.
+
+    Ключ один на оба уровня: «кончается» и «протух» — это одна и та же
+    проблема в разных стадиях, и разные ключи прислали бы вторую пачку
+    сообщений вместо повышения уровня.
+    """
+    left = expires_at - now
+    if left <= timedelta(0):
+        return Alert(
+            key="cert", level="crit",
+            title="Протух сертификат приёма оплат",
+            detail=("Platega больше не может сообщить об оплате — она упрётся в "
+                    "ошибку TLS. Деньги не потеряются, их доберёт поллинг, но "
+                    "зачисление будет ждать до пяти минут.\n"
+                    "Чинить: <code>certbot renew --cert-name &lt;IP&gt;</code>, "
+                    "после — <code>certbot renew --dry-run</code> обязан "
+                    "проходить НЕ останавливая nginx."),
+        )
+    if left <= timedelta(hours=CERT_WARN_HOURS):
+        hours = int(left.total_seconds() // 3600)
+        return Alert(
+            key="cert", level="warn",
+            title="Кончается сертификат приёма оплат",
+            detail=(f"Осталось {hours} ч. В норме он продлевается сам и "
+                    f"остаток не падает ниже {CERT_WARN_HOURS} ч — значит, "
+                    "продление сломалось.\n"
+                    "Проверить: <code>certbot renew --dry-run</code> "
+                    "(обязан проходить НЕ останавливая nginx)."),
+        )
+    return None
+
+
 # ── Антиспам ─────────────────────────────────────────────────────────────────
 
 def _load_state() -> dict:
@@ -477,6 +566,17 @@ async def run_round(session) -> None:
         for alert in alerts:
             names[alert.key] = server.name
         collected.extend(alerts)
+
+    # Сертификат приёмника оплат живёт на машине бота, а не на ноде, поэтому
+    # он вне цикла по серверам. Не прочитался — молчим: см. cert_expiry.
+    path = cert_path()
+    if path is not None:
+        expires_at = cert_expiry(path)
+        if expires_at is not None:
+            cert_alert = evaluate_cert(expires_at, now)
+            if cert_alert is not None:
+                names[cert_alert.key] = "приём оплат"
+                collected.append(cert_alert)
 
     active = state.setdefault("active", {})
     titles = {key: rec.get("title", key) for key, rec in active.items()}

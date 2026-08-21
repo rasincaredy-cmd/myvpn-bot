@@ -410,3 +410,95 @@ def test_steal_dynamics_hidden_when_history_is_empty():
     """Свежий сервер: истории нет — строку не показываем, а не рисуем «0%»,
     как будто сосед измерен и его нет."""
     assert "Сосед" not in health.format_extras(health.parse_extras("---BAN---\n"))
+
+
+# ── Сертификат приёма оплат (авария 21.08.2026) ──────────────────────────────
+#
+# Сертификат на IP живёт 160 часов и продлевается таймером. 11.08 его выпустили
+# способом, который занимает 80-й порт, — а порт навсегда занят nginx. Первый
+# выпуск прошёл (nginx тогда лежал), каждое продление потом молча падало,
+# сертификат протух 18.08, и Platega три раза не смогла достучаться. Никто не
+# заметил три дня. Эти тесты — чтобы следующий раз заметили за сутки.
+
+# Настоящий наш сертификат от 21.08.2026: ECDSA, без домена, адрес в SAN.
+# Придуманный доказал бы только то, что парсер понимает сам себя.
+REAL_CERT = """\
+-----BEGIN CERTIFICATE-----
+MIIDTDCCAtGgAwIBAgISBXTSa1sQBvSbQy14fc4SrLDjMAoGCCqGSM49BAMDMDMx
+CzAJBgNVBAYTAlVTMRYwFAYDVQQKEw1MZXQncyBFbmNyeXB0MQwwCgYDVQQDEwNZ
+RTIwHhcNMjYwODIxMDczMDU5WhcNMjYwODI3MjMzMDU4WjAAMFkwEwYHKoZIzj0C
+AQYIKoZIzj0DAQcDQgAEEzQHRnGHyl3uor8Y8zyG7dQrlupP1UbqbUulwr7MV64f
+KV+fSmxFFQDn9qb/7dkX6F+9SCHzIbisyojMGyJPo6OCAfYwggHyMA4GA1UdDwEB
+/wQEAwIHgDATBgNVHSUEDDAKBggrBgEFBQcDATAMBgNVHRMBAf8EAjAAMB8GA1Ud
+IwQYMBaAFLlZ8o7PIvCG0zdI/3YUGLqC2FWHMDMGCCsGAQUFBwEBBCcwJTAjBggr
+BgEFBQcwAoYXaHR0cDovL3llMi5pLmxlbmNyLm9yZy8wEgYDVR0RAQH/BAgwBocE
+H02dojATBgNVHSAEDDAKMAgGBmeBDAECATAvBgNVHR8EKDAmMCSgIqAghh5odHRw
+Oi8veWUyLmMubGVuY3Iub3JnLzEwMC5jcmwwggELBgorBgEEAdZ5AgQCBIH8BIH5
+APcAdQDLOPcViXyEoURfW8Hd+8lu8ppZzUcKaQWFsMsUwxRY5wAAAaAjcH1OAAAE
+AwBGMEQCICV32E/LSIUQhoEL56HWP97rA9YH+mA1XWsi9/Xc1mQbAiBZf+NVmO3m
+zD4rwQ5yKzOHbe//b6BVni/7qxPB62bkjAB+ABqLnWsP/r+BtHk5xtIxCobW0QLU
+8EbiGCyd419eJiXvAAABoCNwf94ACAAABQA22l8hBAMARzBFAiEAv0L8+EdgfVHh
+nyamHELJg3e8F+lKxYHQJO2t2J75uOkCIGcBAfkrVw4ow+PuHyWYy82uzzyFMGQ0
+snKHGVR1dz55MAoGCCqGSM49BAMDA2kAMGYCMQDIb6gNs1GWtJHKMfWqxtckrPlx
+uP4AOsPhAbEc30vn5Jrceo7PhzWZspmJ+ymbgYQCMQDiUcALdowa9ervNajz3mnD
+foZVUghlCgyxxGwB92bbFsHhEOqfl4yKXYi3GNWIcsI=
+-----END CERTIFICATE-----
+"""
+
+REAL_CERT_EXPIRES = datetime(2026, 8, 27, 23, 30, 58, tzinfo=timezone.utc)
+
+
+def test_expiry_read_from_real_certificate(tmp_path):
+    path = tmp_path / "fullchain.pem"
+    path.write_text(REAL_CERT)
+    assert health.cert_expiry(path) == REAL_CERT_EXPIRES
+
+
+def test_unreadable_certificate_is_silent(tmp_path):
+    """Сломанный или отсутствующий файл — молчание, а не выдуманная авария."""
+    assert health.cert_expiry(tmp_path / "нет-такого.pem") is None
+    broken = tmp_path / "broken.pem"
+    broken.write_text("это не сертификат")
+    assert health.cert_expiry(broken) is None
+
+
+def test_fresh_certificate_is_quiet():
+    now = datetime(2026, 8, 21, 12, 0, tzinfo=timezone.utc)
+    assert health.evaluate_cert(now + timedelta(days=6), now) is None
+
+
+def test_normal_renewal_cycle_never_alerts():
+    """Порог обязан молчать на здоровом цикле.
+
+    Сертификат живёт 160 часов, продление начинается, когда осталась треть, —
+    то есть в норме остаток НИКОГДА не опускается ниже ~53 часов. Порог должен
+    стоять ниже этого дна, иначе тревога будет приходить каждый цикл и её
+    перестанут читать.
+    """
+    now = datetime(2026, 8, 21, 12, 0, tzinfo=timezone.utc)
+    assert health.evaluate_cert(now + timedelta(hours=53), now) is None
+
+
+def test_certificate_running_out_warns():
+    now = datetime(2026, 8, 21, 12, 0, tzinfo=timezone.utc)
+    alert = health.evaluate_cert(now + timedelta(hours=20), now)
+    assert alert is not None
+    assert alert.level == "warn"
+    assert "20" in alert.detail   # сколько часов осталось — в сообщении
+
+
+def test_expired_certificate_is_critical():
+    now = datetime(2026, 8, 21, 12, 0, tzinfo=timezone.utc)
+    alert = health.evaluate_cert(now - timedelta(hours=1), now)
+    assert alert is not None
+    assert alert.level == "crit"
+
+
+def test_certificate_alert_keeps_one_key():
+    """Ключ один и тот же и при «кончается», и при «протух»: иначе при
+    переходе одной тревоги в другую админ получит вторую пачку сообщений, а
+    первая никогда не отпустит."""
+    now = datetime(2026, 8, 21, 12, 0, tzinfo=timezone.utc)
+    warn = health.evaluate_cert(now + timedelta(hours=10), now)
+    crit = health.evaluate_cert(now - timedelta(hours=10), now)
+    assert warn.key == crit.key

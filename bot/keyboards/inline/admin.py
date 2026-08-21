@@ -98,9 +98,10 @@ def wdtt_nodes_kb(
     for server_id, name in servers:
         kb.button(text=f"🔄 {name}"[:30], callback_data=f"{CB_PANEL}:wdttup:{server_id}")
         sizes.append(1)
+    kb.button(text="🧱 Собрать свежую версию", callback_data=f"{CB_PANEL}:wdttbuild")
     kb.button(text="🔁 Обновить список", callback_data=f"{CB_PANEL}:wdtt")
     kb.button(text="« Админ-панель", callback_data=f"{CB_PANEL}:main")
-    sizes += [1, 1]
+    sizes += [1, 1, 1]
     kb.adjust(*sizes)
     return kb.as_markup()
 

@@ -8,6 +8,8 @@
 """
 from __future__ import annotations
 
+import contextlib
+
 from aiogram import F, Router
 from aiogram.types import CallbackQuery
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -124,5 +126,50 @@ async def cb_wdtt_update(call: CallbackQuery, session: AsyncSession) -> None:
     report.append("\n<i>Проверь список версий — он покажет, что стоит сейчас.</i>")
     await call.message.edit_text(
         fit_to_message(report),
+        reply_markup=wdtt_nodes_kb([(s.id, s.name) for s in await _wdtt_servers(session)], []),
+    )
+
+
+@router.callback_query(F.data == f"{CB_PANEL}:wdttbuild")
+async def cb_wdtt_build(call: CallbackQuery, session: AsyncSession) -> None:
+    """Собрать свежую серверную часть прямо на ноде бота и сделать её эталоном.
+
+    Раньше сборка жила на телефоне: бот сообщал «вышла новая версия», а собрать
+    её мог только человек с нужной папкой на нужной машине. Теперь бот берёт
+    свежие исходники сам, накладывает нашу единственную правку и собирает.
+
+    Своя нода перезапускается тут же: эталон и её рабочая программа — один
+    файл, и без перезапуска она осталась бы со старым сервером в памяти,
+    выглядя в списке свежей.
+    """
+    from bot.services import wdtt_build
+
+    await call.answer("⏳ Собираю...")
+    lines = ["🧱 <b>Сборка серверной части</b>\n"]
+
+    async def progress(text: str) -> None:
+        lines.append(f"• {ui.safe(text)}")
+        with contextlib.suppress(Exception):  # правка того же текста — не беда
+            await call.message.edit_text("\n".join(lines))
+
+    result = await wdtt_build.build(progress=progress)
+    if not result.ok:
+        lines.append(f"\n❌ {ui.safe(result.detail)}")
+        await call.message.edit_text(
+            "\n".join(lines),
+            reply_markup=wdtt_nodes_kb([(s.id, s.name) for s in await _wdtt_servers(session)], []),
+        )
+        return
+
+    lines.append(f"✅ Собрано: <code>{result.sha256[:8]}</code>")
+    promoted = await wdtt_build.promote(result.path, progress=progress)
+    lines.append(("✅ " if promoted.ok else "❌ ") + ui.safe(promoted.detail))
+    if promoted.ok:
+        lines.append(
+            "\n<i>Теперь жми «🔄 Обновить отстающие» — остальные ноды подтянутся "
+            "к этой версии.</i>"
+        )
+    await call.message.edit_text(
+        "\n".join(lines),
         reply_markup=wdtt_nodes_kb([(s.id, s.name) for s in await _wdtt_servers(session)], []),
     )

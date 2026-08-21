@@ -32,6 +32,7 @@ from pathlib import Path
 from loguru import logger
 
 from bot.config import settings
+from bot.services import wdtt_install
 from bot.services.ssh import SSHClient, SSHError
 
 # Сколько ждём, пока после рестарта поднимется управляющий сокет.
@@ -48,6 +49,7 @@ class Probe:
     sha256: str | None
     size: int
     accesses: int | None      # None — сокет не ответил, посчитать нечем
+    modes_on: bool = True     # включены ли raw и прямой режим в файле службы
 
     @property
     def short(self) -> str:
@@ -110,13 +112,15 @@ async def probe(ssh: SSHClient, *, binary: str | None = None) -> Probe:
     )
     lines = [ln.strip() for ln in res.stdout.splitlines() if ln.strip()]
     if not lines or lines[0] == "MISSING":
-        return Probe(False, False, False, None, 0, None)
+        return Probe(False, False, False, None, 0, None, True)
 
     sha = lines[0]
     size = int(lines[1]) if len(lines) > 1 and lines[1].isdigit() else 0
     active = (await ssh.run("systemctl is-active wdtt", check=False)).stdout.strip() == "active"
     socket_ok, accesses = (await _socket_answer(ssh, binary)) if active else (False, None)
-    return Probe(True, active, socket_ok, sha, size, accesses)
+    unit = (await ssh.run(f"cat {wdtt_install.UNIT_PATH}", check=False)).stdout
+    return Probe(True, active, socket_ok, sha, size, accesses,
+                 wdtt_install.unit_has_modes(unit))
 
 
 async def update(
@@ -140,10 +144,15 @@ async def update(
     идёт через сокет, и молча онемевший сокет означает, что резервное
     подключение не работает ни у кого на этой ноде.
 
-    Файл службы НЕ трогаем сознательно. В нём лежит пароль владельца (без
-    активного пароля демон не стартует) и правила фаервола, дописанные на живых
-    нодах руками, — перезапись службы стёрла бы и то и другое. Меняется только
-    программа; пароли доступов лежат отдельно в /etc/wdtt и рестарт переживают.
+    Файл службы переписываем ТОЛЬКО чтобы включить недостающие режимы (raw и
+    прямой): нода со старым файлом работает, но эти режимы у неё выключены, и
+    снаружи это никак не видно — человек просто жмёт в приложении кнопку, и у
+    него ничего не происходит. Пароль владельца и порты при перезаписи
+    переносятся из прежнего файла: без активного пароля демон не стартует, а
+    сгенерировать новый нельзя — он уже в базе паролей ноды. Не нашли пароль —
+    файл не трогаем вовсе.
+
+    Пароли доступов лежат отдельно в /etc/wdtt и рестарт переживают.
     """
     binary = binary or settings.wdtt_binary_path
     ref = reference_sha256()
@@ -164,13 +173,16 @@ async def update(
             "программы на ноде нет — это установка, а не обновление",
             before=before,
         )
-    if before.sha256 == ref and not force:
+    if before.sha256 == ref and before.modes_on and not force:
         return UpdateResult(True, False, False, "уже эталонная версия", before, before)
 
     backup = f"{binary}.bak-{before.short}"
+    unit_backup = f"{wdtt_install.UNIT_PATH}.bak-{before.short}"
+    unit_rewritten = False
     try:
         await say("Делаю бэкап...")
         await ssh.run(f"cp -f {binary} {backup}", check=True, timeout=60)
+        await ssh.run(f"cp -f {wdtt_install.UNIT_PATH} {unit_backup}", check=True, timeout=60)
 
         await say("Заливаю новую версию...")
         # Во временный файл рядом: заливка поверх работающего файла на части
@@ -181,6 +193,28 @@ async def update(
         await say("Перезапускаю службу...")
         await ssh.run("systemctl stop wdtt", check=False, timeout=60)
         await ssh.run(f"mv -f {tmp} {binary}", check=True, timeout=60)
+
+        if not before.modes_on:
+            old_unit = (await ssh.run(f"cat {wdtt_install.UNIT_PATH}", check=False)).stdout
+            parsed = wdtt_install.parse_unit(old_unit)
+            if parsed is None:
+                # Пароль владельца не нашёлся — переписывать файл нельзя, иначе
+                # демон не стартует. Программу обновляем, режимы остаются как
+                # были, и мы об этом ГОВОРИМ, а не молчим.
+                logger.warning("wdtt update: в файле службы нет пароля владельца")
+            else:
+                await say("Включаю raw и прямой режим...")
+                await ssh.write_file(
+                    wdtt_install.UNIT_PATH,
+                    wdtt_install.render_unit(
+                        binary=binary, dtls=parsed["dtls"], wg=parsed["wg"],
+                        password=parsed["password"], dns=parsed["dns"],
+                    ),
+                    mode=0o600,
+                )
+                await ssh.run("systemctl daemon-reload", check=True, timeout=60)
+                unit_rewritten = True
+
         await ssh.run("systemctl start wdtt", check=False, timeout=60)
     except SSHError as exc:
         logger.warning("wdtt update: сбой заливки: {}", exc)
@@ -201,7 +235,12 @@ async def update(
         and after.accesses < before.accesses
     )
     if after is not None and after.socket_ok and not lost:
-        return UpdateResult(True, True, False, "обновлено", before, after)
+        detail = "обновлено"
+        if unit_rewritten:
+            detail = "обновлено, включены raw и прямой режим"
+        elif not before.modes_on:
+            detail = "обновлено, но режимы включить не вышло — нужны руки"
+        return UpdateResult(True, True, False, detail, before, after)
 
     # Не взлетело — возвращаем то, что работало.
     reason = "сокет молчит" if after is None or not after.socket_ok else (
@@ -211,6 +250,9 @@ async def update(
     try:
         await ssh.run("systemctl stop wdtt", check=False, timeout=60)
         await ssh.run(f"cp -f {backup} {binary}", check=True, timeout=60)
+        if unit_rewritten:
+            await ssh.run(f"cp -f {unit_backup} {wdtt_install.UNIT_PATH}", check=True, timeout=60)
+            await ssh.run("systemctl daemon-reload", check=False, timeout=60)
         await ssh.run("systemctl start wdtt", check=False, timeout=60)
     except SSHError as exc:
         logger.error("wdtt update: откат не удался: {}", exc)

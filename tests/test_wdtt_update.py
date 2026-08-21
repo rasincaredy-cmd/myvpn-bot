@@ -22,6 +22,18 @@ from bot.services.ssh import SSHError
 REF = "a" * 64
 OLD = "b" * 64
 
+OWNER_PASS = "H_v2s2wjRAvy8xwLl42L"
+
+UNIT_OLD = (
+    "[Service]\nExecStart=/usr/local/bin/wdtt-server -listen 0.0.0.0:56000 "
+    f"-wg-port 56001 -config-dir /etc/wdtt -password {OWNER_PASS} -dns 9.9.9.9\n"
+)
+UNIT_NEW = (
+    "[Service]\nExecStart=/usr/local/bin/wdtt-server -listen 0.0.0.0:56000 "
+    "-wg-port 56001 -listen-direct 0.0.0.0:56002 -listen-raw 0.0.0.0:56003 "
+    f"-config-dir /etc/wdtt -password {OWNER_PASS} -dns 9.9.9.9\n"
+)
+
 
 class _Res:
     def __init__(self, stdout: str = "", exit_code: int = 0) -> None:
@@ -38,7 +50,9 @@ class FakeSSH:
     """
 
     def __init__(self, *, sha=OLD, active=True, socket=True, accesses=3,
-                 after_update=None) -> None:
+                 after_update=None, unit=UNIT_NEW) -> None:
+        self.unit = unit
+        self.written: list[tuple[str, str]] = []
         self.sha = sha
         self.active = active
         self.socket = socket
@@ -57,6 +71,8 @@ class FakeSSH:
             if self.sha is None:
                 return _Res("MISSING")
             return _Res(f"{self.sha}\n8000000\n")
+        if cmd.startswith("cat /etc/systemd/system/wdtt.service"):
+            return _Res(self.unit)
         if "systemctl is-active" in cmd:
             return _Res("active" if self.active else "inactive")
         if "ctl -op list" in cmd:
@@ -69,10 +85,14 @@ class FakeSSH:
             if self.after_update is not None:
                 self.socket, self.accesses = self.after_update
             return _Res()
-        if cmd.startswith("cp -f") and ".bak-" in cmd and cmd.index(".bak-") > cmd.index("cp -f"):
-            # Откат: `cp -f <бэкап> <бинарь>` — возвращаем прежнее состояние.
-            src = cmd.split()[2]
-            if src.endswith(f".bak-{OLD[:8]}"):
+        if cmd.startswith("cp -f"):
+            # `cp -f SRC DST`: бэкап (DST — файл с .bak) либо откат (DST —
+            # рабочий путь). Разбираем именно по назначению: путь бэкапа
+            # начинается с рабочего, и проверка «начинается с» их путает.
+            _, _, src, dst = cmd.split()
+            if dst.endswith("wdtt.service"):
+                self.unit = UNIT_OLD
+            elif ".bak-" in src and src.endswith(f".bak-{OLD[:8]}"):
                 self.sha = OLD
                 self.socket, self.accesses = True, 3
             return _Res()
@@ -80,6 +100,11 @@ class FakeSSH:
 
     async def put_file(self, local, remote, *, mode=0o644):
         self.put.append((local, remote))
+
+    async def write_file(self, path, content, *, mode=0o600):
+        self.written.append((path, content))
+        if path.endswith("wdtt.service"):
+            self.unit = content
 
 
 @pytest.fixture(autouse=True)
@@ -232,3 +257,109 @@ class TestNodesScreen:
 
         assert "pnl:wdttup:all" in datas(wdtt_nodes_kb([(1, "nl1")], [1]))
         assert "pnl:wdttup:all" not in datas(wdtt_nodes_kb([(1, "nl1")], []))
+
+
+# --- Файл службы: новые режимы (21.08.2026) ----------------------------------
+
+class TestUnitModes:
+    """Нода со старым файлом службы работает и выглядит здоровой, но raw и
+    прямой режим у неё выключены. Юзер жмёт в приложении кнопку — и у него
+    ничего не происходит, а мы об этом узнаём последними.
+    """
+
+    @pytest.mark.asyncio
+    async def test_old_unit_counts_as_outdated(self) -> None:
+        p = await wdtt_update.probe(FakeSSH(unit=UNIT_OLD))
+        assert not p.modes_on
+
+    @pytest.mark.asyncio
+    async def test_new_unit_is_recognised(self) -> None:
+        p = await wdtt_update.probe(FakeSSH(unit=UNIT_NEW))
+        assert p.modes_on
+
+    @pytest.mark.asyncio
+    async def test_same_binary_but_old_unit_still_updates(self) -> None:
+        """Иначе кнопка сказала бы «уже эталонная версия» и оставила режимы
+        выключенными навсегда."""
+        ssh = FakeSSH(sha=REF, unit=UNIT_OLD)
+        res = await wdtt_update.update(ssh)
+        assert res.ok and res.changed
+        assert "режим" in res.detail
+
+    @pytest.mark.asyncio
+    async def test_owner_password_and_ports_survive_the_rewrite(self) -> None:
+        """Пароль владельца сгенерировать заново нельзя — он уже в базе паролей
+        ноды, и без него демон не стартует."""
+        ssh = FakeSSH(sha=REF, unit=UNIT_OLD)
+        await wdtt_update.update(ssh)
+        written = [c for path, c in ssh.written if path.endswith("wdtt.service")]
+        assert written, "файл службы не переписан"
+        assert OWNER_PASS in written[0]
+        assert "-dns 9.9.9.9" in written[0]
+        assert "-listen-raw" in written[0] and "-listen-direct" in written[0]
+
+    @pytest.mark.asyncio
+    async def test_password_never_leaks_into_the_report(self) -> None:
+        """Отчёт уходит в чат админа — секрету там не место."""
+        ssh = FakeSSH(sha=REF, unit=UNIT_OLD)
+        res = await wdtt_update.update(ssh)
+        assert OWNER_PASS not in res.detail
+
+    @pytest.mark.asyncio
+    async def test_unit_without_password_is_left_alone(self) -> None:
+        """Не нашли пароль — переписывать нельзя: демон не стартует вовсе."""
+        ssh = FakeSSH(unit="[Service]\nExecStart=/usr/local/bin/wdtt-server -listen 0.0.0.0:56000\n")
+        res = await wdtt_update.update(ssh)
+        assert not [c for path, c in ssh.written if path.endswith("wdtt.service")]
+        assert res.ok and "руки" in res.detail
+
+    @pytest.mark.asyncio
+    async def test_rollback_restores_the_unit_too(self) -> None:
+        """Откат только программы оставил бы новый файл службы со старым
+        бинарём — сочетание, которое никто не проверял."""
+        ssh = FakeSSH(sha=OLD, unit=UNIT_OLD, after_update=(False, 0))
+        res = await wdtt_update.update(ssh)
+        assert res.rolled_back
+        assert ssh.unit == UNIT_OLD
+        assert ssh.sha == OLD
+
+
+class TestInstallerAgrees:
+    """Установка новой страны и обновление обязаны ставить ОДНО И ТО ЖЕ.
+    Разъехавшись, они дадут «на новой стране почему-то нет raw» через месяц."""
+
+    def test_installer_writes_the_modes(self) -> None:
+        from bot.services import wdtt_install
+
+        unit = wdtt_install.render_unit(
+            binary="/usr/local/bin/wdtt-server", dtls="56000", wg="56001",
+            password="x", dns="1.1.1.1",
+        )
+        assert wdtt_install.unit_has_modes(unit)
+        assert f"0.0.0.0:{wdtt_install.RAW_PORT}" in unit
+        assert f"0.0.0.0:{wdtt_install.DIRECT_PORT}" in unit
+
+    def test_installer_opens_the_new_ports(self) -> None:
+        """Порт, который слушают, но не открыли, — это выключенный режим."""
+        from bot.services import wdtt_install
+
+        unit = wdtt_install.render_unit(
+            binary="/usr/local/bin/wdtt-server", dtls="56000", wg="56001",
+            password="x", dns="1.1.1.1",
+        )
+        assert "iptables" in unit
+        assert str(wdtt_install.RAW_PORT) in unit.split("ExecStart=")[0]
+
+    def test_factory_ports_match_the_app(self) -> None:
+        """Заводские значения приложения: 56002 прямой, 56003 raw. Свои порты
+        означали бы, что каждый юзер вбивает их руками в настройках."""
+        from bot.services import wdtt_install
+
+        assert (wdtt_install.DIRECT_PORT, wdtt_install.RAW_PORT) == (56002, 56003)
+
+    def test_parse_unit_reads_what_must_survive(self) -> None:
+        from bot.services import wdtt_install
+
+        parsed = wdtt_install.parse_unit(UNIT_OLD)
+        assert parsed == {"password": OWNER_PASS, "dns": "9.9.9.9",
+                          "wg": "56001", "dtls": "56000"}

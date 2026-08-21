@@ -35,8 +35,13 @@ def _node_line(server, probe: wdtt_update.Probe, ref: str | None) -> str:
     if not probe.socket_ok:
         state = "служба стоит" if not probe.active else "сокет молчит"
         return f"⚠️ <b>{ui.safe(server.name)}</b> — {state} · <code>{probe.short}</code>"
-    mark = "✅" if ref and probe.sha256 == ref else "🔸"
-    tail = "" if ref and probe.sha256 == ref else " · <i>отличается от эталона</i>"
+    fresh = bool(ref) and probe.sha256 == ref
+    mark = "✅" if fresh and probe.modes_on else "🔸"
+    tail = "" if fresh else " · <i>отличается от эталона</i>"
+    if fresh and not probe.modes_on:
+        # Программа свежая, но в файле службы новые режимы не включены: raw и
+        # прямой у юзеров просто не работают, и снаружи это никак не заметно.
+        tail = " · <i>raw и прямой режим выключены</i>"
     accesses = "" if probe.accesses is None else f" · доступов: {probe.accesses}"
     return (
         f"{mark} <b>{ui.safe(server.name)}</b> — <code>{probe.short}</code>"
@@ -66,14 +71,17 @@ async def cb_wdtt_nodes(call: CallbackQuery, session: AsyncSession) -> None:
             lines.append(f"🚫 <b>{ui.safe(server.name)}</b> — не отвечает: {ui.safe(exc)}")
             continue
         lines.append(_node_line(server, probe, ref))
-        if probe.installed and (ref is None or probe.sha256 != ref or not probe.socket_ok):
+        if probe.installed and (
+            ref is None or probe.sha256 != ref or not probe.socket_ok or not probe.modes_on
+        ):
             stale.append(server.id)
 
     help_block = (
         "\n<blockquote expandable>ℹ️ <b>Что делает обновление</b>\n"
-        "Заливает на ноду эталонную программу с ноды бота, перезапускает службу "
-        "и проверяет, что управляющий сокет отвечает, а доступы на месте. Если "
-        "нет — возвращает прежнюю версию из бэкапа.\n"
+        "Заливает на ноду эталонную программу с ноды бота, при необходимости "
+        "включает в файле службы raw и прямой режим, перезапускает службу и "
+        "проверяет, что управляющий сокет отвечает, а доступы на месте. Если "
+        "нет — возвращает из бэкапа и программу, и файл службы.\n"
         "Перезапуск обрывает тех, кто прямо сейчас сидит через резервное "
         "подключение: пароли сохраняются, людям надо переподключиться.\n"
         "Эталон обновляется отдельно — новую программу кладут на ноду бота "

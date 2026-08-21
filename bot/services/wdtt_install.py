@@ -35,6 +35,13 @@ DEFAULT_PORTS = "56000,56001,9000"
 _READY_RETRIES = 6
 _READY_DELAY = 2
 
+# Порты новых режимов qWDTT. Значения — ЗАВОДСКИЕ для приложения: если взять
+# свои, каждому юзеру придётся лезть в настройки и вбивать их руками.
+#   direct — тот же замаскированный канал, но без DTLS: легче для телефона;
+#   raw    — вообще без WireGuard, сервер поднимает свой интерфейс и NAT.
+DIRECT_PORT = 56002
+RAW_PORT = 56003
+
 _UNIT_TEMPLATE = """[Unit]
 Description=WDTT VPN Server
 After=network.target network-online.target
@@ -43,7 +50,8 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStartPre=-/usr/bin/env bash -c "ip link show wdtt0 >/dev/null 2>&1 && ip link del wdtt0 2>/dev/null || true"
-ExecStart={binary} -listen 0.0.0.0:{dtls} -wg-port {wg} -config-dir {config_dir} -password {password} -dns {dns}
+ExecStartPre=-/usr/bin/env bash -c "if command -v iptables >/dev/null 2>&1; then for P in {dtls} {direct} {raw}; do iptables -C INPUT -p udp --dport $P -m comment --comment WDTT_MANAGED -j ACCEPT 2>/dev/null || iptables -I INPUT -p udp --dport $P -m comment --comment WDTT_MANAGED -j ACCEPT; done; iptables -C INPUT -p tcp --dport {dtls} -m comment --comment WDTT_MANAGED -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport {dtls} -m comment --comment WDTT_MANAGED -j ACCEPT; iptables -C INPUT -p tcp --dport 22 -m comment --comment WDTT_MANAGED -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport 22 -m comment --comment WDTT_MANAGED -j ACCEPT; fi"
+ExecStart={binary} -listen 0.0.0.0:{dtls} -wg-port {wg} -listen-direct 0.0.0.0:{direct} -listen-raw 0.0.0.0:{raw} -config-dir {config_dir} -password {password} -dns {dns}
 Restart=always
 RestartSec=5
 LimitNOFILE=65535
@@ -51,6 +59,45 @@ LimitNOFILE=65535
 [Install]
 WantedBy=multi-user.target
 """
+
+
+def render_unit(*, binary: str, dtls: str, wg: str, password: str, dns: str) -> str:
+    """Файл службы под все три режима. Одно место на установку и на обновление:
+    разъехавшись, они начнут ставить разное, и «почему на новой стране нет raw»
+    выяснится через месяц."""
+    return _UNIT_TEMPLATE.format(
+        binary=binary, dtls=dtls, wg=wg, direct=DIRECT_PORT, raw=RAW_PORT,
+        config_dir=CONFIG_DIR, password=password, dns=dns,
+    )
+
+
+def unit_has_modes(unit: str) -> bool:
+    """Есть ли в файле службы новые режимы. Нода со старым файлом работает, но
+    raw и прямой режим у неё просто выключены — снаружи не видно никак."""
+    return "-listen-raw" in unit and "-listen-direct" in unit
+
+
+def parse_unit(unit: str) -> dict | None:
+    """Достаёт из файла службы то, что нельзя потерять при перезаписи: пароль
+    владельца, DNS и порты.
+
+    Пароль владельца существует ради одного — без активного пароля демон не
+    стартует; сгенерировать новый нельзя, он уже лежит в базе паролей ноды.
+    Поэтому нет пароля — нет и перезаписи: возвращаем None, вызывающий обязан
+    оставить ноду в покое. По этой же причине значение НИКУДА не логируется.
+    """
+    values = {"password": "", "dns": DEFAULT_DNS, "wg": "56001", "dtls": "56000"}
+    for token, key in (
+        ("-password ", "password"),
+        ("-dns ", "dns"),
+        ("-wg-port ", "wg"),
+        ("-listen 0.0.0.0:", "dtls"),
+    ):
+        if token in unit:
+            values[key] = unit.split(token, 1)[1].split()[0]
+    if not values["password"]:
+        return None
+    return values
 
 
 def _split_ports(ports: str | None) -> tuple[str, str]:
@@ -93,13 +140,9 @@ async def install(ssh, *, ports: str | None, dns: str | None, progress) -> bool:
 
     # Пароль владельца существует ради одного: без активного пароля демон
     # не стартует. В команду шелла он не попадает — только в файл службы.
-    unit = _UNIT_TEMPLATE.format(
-        binary=binary,
-        dtls=dtls,
-        wg=wg,
-        config_dir=CONFIG_DIR,
-        password=secrets.token_urlsafe(15),
-        dns=dns or DEFAULT_DNS,
+    unit = render_unit(
+        binary=binary, dtls=dtls, wg=wg,
+        password=secrets.token_urlsafe(15), dns=dns or DEFAULT_DNS,
     )
     try:
         await ssh.write_file(UNIT_PATH, unit, mode=0o600)

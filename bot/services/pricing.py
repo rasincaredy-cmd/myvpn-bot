@@ -211,8 +211,15 @@ def per_device_kopeks(monthly_kopeks: int, devices: int) -> int:
 
     Ноль устройств — ноль: делить не на что, а строка «цена за устройство» у
     тарифа без устройств смысла не имеет.
+
+    Округляем до целого рубля, как и цену месяца: «по 67.50 ₽ за устройство»
+    в ряду круглых чисел читается как сбой, а не как выгода. Это ориентир, а не
+    сумма списания, — точная цена тарифа стоит рядом.
     """
-    return monthly_kopeks // devices if devices > 0 else 0
+    if devices <= 0:
+        return 0
+    per = monthly_kopeks / devices
+    return int(per // 100 * 100 + (100 if per % 100 >= 50 else 0))
 
 
 def best_value_key() -> str:

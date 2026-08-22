@@ -19,19 +19,22 @@ from bot.miniapp.http import ApiError, Ctx, authorized, body, int_arg
 from bot.services import amnezia, billing, cryptopay, platega, referral
 from bot.services.pricing import (
     DEPOSIT_BONUS_PERCENT,
+    DEPOSIT_MAX_RUB,
+    DEPOSIT_MIN_RUB,
+    PRESETS,
     TERM_DISCOUNTS,
     TERM_LABELS,
+    best_value_key,
     fmt_rub,
+    month_of_term_kopeks,
     monthly_price_kopeks,
+    per_device_kopeks,
     stars_for_kopeks,
     tariff_ceiling,
     term_price_kopeks,
+    topup_need_rub,
 )
 from bot.utils.timefmt import as_utc, fmt_msk
-
-# Границы ручной суммы пополнения — те же, что в боте: правило одно, а экранов
-# два, и разъехавшиеся пределы юзер поймает первым.
-DEPOSIT_MIN_RUB, DEPOSIT_MAX_RUB = 10, 100_000
 
 
 def sub_active(user) -> bool:
@@ -70,6 +73,34 @@ async def _subscription(session, user) -> dict:
         # пересчитывать нечего.
         "can_switch": bool(active and not user.is_trial and not perpetual),
     }
+
+
+def _presets() -> list[dict]:
+    """Готовые тарифы витрины — те же, что в боте, и с теми же ценами.
+
+    Считаются здесь, а не в javascript: цена, посчитанная на странице, — это
+    вторая формула цены, и однажды она разойдётся с той, по которой списывают
+    деньги.
+    """
+    best = best_value_key()
+    out = []
+    for preset in PRESETS:
+        monthly = monthly_price_kopeks(preset.devices, preset.bypass)
+        out.append({
+            "key": preset.key,
+            "emoji": preset.emoji,
+            "name": preset.name,
+            "hint": preset.hint,
+            "devices": preset.devices,
+            "bypass": preset.bypass,
+            "monthly": fmt_rub(monthly),
+            "per_device": (
+                fmt_rub(per_device_kopeks(monthly, preset.devices))
+                if preset.devices > 1 else ""
+            ),
+            "best": preset.key == best,
+        })
+    return out
 
 
 def _deposit_amounts() -> list[dict]:
@@ -111,6 +142,7 @@ async def state(request: web.Request, ctx: Ctx) -> dict:
             "min_rub": DEPOSIT_MIN_RUB,
             "max_rub": DEPOSIT_MAX_RUB,
         },
+        "presets": _presets(),
         "prices": {
             "first": settings.price_first_rub,
             "extra_device": settings.price_extra_device_rub,
@@ -155,6 +187,11 @@ async def tariff(request: web.Request, ctx: Ctx) -> dict:
             "discount": TERM_DISCOUNTS[m],
             "kopeks": term_price_kopeks(monthly, m),
             "price": fmt_rub(term_price_kopeks(monthly, m)),
+            # Во что срок выходит В МЕСЯЦ: без этой цифры «1440 ₽ за год» и
+            # «160 ₽ за месяц» — разные единицы, и выгода не читается.
+            "per_month": fmt_rub(
+                month_of_term_kopeks(term_price_kopeks(monthly, m), m)
+            ),
             "affordable": user.balance_kopeks >= term_price_kopeks(monthly, m),
         }
         for m in sorted(TERM_LABELS)
@@ -267,10 +304,16 @@ async def tariff_buy(request: web.Request, ctx: Ctx) -> dict:
         ctx.session, user, months, max_devices=devices, max_bypass=bypass
     )
     if not res.ok:
+        # Сумму отдаём числом: страница ведёт человека прямо на пополнение
+        # ровно этой суммы, а не заставляет его считать самому.
         raise ApiError(
             "no_money",
-            f"На балансе не хватает {fmt_rub(res.missing_kopeks)}. Пополни — "
-            "и покупка пройдёт.",
+            f"На балансе не хватает {fmt_rub(res.missing_kopeks)}.",
+            data={
+                "missing_rub": topup_need_rub(res.missing_kopeks),
+                "missing": fmt_rub(res.missing_kopeks),
+                "price": fmt_rub(res.price_kopeks),
+            },
         )
     revived = res.revive.devices_restored if res.revive else 0
     await _receipt(

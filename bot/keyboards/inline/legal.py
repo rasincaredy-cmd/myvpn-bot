@@ -4,7 +4,8 @@ from __future__ import annotations
 from aiogram.types import InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from bot.keyboards.inline.prefixes import CB_LEGAL
+from bot.keyboards.inline.menu import back_target
+from bot.keyboards.inline.prefixes import CB_BAL, CB_LEGAL
 
 
 def consent_kb() -> InlineKeyboardMarkup:
@@ -20,4 +21,19 @@ def consent_kb() -> InlineKeyboardMarkup:
     kb.button(text="Согласен", callback_data=f"{CB_LEGAL}:accept", style="success")
     kb.button(text="Не согласен", callback_data=f"{CB_LEGAL}:decline", style="danger")
     kb.adjust(1, 1, 2)
+    return kb.as_markup()
+
+
+def tariffs_kb(origin: str | None = None) -> InlineKeyboardMarkup:
+    """Витрина цен с выходом к покупке.
+
+    До 22.08.2026 здесь была одна кнопка «назад»: человек дочитывал цены и
+    оставался ни с чем — где платят, он должен был догадаться сам.
+    """
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🎫 Выбрать тариф", callback_data=f"{CB_BAL}:shop",
+              style="success")
+    text, data = back_target(origin)
+    kb.button(text=text, callback_data=data)
+    kb.adjust(1)
     return kb.as_markup()

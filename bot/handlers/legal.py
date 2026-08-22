@@ -12,12 +12,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
 from bot.db import repo
-from bot.keyboards.inline import CB_LEGAL, back_to_menu, consent_kb, origin_of
+from bot.keyboards.inline import (
+    CB_LEGAL,
+    back_to_menu,
+    consent_kb,
+    origin_of,
+    tariffs_kb,
+)
 from bot.services.pricing import (
+    PRESETS,
     TERM_DISCOUNTS,
     TERM_LABELS,
+    best_value_key,
     fmt_rub,
     monthly_price_kopeks,
+    per_device_kopeks,
     term_price_kopeks,
 )
 from bot.texts import t
@@ -31,6 +40,17 @@ def build_tariffs_text() -> str:
     base = monthly_price_kopeks(1, 1)   # типовой тариф: устройство + подключение
     first = monthly_price_kopeks(1, 0)  # пол тарифа: одна позиция
 
+    best = best_value_key()
+    presets = []
+    for preset in PRESETS:
+        monthly = monthly_price_kopeks(preset.devices, preset.bypass)
+        row = f"{preset.emoji} {preset.name} — <b>{fmt_rub(monthly)}/мес</b>"
+        if preset.devices > 1:
+            row += f", по {fmt_rub(per_device_kopeks(monthly, preset.devices))} за устройство"
+        if preset.key == best:
+            row += " 🔥"
+        presets.append(row)
+
     lines = []
     for months in (3, 6, 12):
         price = term_price_kopeks(base, months)
@@ -41,6 +61,7 @@ def build_tariffs_text() -> str:
 
     year = term_price_kopeks(base, 12)
     return t.tariffs.format(
+        presets="\n".join(presets),
         year=fmt_rub(year),
         year_full=fmt_rub(base * 12),
         year_discount=TERM_DISCOUNTS[12],
@@ -58,9 +79,15 @@ def build_tariffs_text() -> str:
 
 @router.callback_query(F.data.in_({f"{CB_LEGAL}:tariffs", f"{CB_LEGAL}:tariffs:more"}))
 async def cb_tariffs(call: CallbackQuery) -> None:
-    # Возврат — туда, откуда пришли: из «⚙️ Ещё» в «Ещё», с главного в меню.
+    """Витрина сервиса: цены доступны всегда, даже без подписки (требование
+    платёжного провайдера).
+
+    С 22.08.2026 у неё есть выход к покупке: до этого человек читал цены и
+    оставался на экране с одной кнопкой «назад» — искать, где платят, ему
+    приходилось самому.
+    """
     await call.message.edit_text(
-        build_tariffs_text(), reply_markup=back_to_menu(origin_of(call.data))
+        build_tariffs_text(), reply_markup=tariffs_kb(origin_of(call.data))
     )
     await call.answer()
 

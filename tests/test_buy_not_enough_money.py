@@ -23,9 +23,11 @@ class _FakeFrom:
 class _FakeMessage:
     def __init__(self) -> None:
         self.texts: list[str] = []
+        self.markups: list = []
 
     async def edit_text(self, text: str, **kwargs) -> None:
         self.texts.append(text)
+        self.markups.append(kwargs.get("reply_markup"))
 
 
 class _FakeCall:
@@ -39,7 +41,7 @@ class _FakeCall:
         self.answers.append(text)
 
 
-async def test_alert_names_the_missing_sum(session: AsyncSession) -> None:
+async def test_screen_names_the_missing_sum(session: AsyncSession) -> None:
     from bot.handlers.balance import cb_bal_buy
 
     user = await repo.get_or_create_user(
@@ -51,11 +53,20 @@ async def test_alert_names_the_missing_sum(session: AsyncSession) -> None:
     call = _FakeCall("bal:buy:1:1:1", 4501)
     await cb_bal_buy(call, session)
 
+    # С 22.08.2026 это ЭКРАН, а не всплывашка: человек упёрся в отказ ровно
+    # тогда, когда собрался платить, и ему нужен следующий шаг, а не «ок».
     price = monthly_price_kopeks(1, 1)          # 120 ₽ за 1 устр. + 1 обход
-    assert call.answers, "юзеру вообще ничего не ответили"
-    alert = call.answers[0]
-    assert "70" in alert, f"не названа нехватка 70 ₽: {alert}"
-    assert str(price // 100) in alert, f"не названа цена: {alert}"
+    assert call.message.texts, "юзеру вообще ничего не показали"
+    screen = call.message.texts[-1]
+    assert "70" in screen, f"не названа нехватка 70 ₽: {screen}"
+    assert str(price // 100) in screen, f"не названа цена: {screen}"
+
+    # И выход с экрана — сразу на пополнение нужной суммы.
+    buttons = [
+        b for row in call.message.markups[-1].inline_keyboard for b in row
+    ]
+    assert any("Пополнить на 70 ₽" in b.text for b in buttons), [b.text for b in buttons]
+    assert any(b.callback_data == "bal:need:70" for b in buttons)
 
 
 async def test_balance_survives_the_failed_purchase(session: AsyncSession) -> None:

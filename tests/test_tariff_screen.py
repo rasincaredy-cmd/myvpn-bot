@@ -61,9 +61,20 @@ class TestTariffKeyboard:
         assert kb.inline_keyboard[0][0].callback_data == "nop"
 
     def test_always_offers_topup_and_way_back(self) -> None:
+        # Возврат ведёт в витрину тарифов (с 22.08.2026 покупка начинается с
+        # неё), а оттуда уже в «Подписку».
         texts = " ".join(_texts(tariff_kb(1, 1, TERMS, 10, 10, switch_days=None)))
         assert "Пополнить" in texts
-        assert "Подписка" in texts
+        assert "Тарифы" in texts
+
+    def test_preset_mode_hides_steppers_but_keeps_terms(self) -> None:
+        """Пришли из витрины — состав уже выбран, и первое решение теперь
+        одно: срок. Менять состав можно, но отдельной кнопкой."""
+        kb = tariff_kb(2, 1, TERMS, 10, 10, switch_days=None, builder=False)
+        texts = _texts(kb)
+        assert "−" not in texts and "+" not in texts
+        assert any("Изменить состав" in t for t in texts)
+        assert "bal:buy:2:1:12" in _datas(kb)
 
 
 class TestTariffText:

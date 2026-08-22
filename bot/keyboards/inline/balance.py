@@ -124,9 +124,77 @@ def invoice_kb(pay_url: str, row_id: int) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
+def tariff_shop_kb(
+    rows: list[tuple[str, str]], builder_to: tuple[int, int]
+) -> InlineKeyboardMarkup:
+    """Витрина готовых тарифов (22.08.2026).
+
+    До неё покупка открывалась конструктором «−/+»: шесть кнопок и вопрос
+    «сколько тебе устройств?», на который человек, пришедший купить VPN, ещё не
+    знает ответа. Теперь сначала три готовые строки с ценой, а конструктор —
+    отдельной кнопкой для тех, кто знает точно.
+
+    `rows` — (ключ пресета, подпись) уже с ценой: считать её в клавиатуре
+    нельзя, иначе цифра на кнопке разойдётся с цифрой в тексте экрана.
+    """
+    kb = InlineKeyboardBuilder()
+    for key, label in rows:
+        kb.button(text=label, callback_data=f"{CB_BAL}:pre:{key}", style="success")
+    kb.button(
+        text="🧮 Собрать свой тариф",
+        callback_data=f"{CB_BAL}:ext:{builder_to[0]}:{builder_to[1]}",
+    )
+    kb.button(text="➕ Пополнить баланс", callback_data=f"{CB_BAL}:dep")
+    kb.button(text="‹ Подписка", callback_data=f"{CB_SUB}:my")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def not_enough_kb(
+    need_rub: int, devices: int, bypass: int
+) -> InlineKeyboardMarkup:
+    """Экран «не хватает денег»: единственный осмысленный выход — пополнить.
+
+    До 22.08.2026 здесь была всплывашка с текстом «жми Пополнить под
+    сообщением»: человек упирался в отказ ровно в тот момент, когда собрался
+    платить, и должен был сам найти нужную кнопку. Теперь сумма уже
+    подставлена — остаётся выбрать, чем платить.
+    """
+    kb = InlineKeyboardBuilder()
+    kb.button(text=f"➕ Пополнить на {need_rub} ₽",
+              callback_data=f"{CB_BAL}:need:{need_rub}", style="success")
+    kb.button(text="✏️ Другая сумма", callback_data=f"{CB_BAL}:dep")
+    kb.button(text="‹ К тарифу", callback_data=f"{CB_BAL}:pick:{devices}:{bypass}")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def deposit_methods_for_kb(
+    rub: int, bonus_percent: int, cryptobot: bool = True, platega: bool = True
+) -> InlineKeyboardMarkup:
+    """Выбор способа, когда сумма УЖЕ известна (пришли из «не хватает N ₽»).
+
+    Отдельная клавиатура, а не общая: там сумму ещё выбирают, здесь она
+    посчитана за человека, и заново спрашивать её — терять того, кто уже
+    достал карту.
+    """
+    kb = InlineKeyboardBuilder()
+    if platega:
+        kb.button(text=f"💳 Карта или СБП — {rub} ₽",
+                  callback_data=f"{CB_BAL}:pg:{rub}", style="success")
+    if cryptobot:
+        kb.button(text=f"💎 CryptoBot  +{bonus_percent}%",
+                  callback_data=f"{CB_BAL}:dep:{rub}", style="success")
+    kb.button(text="⭐ Звёзды Telegram", callback_data=f"{CB_BAL}:star:{rub}")
+    kb.button(text="✏️ Другая сумма", callback_data=f"{CB_BAL}:dep")
+    kb.adjust(1)
+    return kb.as_markup()
+
+
 def tariff_kb(
     devices: int, bypass: int, term_prices: list[tuple[int, str]],
     max_devices: int, max_bypass: int, *, switch_days: int | None,
+    builder: bool = True,
 ) -> InlineKeyboardMarkup:
     """Экран «⚙️ Тариф»: тариф крутится ±, ниже — смена без оплаты и сроки.
 
@@ -145,18 +213,20 @@ def tariff_kb(
     рисуем заглушкой CB_NOP — не гоняем пустые перерисовки.
     """
     kb = InlineKeyboardBuilder()
+    sizes: list[int] = []
 
     def _step(cur_d: int, cur_b: int, ok: bool) -> str:
         return f"{CB_BAL}:ext:{cur_d}:{cur_b}" if ok else CB_NOP
 
-    # «−» недоступен на нуле и когда это последняя позиция тарифа (0+0 нельзя).
-    kb.button(text="−", callback_data=_step(devices - 1, bypass, devices > 0 and devices + bypass > 1))
-    kb.button(text=f"📱 {devices}", callback_data=CB_NOP)
-    kb.button(text="+", callback_data=_step(devices + 1, bypass, devices < max_devices))
-    kb.button(text="−", callback_data=_step(devices, bypass - 1, bypass > 0 and devices + bypass > 1))
-    kb.button(text=f"⚡ {bypass}", callback_data=CB_NOP)
-    kb.button(text="+", callback_data=_step(devices, bypass + 1, bypass < max_bypass))
-    sizes = [3, 3]
+    if builder:
+        # «−» недоступен на нуле и когда это последняя позиция тарифа (0+0 нельзя).
+        kb.button(text="−", callback_data=_step(devices - 1, bypass, devices > 0 and devices + bypass > 1))
+        kb.button(text=f"📱 {devices}", callback_data=CB_NOP)
+        kb.button(text="+", callback_data=_step(devices + 1, bypass, devices < max_devices))
+        kb.button(text="−", callback_data=_step(devices, bypass - 1, bypass > 0 and devices + bypass > 1))
+        kb.button(text=f"⚡ {bypass}", callback_data=CB_NOP)
+        kb.button(text="+", callback_data=_step(devices, bypass + 1, bypass < max_bypass))
+        sizes += [3, 3]
 
     if switch_days is not None:
         kb.button(
@@ -173,10 +243,17 @@ def tariff_kb(
     if len(term_prices) % 2:
         sizes.append(1)
 
+    if not builder:
+        # Состав пришёл из витрины — менять его можно, но это уже не первое,
+        # чего от человека ждут: сначала срок.
+        kb.button(text="🧮 Изменить состав",
+                  callback_data=f"{CB_BAL}:ext:{devices}:{bypass}")
+        sizes.append(1)
+
     # Выход на пополнение прямо отсюда: юзеру с пустым балансом не нужно
     # догадываться, что пополнение живёт в разделе «Баланс».
     kb.button(text="➕ Пополнить баланс", callback_data=f"{CB_BAL}:dep")
-    kb.button(text="‹ Подписка", callback_data=f"{CB_SUB}:my")
+    kb.button(text="‹ Тарифы", callback_data=f"{CB_BAL}:shop")
     sizes.extend([1, 1])
     kb.adjust(*sizes)
     return kb.as_markup()

@@ -91,6 +91,9 @@ async function api(path, options) {
   if (!res.ok || !data.ok) {
     const err = new Error(data.message || 'Что-то пошло не так.');
     err.code = data.error;
+    // Цифры следующего шага (сколько не хватает) едут отдельными полями:
+    // выковыривать их из текста сообщения нельзя, текст пишут для человека.
+    err.data = data;
     throw err;
   }
   return data;
@@ -167,11 +170,25 @@ function syncBack() {
   } catch (e) { /* старый клиент */ }
 }
 
-function openTab(name) {
+function markTab(name) {
   S.tab = name;
   S.stack = [];
   for (const b of document.querySelectorAll('.tab')) b.classList.toggle('on', b.dataset.tab === name);
+}
+
+function openTab(name) {
+  markTab(name);
   run({ home: renderHome, devices: renderDevices, bypass: renderBypass, money: renderMoney }[name]);
+}
+
+/** Прямая дорога к покупке с любого экрана: человек нажал «продлить» — значит
+ *  он уже решил, и лишний экран между ним и ценами не нужен. */
+function goTariff() {
+  markTab('money');
+  run(async () => {
+    await reload();
+    push(renderTariffShop);
+  });
 }
 
 async function reload() {
@@ -227,7 +244,7 @@ function renderHome() {
       row('💰 Баланс', d.balance.text, () => openTab('money')),
     ),
     h('button', {
-      class: 'btn', onclick: () => { haptic(); openTab('money'); },
+      class: 'btn', onclick: () => { haptic(); goTariff(); },
     }, sub.active ? '🔁 Продлить подписку' : '🔁 Включить снова'),
     h('div', { class: 'section-title' }, 'Ещё'),
     h('div', { class: 'card' },
@@ -538,7 +555,7 @@ async function renderMoney() {
       row('🎫 Тариф', sub.devices_max + ' устр. + ' + sub.bypass_max + ' подкл.'),
       autopayBtn),
     h('button', {
-      class: 'btn', onclick: () => { haptic(); push(renderTariff); },
+      class: 'btn', onclick: () => { haptic(); push(renderTariffShop); },
     }, sub.active && !sub.trial ? '🎫 Продлить или сменить тариф' : '🎫 Выбрать тариф'),
     h('div', { class: 'section-title' }, 'Ещё'),
     h('div', { class: 'card' },
@@ -547,14 +564,29 @@ async function renderMoney() {
   ));
 }
 
-function renderTopUp() {
+function renderTopUp(preselect, missingText) {
   const d = S.data;
-  const chosen = { rub: d.pay.amounts.length ? d.pay.amounts[1].rub : 100 };
+  const chosen = { rub: preselect || (d.pay.amounts.length ? d.pay.amounts[1].rub : 100) };
   const custom = h('input', { type: 'number', min: String(d.pay.min_rub), max: String(d.pay.max_rub), placeholder: 'Своя сумма, ₽' });
 
   const box = h('div', { class: 'opts' });
+  if (preselect) {
+    // Пришли из покупки, на которую не хватило: сумма уже посчитана, и первой
+    // кнопкой стоит она.
+    const b = h('button', { class: 'opt on' },
+      h('span', { class: 'k' }, preselect + ' ₽'),
+      h('span', { class: 's' }, 'сколько не хватает'));
+    b.addEventListener('click', () => {
+      chosen.rub = preselect;
+      custom.value = '';
+      for (const other of box.children) other.classList.remove('on');
+      b.classList.add('on');
+      haptic();
+    });
+    box.append(b);
+  }
   d.pay.amounts.forEach((a) => {
-    const b = h('button', { class: 'opt' + (a.rub === chosen.rub ? ' on' : '') },
+    const b = h('button', { class: 'opt' + (!preselect && a.rub === chosen.rub ? ' on' : '') },
       h('span', { class: 'k' }, a.label), h('span', { class: 's' }, a.hint));
     b.addEventListener('click', () => {
       chosen.rub = a.rub;
@@ -589,6 +621,9 @@ function renderTopUp() {
   };
 
   show(h('div', { class: 'list-enter' },
+    missingText ? h('div', { class: 'card' },
+      h('div', { class: 'note', style: 'margin:0' },
+        'На покупку не хватило ' + missingText + '. Пополни — и она пройдёт сразу.')) : null,
     h('div', { class: 'section-title' }, 'Сколько пополнить'),
     h('div', { class: 'card' }, box, custom),
     h('div', { class: 'section-title' }, 'Чем платить'),
@@ -600,10 +635,49 @@ function renderTopUp() {
   ));
 }
 
-async function renderTariff() {
+function renderTariffShop() {
+  const d = S.data;
+  const cards = (d.presets || []).map((preset) => h('div', {
+    class: 'card tap',
+    onclick: () => { haptic(); push(() => renderTariff({ devices: preset.devices, bypass: preset.bypass }, false)); },
+  },
+    h('div', { class: 'row first' },
+      h('div', { class: 'name', style: 'color:var(--text);font-weight:600' },
+        preset.emoji + ' ' + preset.name,
+        preset.best ? h('span', { class: 'pill', style: 'margin-left:8px' }, '🔥 выгоднее') : null),
+      h('div', { class: 'value' }, preset.monthly, h('small', {}, '/мес')),
+      h('div', { class: 'chev' }, '›')),
+    h('div', { class: 'chips' },
+      h('span', { class: 'chip' }, '📱 ' + preset.devices),
+      h('span', { class: 'chip' }, '⚡ ' + preset.bypass),
+      preset.per_device ? h('span', { class: 'chip' }, 'по ' + preset.per_device + ' за устройство') : null,
+      h('span', { class: 'chip' }, preset.hint)),
+  ));
+
+  const sub = d.sub;
+  const own = h('button', { class: 'btn ghost' }, '🧮 Собрать свой тариф');
+  own.addEventListener('click', () => {
+    haptic();
+    push(() => renderTariff({
+      devices: sub.devices_max || 1, bypass: sub.bypass_max || 1,
+    }, true));
+  });
+
+  show(h('div', { class: 'list-enter' },
+    h('div', { class: 'section-title' }, 'Тарифы'),
+    cards,
+    own,
+    h('div', { class: 'note' },
+      'Чем больше устройств в тарифе, тем дешевле каждое. Срок тоже экономит: '
+      + 'за год — минус четверть цены. Неиспользованные дни при смене тарифа '
+      + 'не сгорают, а пересчитываются.'),
+  ));
+}
+
+async function renderTariff(start, builder) {
   loading();
   const sub = S.data.sub;
-  const pick = { devices: sub.devices_max, bypass: sub.bypass_max, months: 1 };
+  const pick = { devices: start.devices, bypass: start.bypass, months: 1 };
   if (pick.devices + pick.bypass < 1) pick.devices = 1;
   let info = null;
 
@@ -622,7 +696,8 @@ async function renderTariff() {
     const terms = (info ? info.terms : []).map((t) => {
       const b = h('button', { class: 'opt' + (pick.months === t.months ? ' on' : '') },
         h('span', { class: 'k' }, t.price),
-        h('span', { class: 's' }, t.label + (t.discount ? ' · −' + t.discount + '%' : '')));
+        // Цена за месяц — то, по чему сроки вообще сравнимы между собой.
+        h('span', { class: 's' }, t.label + ' · ' + t.per_month + '/мес'));
       b.addEventListener('click', () => { pick.months = t.months; haptic(); draw(); });
       return b;
     });
@@ -630,20 +705,30 @@ async function renderTariff() {
     const term = (info ? info.terms : []).find((t) => t.months === pick.months);
     const buy = h('button', { class: 'btn' }, term ? '💳 Оплатить ' + term.price : 'Считаю…');
     buy.addEventListener('click', () => act(buy, async () => {
-      const res = await api('/tariff/buy', {
-        method: 'POST',
-        body: { devices: pick.devices, bypass: pick.bypass, months: pick.months },
-      });
-      haptic('medium');
-      await reload();
-      alertBox(res.message);
-      S.stack = [];
-      openTab('home');
+      try {
+        const res = await api('/tariff/buy', {
+          method: 'POST',
+          body: { devices: pick.devices, bypass: pick.bypass, months: pick.months },
+        });
+        haptic('medium');
+        await reload();
+        alertBox(res.message);
+        S.stack = [];
+        openTab('home');
+      } catch (e) {
+        // Денег не хватило — это не отказ, а следующий шаг: человек уже
+        // собрался платить, и сумму мы посчитали за него.
+        if (e.code === 'no_money' && e.data && e.data.missing_rub) {
+          push(() => renderTopUp(e.data.missing_rub, e.data.missing));
+          return;
+        }
+        throw e;
+      }
     }));
 
     const switchable = info && info.switch.ok;
     const change = h('button', { class: 'btn ghost' }, switchable
-      ? '⚙️ Сменить тариф без оплаты: ' + info.switch.old_days + ' → ' + info.switch.new_days + ' дн.'
+      ? '⚙️ Сменить без оплаты: ' + info.switch.old_days + ' → ' + info.switch.new_days + ' дн.'
       : '⚙️ Сменить тариф без оплаты');
     change.addEventListener('click', () => act(change, async () => {
       const ok = await confirmBox('Сменить тариф? Неиспользованные дни пересчитаются: '
@@ -660,11 +745,20 @@ async function renderTariff() {
       openTab('home');
     }));
 
+    const toBuilder = h('button', { class: 'btn quiet' }, '🧮 Изменить состав');
+    toBuilder.addEventListener('click', () => {
+      haptic();
+      push(() => renderTariff({ devices: pick.devices, bypass: pick.bypass }, true));
+    });
+
     show(h('div', { class: 'list-enter' },
-      h('div', { class: 'section-title' }, 'Из чего собрать тариф'),
+      h('div', { class: 'section-title' }, builder ? 'Свой тариф' : 'Тариф'),
       h('div', { class: 'card' },
-        stepper('devices', 'Устройства', '📱'),
-        stepper('bypass', 'Резервные подключения', '⚡'),
+        builder ? stepper('devices', 'Устройства', '📱') : null,
+        builder ? stepper('bypass', 'Резервные подключения', '⚡') : null,
+        builder ? null : h('div', { class: 'row first' },
+          h('div', { class: 'name' }, 'Состав'),
+          h('div', { class: 'value' }, pick.devices + ' устр. + ' + pick.bypass + ' подкл.')),
         h('div', { class: 'row' },
           h('div', { class: 'name' }, 'Цена'),
           h('div', { class: 'value' }, info ? info.monthly + '/мес' : '…'))),
@@ -675,6 +769,7 @@ async function renderTariff() {
             'Сменить тариф без оплаты сейчас нельзя: ' + ((info && info.switch.reason === 'same')
               ? 'это твой текущий тариф.' : 'выбери другой набор.')))
         : null,
+      builder ? null : toBuilder,
       h('div', { class: 'note' },
         'Первая позиция — ' + S.data.prices.first + ' ₽/мес, каждое следующее устройство +'
         + S.data.prices.extra_device + ' ₽, каждое следующее подключение +'

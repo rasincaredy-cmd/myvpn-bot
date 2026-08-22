@@ -37,6 +37,14 @@ const API = {
                      { rub: 610, label: '610 ₽', hint: 'полгода', stars: 763 },
                      { rub: 1080, label: '1080 ₽', hint: 'год', stars: 1350 }],
            bonus: { cryptobot: 4, platega: 0, stars: 0 }, min_rub: 10, max_rub: 100000 },
+    presets: [
+      { key: 'solo', emoji: '📱', name: 'Один', hint: 'телефон или компьютер',
+        devices: 1, bypass: 1, monthly: '120 ₽', per_device: '', best: false },
+      { key: 'duo', emoji: '💻', name: 'Два устройства', hint: 'телефон и компьютер',
+        devices: 2, bypass: 1, monthly: '160 ₽', per_device: '80 ₽', best: false },
+      { key: 'family', emoji: '👪', name: 'Семейный', hint: 'себе и близким',
+        devices: 4, bypass: 2, monthly: '270 ₽', per_device: '68 ₽', best: true },
+    ],
     prices: { first: 90, extra_device: 40, extra_bypass: 30,
               terms: [{ months: 1, label: 'месяц', discount: 0 },
                       { months: 3, label: '3 мес', discount: 10 },
@@ -82,8 +90,9 @@ function tariffAnswer(qs) {
   const bypass = Number(new URLSearchParams(qs).get('bypass'));
   return { ok: true, devices, bypass, ceiling: { devices: 10, bypass: 10 },
            monthly: (90 + (devices - 1) * 40 + bypass * 30) + ' ₽',
-           terms: [1, 3, 6, 12].map((m) => ({ months: m, label: String(m), discount: 0,
-                                              kopeks: m * 12000, price: m * 120 + ' ₽', affordable: m < 3 })),
+           terms: [1, 3, 6, 12].map((m) => ({ months: m, label: String(m) + ' мес', discount: 0,
+                                              kopeks: m * 12000, price: m * 120 + ' ₽',
+                                              per_month: '120 ₽', affordable: m < 3 })),
            switch: { ok: true, reason: '', old_days: 25, new_days: 19, used_devices: 1, used_bypass: 2 } };
 }
 
@@ -177,13 +186,39 @@ const click = async (needle, note) => {
 
   await click('💳Оплата');
   await click('🎫 Продлить или сменить тариф');
+  steps.push(['витрина тарифов', text().includes('Семейный') && text().includes('выгоднее')]);
+  await click('Два устройства');
+  await wait(150);
+  steps.push(['срок после пресета', text().includes('На какой срок')]);
+  steps.push(['цена за месяц на кнопке срока', text().includes('/мес')]);
+  steps.push(['состав пришёл из витрины', calls.includes('/api/tariff?devices=2&bypass=1')]);
+
+  // Денег не хватает — страница обязана увести на пополнение, а не отказать.
+  API['/api/tariff/buy'] = null;
+  window.fetch = ((orig) => async (url, init) => {
+    if (url === '/api/tariff/buy') {
+      calls.push('POST', url);
+      return { ok: false, status: 400, json: async () => ({
+        ok: false, error: 'no_money', message: 'На балансе не хватает 45 ₽.',
+        missing_rub: 50, missing: '45 ₽', price: '430 ₽' }) };
+    }
+    return orig(url, init);
+  })(window.fetch);
+  await click('💳 Оплатить');
   await wait(120);
-  steps.push(['конструктор тарифа', text().includes('Из чего собрать тариф')]);
+  steps.push(['без денег ведёт на пополнение', text().includes('не хватило')]);
+  steps.push(['сумма подставлена', text().includes('50 ₽')]);
+
+  await click('💳Оплата');
+  await click('🎫 Продлить или сменить тариф');
+  await click('🧮 Собрать свой тариф');
+  await wait(150);
+  steps.push(['конструктор за кнопкой', text().includes('Свой тариф')]);
   const plus = window.document.querySelectorAll('.stepper')[0].querySelectorAll('button')[1];
   plus.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
   await wait(150);
   steps.push(['плюс устройства работает', calls.includes('/api/tariff?devices=4&bypass=2')]);
-  await click('⚙️ Сменить тариф');
+  await click('⚙️ Сменить');
   steps.push(['смена тарифа отправлена', calls.includes('/api/tariff/change')]);
 
   await click('🏠Главная');

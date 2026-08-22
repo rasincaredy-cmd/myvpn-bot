@@ -28,7 +28,13 @@ from bot.miniapp import http as mini_http
 from bot.miniapp.app import add_routes
 from bot.services import bypass_issue
 from bot.services.crypto import encrypt
-from bot.services.pricing import stars_for_kopeks
+from bot.services.pricing import (
+    PRESETS,
+    best_value_key,
+    fmt_rub,
+    monthly_price_kopeks,
+    stars_for_kopeks,
+)
 from tests.test_miniapp_auth import TOKEN, sign, user_field
 
 TG_ID = 700100
@@ -565,3 +571,42 @@ class TestConsent:
             user.terms_accepted_at = datetime.now(timezone.utc)
             await session.commit()
         assert (await env.get("/api/state"))["ok"] is True
+
+
+class TestTariffShopApi:
+    """Витрина и цена «в месяц» приезжают с сервера — не считаются на странице.
+
+    Вторая формула цены в javascript однажды разошлась бы с той, по которой
+    списывают деньги, и спорить с юзером пришлось бы о его же экране.
+    """
+
+    async def test_state_carries_ready_made_tariffs(self, env: Env) -> None:
+        await make_user(env)
+        presets = (await env.get("/api/state"))["presets"]
+        assert [p["key"] for p in presets] == [p.key for p in PRESETS]
+        solo = next(p for p in presets if p["key"] == "solo")
+        assert solo["monthly"] == fmt_rub(monthly_price_kopeks(1, 1))
+        # Метка выгоды ровно одна и стоит на самом дешёвом за устройство.
+        assert sum(1 for p in presets if p["best"]) == 1
+        assert next(p for p in presets if p["best"])["key"] == best_value_key()
+
+    async def test_terms_say_how_much_a_month_costs(self, env: Env) -> None:
+        await make_user(env)
+        terms = (await env.get("/api/tariff?devices=1&bypass=1"))["terms"]
+        year = next(t for t in terms if t["months"] == 12)
+        assert year["price"] == "1080 ₽"
+        assert year["per_month"] == "90 ₽"
+        # Ради этой цифры всё и делалось: год выгоднее месяца в рублях за месяц.
+        month = next(t for t in terms if t["months"] == 1)
+        assert month["per_month"] == month["price"]
+
+    async def test_no_money_answer_carries_the_sum_to_top_up(self, env: Env) -> None:
+        await make_user(env, balance=50_00)
+        res = await env.post(
+            "/api/tariff/buy", {"devices": 1, "bypass": 1, "months": 1}, expect=400
+        )
+        assert res["error"] == "no_money"
+        # 120 − 50 = 70 ₽, округление вверх до десятки.
+        assert res["missing_rub"] == 70
+        assert res["missing"] == "70 ₽"
+        assert res["price"] == "120 ₽"

@@ -23,13 +23,21 @@ from bot.miniapp import auth
 
 
 class ApiError(Exception):
-    """Ошибка, которую можно показать человеку. Код — для логики страницы."""
+    """Ошибка, которую можно показать человеку. Код — для логики страницы.
 
-    def __init__(self, code: str, message: str, *, status: int = 400) -> None:
+    `data` — цифры для следующего шага (например, сколько не хватает до
+    покупки). Разбирать их из текста сообщения страница не должна: текст пишут
+    для человека и меняют, не думая о том, что его кто-то парсит.
+    """
+
+    def __init__(
+        self, code: str, message: str, *, status: int = 400, data: dict | None = None
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
         self.status = status
+        self.data = data or {}
 
 
 @dataclass(frozen=True)
@@ -131,7 +139,10 @@ def authorized(
                 except ApiError as exc:
                     await session.rollback()
                     return json_response(
-                        {"ok": False, "error": exc.code, "message": exc.message},
+                        {
+                            "ok": False, "error": exc.code, "message": exc.message,
+                            **exc.data,
+                        },
                         status=exc.status,
                     )
                 except Exception:

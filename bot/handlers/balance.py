@@ -26,6 +26,9 @@ from bot.keyboards.inline import (
     CB_BAL,
     origin_of,
     balance_kb,
+    deposit_methods_for_kb,
+    not_enough_kb,
+    tariff_shop_kb,
     back_to_menu,
     cancel_only,
     deposit_amounts_kb,
@@ -43,13 +46,21 @@ from bot.loader import bot
 from bot.services import billing, cryptopay, platega, referral
 from bot.services.pricing import (
     DEPOSIT_BONUS_PERCENT,
+    DEPOSIT_MAX_RUB,
+    DEPOSIT_MIN_RUB,
+    PRESETS,
     TERM_DISCOUNTS,
     TERM_LABELS,
+    best_value_key,
     fmt_rub,
+    month_of_term_kopeks,
     monthly_price_kopeks,
+    per_device_kopeks,
+    preset_by_key,
     stars_for_kopeks,
     tariff_ceiling,
     term_price_kopeks,
+    topup_need_rub,
 )
 from bot.states.install import BalanceStates
 from bot.texts import t, ui
@@ -61,7 +72,8 @@ router = Router(name="balance")
 # Суммы считаются из прайсинга, а не хардкодятся — при смене цены кнопки
 # не разъедутся с реальной стоимостью.
 _DEPOSIT_TERMS = sorted(TERM_LABELS.items())
-_CUSTOM_MIN_RUB, _CUSTOM_MAX_RUB = 10, 100_000
+# Границы одного пополнения — общие с мини-приложением (services/pricing).
+_CUSTOM_MIN_RUB, _CUSTOM_MAX_RUB = DEPOSIT_MIN_RUB, DEPOSIT_MAX_RUB
 
 
 def _deposit_amounts() -> list[tuple[int, str]]:
@@ -759,15 +771,46 @@ async def step_ref_code(message: Message, state: FSMContext, session: AsyncSessi
 # ── Продление / покупка подписки ─────────────────────────────────────────────
 
 def _term_price_rows(devices: int, bypass: int) -> list[tuple[int, str]]:
+    """Подписи кнопок сроков: цена целиком И сколько это выходит в месяц.
+
+    Без второй цифры сроки несравнимы: «1440 ₽ за год» и «160 ₽ за месяц» —
+    это разные единицы, и человек честно не знает, что первое выгоднее. Скидка
+    в процентах с кнопки ушла: три числа в подпись не влезают, а «120 ₽/мес»
+    рядом со «160 ₽/мес» показывает ту же выгоду прямо в рублях (просьба Влада
+    22.08.2026).
+    """
     monthly = monthly_price_kopeks(devices, bypass)
     rows: list[tuple[int, str]] = []
-    for months, discount in TERM_DISCOUNTS.items():
+    for months in TERM_DISCOUNTS:
         price = term_price_kopeks(monthly, months)
         label = f"{months} мес — {fmt_rub(price)}"
-        if discount:
-            label += f" (−{discount}%)"
+        if months > 1:
+            label += f" · {fmt_rub(month_of_term_kopeks(price, months))}/мес"
         rows.append((months, label))
     return rows
+
+
+def _shop_rows(user) -> tuple[list[tuple[str, str]], list[str]]:
+    """Витрина: (кнопки пресетов, строки-факты для текста).
+
+    Обе половины считаются здесь и разом — иначе цена на кнопке однажды
+    разойдётся с ценой в тексте над ней.
+    """
+    best = best_value_key()
+    buttons: list[tuple[str, str]] = []
+    facts: list[str] = []
+    for preset in PRESETS:
+        monthly = monthly_price_kopeks(preset.devices, preset.bypass)
+        buttons.append((preset.key, f"{preset.emoji} {preset.name} — {fmt_rub(monthly)}/мес"))
+        value = f"{fmt_rub(monthly)}/мес"
+        if preset.devices > 1:
+            # Цена за устройство — та самая выгода, и она настоящая: чем больше
+            # устройств в тарифе, тем дешевле каждое.
+            value += f" · по {fmt_rub(per_device_kopeks(monthly, preset.devices))}"
+        if preset.key == best:
+            value += " 🔥"
+        facts.append(ui.fact(preset.emoji, preset.name, value))
+    return buttons, facts
 
 
 def _tariff_bounds(user) -> tuple[int, int]:
@@ -792,7 +835,8 @@ def _clamp_tariff(user, devices: int, bypass: int) -> tuple[int, int]:
 
 
 def build_tariff_text(
-    user, devices: int, bypass: int, *, switch_days: int | None
+    user, devices: int, bypass: int, *, switch_days: int | None,
+    builder: bool = True,
 ) -> str:
     """Экран «⚙️ Тариф»: что за тариф собран и во что он обойдётся.
 
@@ -818,12 +862,18 @@ def build_tariff_text(
             f"оплаты — станет <b>{switch_days}</b>: неиспользованное время не "
             "сгорает, а пересчитывается в новый тариф."
         )
-    else:
+    elif builder:
         note = "Настрой количество кнопками − и +, потом выбери срок."
+    else:
+        note = "Выбери срок: чем он длиннее, тем дешевле выходит месяц."
 
     return ui.screen(
         ui.title("⚙️", "Тариф"),
-        lead="Собери тариф под себя — плати только за то, что нужно.",
+        lead=(
+            "Собери тариф под себя — плати только за то, что нужно."
+            if builder else
+            f"{devices} устр. + {bypass} рез. подключ. — {fmt_rub(monthly)}/мес."
+        ),
         facts=facts,
         note=note,
         help=ui.help_block(
@@ -835,7 +885,9 @@ def build_tariff_text(
     )
 
 
-async def _render_tariff(edit, session, user, devices: int, bypass: int) -> None:
+async def _render_tariff(
+    edit, session, user, devices: int, bypass: int, *, builder: bool = True
+) -> None:
     """Собирает и рисует экран тарифа.
 
     Доступность смены без оплаты выясняем «сухим прогоном» самой смены: те же
@@ -849,26 +901,106 @@ async def _render_tariff(edit, session, user, devices: int, bypass: int) -> None
     )
     switch_days = preview.new_days if preview.ok else None
     await edit(
-        build_tariff_text(user, devices, bypass, switch_days=switch_days),
+        build_tariff_text(
+            user, devices, bypass, switch_days=switch_days, builder=builder
+        ),
         reply_markup=tariff_kb(
             devices, bypass, _term_price_rows(devices, bypass),
-            max_dev, max_byp, switch_days=switch_days,
+            max_dev, max_byp, switch_days=switch_days, builder=builder,
         ),
     )
 
 
-@router.callback_query(F.data == f"{CB_BAL}:extend")
-async def cb_bal_extend(call: CallbackQuery, session: AsyncSession) -> None:
+@router.callback_query(F.data.in_({f"{CB_BAL}:extend", f"{CB_BAL}:shop"}))
+async def cb_bal_shop(call: CallbackQuery, session: AsyncSession) -> None:
+    """Витрина тарифов — первый экран покупки (22.08.2026).
+
+    Раньше здесь сразу открывался конструктор «−/+». Человек, который пришёл
+    купить VPN, ещё не думал в устройствах и подключениях: ему нужен ответ
+    «сколько это стоит», а не форма для сборки. Конструктор никуда не делся —
+    он за кнопкой, для тех, кто знает точно.
+    """
     user = await _get_user(session, call)
     if user.sub_expires_at is None and not user.is_trial:
         await call.answer("У тебя бессрочная подписка — продлевать нечего 🙂", show_alert=True)
         return
-    # Нулевые лимиты — это юзер, который ещё ничего не покупал: показываем ему
-    # типовой тариф, а не пустой конструктор.
+    buttons, facts = _shop_rows(user)
+    facts.append(ui.fact("💰", "На балансе", fmt_rub(user.balance_kopeks)))
+    await call.message.edit_text(
+        ui.screen(
+            ui.title("🎫", "Тарифы"),
+            lead="Выбери готовый — или собери свой.",
+            facts=facts,
+            note="Чем больше устройств в тарифе, тем дешевле каждое. Срок тоже "
+                 "экономит: за год — минус четверть цены.",
+            help=ui.help_block(
+                "💡 Что входит в любой тариф",
+                "📱 Устройство — телефон или компьютер, на котором работает "
+                "VPN. Конфиги на все страны сразу, переключаешься в "
+                "приложении.\n"
+                "⚡ Резервное подключение — запасной выход на те дни, когда "
+                "обычный VPN не проходит.\n\n"
+                + _extend_intro(),
+            ),
+        ),
+        reply_markup=tariff_shop_kb(
+            buttons,
+            (user.sub_max_devices or _START_DEVICES,
+             user.sub_max_bypass or _START_BYPASS),
+        ),
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith(f"{CB_BAL}:pre:"))
+async def cb_bal_preset(call: CallbackQuery, session: AsyncSession) -> None:
+    """Выбран готовый тариф: остаётся срок."""
+    preset = preset_by_key(call.data.rsplit(":", 1)[-1])
+    if preset is None:
+        await call.answer("Такого тарифа нет, начни заново.", show_alert=True)
+        return
+    user = await _get_user(session, call)
     await _render_tariff(
         call.message.edit_text, session, user,
-        user.sub_max_devices or _START_DEVICES,
-        user.sub_max_bypass or _START_BYPASS,
+        preset.devices, preset.bypass, builder=False,
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith(f"{CB_BAL}:pick:"))
+async def cb_bal_pick(call: CallbackQuery, session: AsyncSession) -> None:
+    """Возврат к выбору срока с уже собранным составом (после «не хватает»)."""
+    parts = call.data.split(":")
+    if len(parts) != 4 or not parts[2].isdigit() or not parts[3].isdigit():
+        await call.answer()
+        return
+    user = await _get_user(session, call)
+    await _render_tariff(
+        call.message.edit_text, session, user,
+        int(parts[2]), int(parts[3]), builder=False,
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith(f"{CB_BAL}:need:"))
+async def cb_bal_need(call: CallbackQuery, session: AsyncSession) -> None:
+    """Пополнение на уже посчитанную сумму: остаётся выбрать, чем платить."""
+    raw = call.data.rsplit(":", 1)[-1]
+    if not raw.isdigit() or not (_CUSTOM_MIN_RUB <= int(raw) <= _CUSTOM_MAX_RUB):
+        await call.answer("Некорректная сумма.", show_alert=True)
+        return
+    rub = int(raw)
+    await call.message.edit_text(
+        ui.screen(
+            ui.title("➕", "Пополнение"),
+            lead=f"Пополняем на {rub} ₽. Чем платишь?",
+            note="Деньги придут на баланс, и покупка пройдёт сразу — "
+                 "возвращаться к тарифу не нужно.",
+        ),
+        reply_markup=deposit_methods_for_kb(
+            rub, DEPOSIT_BONUS_PERCENT["cryptobot"],
+            cryptobot=cryptopay.enabled(), platega=platega.enabled(),
+        ),
     )
     await call.answer()
 
@@ -1043,13 +1175,27 @@ async def cb_bal_buy(call: CallbackQuery, session: AsyncSession) -> None:
     )
     if not res.ok:
         await session.rollback()
-        await call.answer(
-            f"Не хватает {fmt_rub(res.missing_kopeks)}: цена "
-            f"{fmt_rub(res.price_kopeks)}, на балансе "
-            f"{fmt_rub(balance_before)}. "
-            "Жми «➕ Пополнить баланс» под сообщением 👇",
-            show_alert=True,
+        # Экран, а не всплывашка (просьба Влада 22.08.2026): человек упирается
+        # в отказ ровно в тот момент, когда собрался платить. Всплывашка
+        # закрывается и оставляет его один на один с тем же экраном — а нужен
+        # ему следующий шаг, и сумму для него мы уже знаем.
+        need_rub = topup_need_rub(res.missing_kopeks)
+        await call.message.edit_text(
+            ui.screen(
+                ui.title("💰", "Не хватает денег"),
+                lead=f"До покупки не хватает {fmt_rub(res.missing_kopeks)}.",
+                facts=[
+                    ui.fact("🎫", "Тариф",
+                            f"{devices} устр. + {bypass} рез. подключ."),
+                    ui.fact("📅", "Срок", f"{months} мес — {fmt_rub(res.price_kopeks)}"),
+                    ui.fact("💰", "На балансе", fmt_rub(balance_before)),
+                ],
+                note="Пополни — и покупка пройдёт сразу, возвращаться сюда "
+                     "не придётся.",
+            ),
+            reply_markup=not_enough_kb(need_rub, devices, bypass),
         )
+        await call.answer()
         return
     await session.commit()
     text = (

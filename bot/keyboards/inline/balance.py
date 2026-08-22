@@ -236,12 +236,14 @@ def tariff_kb(
         )
         sizes.append(1)
 
+    # Сроки — по ОДНОМУ в ряд. Кнопка в паре получает половину ширины, и
+    # подпись «12 мес — 1440 ₽ · 120 ₽/мес» на телефоне обрезалась ровно там,
+    # где стоит самое важное — цена месяца (Влад, 22.08.2026). Правило «до 30
+    # символов» тут не спасает: оно про кнопку во всю ширину.
     for months, label in term_prices:
         kb.button(text=label, callback_data=f"{CB_BAL}:buy:{devices}:{bypass}:{months}",
                   style="success")
-    sizes.extend([2] * (len(term_prices) // 2))
-    if len(term_prices) % 2:
-        sizes.append(1)
+    sizes.extend([1] * len(term_prices))
 
     if not builder:
         # Состав пришёл из витрины — менять его можно, но это уже не первое,

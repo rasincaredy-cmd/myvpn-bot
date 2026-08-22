@@ -135,11 +135,14 @@ def more_menu() -> InlineKeyboardMarkup:
         sizes.append(1)
     # Метка ORIGIN_MORE в конце callback_data: экран, открытый отсюда, обязан
     # вернуть человека СЮДА, а не в главное меню (см. back_target).
-    kb.button(text="🔔 Оповещения", callback_data=f"{CB_MENU}:notify:{ORIGIN_MORE}")
-    kb.button(text="🌍 Локации", callback_data=f"{CB_MENU}:locations:{ORIGIN_MORE}")
+    # Порядок: сначала то, что приносит деньги, потом настройки. Длинные
+    # подписи стоят во всю ширину — в паре кнопка получает половину экрана и
+    # обрезается многоточием (Влад, 22.08.2026).
     kb.button(text="💳 Тарифы", callback_data=f"{CB_LEGAL}:tariffs:{ORIGIN_MORE}")
     kb.button(text="👥 Пригласить друга", callback_data=f"{CB_BAL}:ref:{ORIGIN_MORE}")
-    sizes += [2, 2]
+    kb.button(text="🔔 Оповещения", callback_data=f"{CB_MENU}:notify:{ORIGIN_MORE}")
+    kb.button(text="🌍 Локации", callback_data=f"{CB_MENU}:locations:{ORIGIN_MORE}")
+    sizes += [1, 1, 2]
 
     if settings.legal_privacy_url:
         kb.button(text="📄 Политика конфиденциальности", url=settings.legal_privacy_url)

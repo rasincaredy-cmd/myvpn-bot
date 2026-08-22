@@ -158,12 +158,16 @@ def subscription_kb(
         kb.button(text="⚙️ Сменить тариф", callback_data=f"{CB_BAL}:extend")
         sizes.append(1)
     if autopay is not None:
+        # Во всю ширину: в паре кнопка получает половину экрана, и обрезается у
+        # неё ровно хвост — то самое «ВКЛ/выкл», ради которого её и читают
+        # (та же беда, что у кнопок сроков; Влад, 22.08.2026).
         kb.button(
             text="♻️ Автопродление: ВКЛ" if autopay else "♻️ Автопродление: выкл",
             callback_data=f"{CB_BAL}:autopay",
         )
+        sizes.append(1)
         kb.button(text="📱 Устройства", callback_data=f"{CB_DEVICE}:list")
-        sizes.append(2)
+        sizes.append(1)
     else:
         kb.button(text="📱 Устройства", callback_data=f"{CB_DEVICE}:list")
         sizes.append(1)

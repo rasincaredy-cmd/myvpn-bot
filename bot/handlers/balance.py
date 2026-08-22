@@ -848,12 +848,17 @@ def build_tariff_text(
     раньше оно занимало абзац на самом экране, и его прокручивали не читая.
     """
     monthly = monthly_price_kopeks(devices, bypass)
-    facts = [
-        ui.fact("📱", "Устройства", devices),
-        ui.fact("⚡", "Резервные подключения", bypass),
-        ui.fact("💳", "Цена", f"{fmt_rub(monthly)}/мес"),
-        ui.fact("💰", "На балансе", fmt_rub(user.balance_kopeks)),
-    ]
+    if builder:
+        facts = [
+            ui.fact("📱", "Устройства", devices),
+            ui.fact("⚡", "Резервные подключения", bypass),
+            ui.fact("💳", "Цена", f"{fmt_rub(monthly)}/мес"),
+            ui.fact("💰", "На балансе", fmt_rub(user.balance_kopeks)),
+        ]
+    else:
+        # Состав уже выбран в витрине и назван в первой строке — повторять его
+        # ещё и фактами значит показать одно и то же трижды на одном экране.
+        facts = [ui.fact("💰", "На балансе", fmt_rub(user.balance_kopeks))]
 
     if switch_days is not None:
         was_days = billing.remaining_seconds(user) // 86400
@@ -878,9 +883,10 @@ def build_tariff_text(
         note=note,
         help=ui.help_block(
             "💡 Как это считается",
-            f"{_extend_intro()}\n\n"
-            "Чем длиннее срок, тем больше скидка. Купленный срок прибавляется "
-            "к твоему остатку целиком — ни дня не теряется.",
+            (f"{_extend_intro()}\n\n" if builder else "")
+            + "Чем длиннее срок, тем дешевле выходит месяц — это и написано на "
+            "кнопках. Купленный срок прибавляется к твоему остатку целиком: "
+            "ни дня не теряется.",
         ),
     )
 
@@ -1187,7 +1193,7 @@ async def cb_bal_buy(call: CallbackQuery, session: AsyncSession) -> None:
                 facts=[
                     ui.fact("🎫", "Тариф",
                             f"{devices} устр. + {bypass} рез. подключ."),
-                    ui.fact("📅", "Срок", f"{months} мес — {fmt_rub(res.price_kopeks)}"),
+                    ui.fact("📅", "Срок", f"{months} мес, {fmt_rub(res.price_kopeks)}"),
                     ui.fact("💰", "На балансе", fmt_rub(balance_before)),
                 ],
                 note="Пополни — и покупка пройдёт сразу, возвращаться сюда "

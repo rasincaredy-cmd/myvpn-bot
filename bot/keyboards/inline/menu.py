@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from aiogram.types import InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardMarkup, WebAppInfo
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from bot.keyboards.inline.prefixes import (
@@ -122,13 +122,24 @@ def more_menu() -> InlineKeyboardMarkup:
     from bot.config import settings
 
     kb = InlineKeyboardBuilder()
+    sizes = []
+    if settings.miniapp_url:
+        # Мини-приложение — первая кнопка раздела: это единственный вход, у
+        # которого нет своего экрана в боте, и найти его иначе неоткуда.
+        # Главное меню оно не занимает: там потолок в шесть кнопок, а у
+        # приложения есть второй вход — кнопка «☰» рядом с полем ввода.
+        kb.button(
+            text="🚀 Приложение",
+            web_app=WebAppInfo(url=settings.miniapp_url),
+        )
+        sizes.append(1)
     # Метка ORIGIN_MORE в конце callback_data: экран, открытый отсюда, обязан
     # вернуть человека СЮДА, а не в главное меню (см. back_target).
     kb.button(text="🔔 Оповещения", callback_data=f"{CB_MENU}:notify:{ORIGIN_MORE}")
     kb.button(text="🌍 Локации", callback_data=f"{CB_MENU}:locations:{ORIGIN_MORE}")
     kb.button(text="💳 Тарифы", callback_data=f"{CB_LEGAL}:tariffs:{ORIGIN_MORE}")
     kb.button(text="👥 Пригласить друга", callback_data=f"{CB_BAL}:ref:{ORIGIN_MORE}")
-    sizes = [2, 2]
+    sizes += [2, 2]
 
     if settings.legal_privacy_url:
         kb.button(text="📄 Политика конфиденциальности", url=settings.legal_privacy_url)

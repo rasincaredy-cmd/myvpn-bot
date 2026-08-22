@@ -1,0 +1,199 @@
+/* Оформление мини-приложения.
+ *
+ * Цвета берём из темы клиента (--tg-theme-*): человек выбрал тёмную тему —
+ * приложение обязано быть тёмным, иначе оно вспыхивает белым посреди чата.
+ * Свои значения стоят только запасными, на случай очень старого клиента.
+ */
+
+:root {
+  --bg:        var(--tg-theme-bg-color, #ffffff);
+  --sect:      var(--tg-theme-section-bg-color, #ffffff);
+  --sec-bg:    var(--tg-theme-secondary-bg-color, #f0f2f5);
+  --text:      var(--tg-theme-text-color, #101114);
+  --hint:      var(--tg-theme-hint-color, #7d7f85);
+  --link:      var(--tg-theme-link-color, #2c7ec5);
+  --accent:    var(--tg-theme-button-color, #2c7ec5);
+  --on-accent: var(--tg-theme-button-text-color, #ffffff);
+  --danger:    var(--tg-theme-destructive-text-color, #d1453b);
+  --line:      color-mix(in srgb, var(--hint) 22%, transparent);
+  --radius: 16px;
+  --gap: 12px;
+}
+
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+/* Правило браузера `[hidden] { display: none }` слабее любого авторского, а у
+ * вкладок и подсказки display задан классом — без этой строки они видны на
+ * экране загрузки. */
+[hidden] { display: none !important; }
+
+body {
+  margin: 0;
+  padding: 0 0 calc(72px + env(safe-area-inset-bottom));
+  background: var(--sec-bg);
+  color: var(--text);
+  font: 16px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  overscroll-behavior-y: none;
+}
+
+main { padding: 14px 14px 0; max-width: 620px; margin: 0 auto; }
+
+/* ── Загрузка ─────────────────────────────────────────────────────────── */
+.boot { display: flex; align-items: center; justify-content: center; height: 70vh; }
+.spinner {
+  width: 26px; height: 26px; border-radius: 50%;
+  border: 2.5px solid var(--line); border-top-color: var(--accent);
+  animation: spin .8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.btn .spinner { width: 15px; height: 15px; border-width: 2px; border-top-color: currentColor; }
+
+/* ── Карточки ─────────────────────────────────────────────────────────── */
+.card {
+  background: var(--sect);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  margin-bottom: var(--gap);
+}
+.tap { cursor: pointer; transition: transform .12s ease, opacity .12s ease; }
+.tap:active { transform: scale(.985); opacity: .85; }
+
+.section-title {
+  font-size: 13px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--hint); margin: 18px 4px 8px;
+}
+
+/* Крупная плашка состояния подписки */
+.hero { padding: 20px 18px; text-align: center; }
+.hero .big { font-size: 40px; font-weight: 700; line-height: 1.05; letter-spacing: -.02em; }
+.hero .big small { font-size: 17px; font-weight: 600; color: var(--hint); margin-left: 6px; }
+.hero .sub { color: var(--hint); font-size: 14px; margin-top: 6px; }
+.hero.warn .big { color: var(--danger); }
+
+.pill {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 10px; border-radius: 999px;
+  font-size: 12px; font-weight: 600;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+}
+.pill.gray { background: color-mix(in srgb, var(--hint) 16%, transparent); color: var(--hint); }
+.pill.red  { background: color-mix(in srgb, var(--danger) 14%, transparent); color: var(--danger); }
+
+/* Строка-факт: слева название, справа жирное значение */
+.row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 11px 0; border-top: 1px solid var(--line);
+}
+.card > .row:first-of-type, .row.first { border-top: 0; }
+.row .name { color: var(--hint); font-size: 15px; }
+.row .value { margin-left: auto; font-weight: 600; text-align: right; }
+.row .chev { color: var(--hint); opacity: .6; margin-left: 2px; }
+
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--gap); }
+.grid2 .card { margin: 0; }
+.tile { text-align: left; }
+.tile .k { color: var(--hint); font-size: 13px; }
+.tile .v { font-size: 20px; font-weight: 700; margin-top: 2px; }
+
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.chip {
+  font-size: 12px; padding: 3px 9px; border-radius: 999px;
+  background: var(--sec-bg); color: var(--hint);
+}
+
+/* ── Кнопки ───────────────────────────────────────────────────────────── */
+.btn {
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  width: 100%; padding: 14px 16px; margin-top: 10px;
+  border: 0; border-radius: 14px;
+  background: var(--accent); color: var(--on-accent);
+  font: inherit; font-weight: 600; cursor: pointer;
+  transition: transform .12s ease, opacity .12s ease;
+}
+.btn:active { transform: scale(.985); }
+.btn[disabled] { opacity: .5; pointer-events: none; }
+.btn.ghost { background: var(--sec-bg); color: var(--text); }
+.btn.quiet { background: transparent; color: var(--link); padding: 10px; }
+.btn.danger { background: transparent; color: var(--danger); }
+.btn.small { padding: 10px 12px; font-size: 15px; margin-top: 8px; }
+.btn-row { display: flex; gap: 8px; }
+.btn-row .btn { margin-top: 8px; }
+
+/* ── Поля ─────────────────────────────────────────────────────────────── */
+input[type="text"], input[type="number"], select, textarea {
+  width: 100%; padding: 13px 14px; margin-top: 10px;
+  border: 1px solid var(--line); border-radius: 12px;
+  background: var(--bg); color: var(--text); font: inherit;
+}
+input:focus, select:focus { outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent); }
+label.field { display: block; }
+label.field .lab { font-size: 13px; color: var(--hint); margin-top: 12px; }
+
+/* Переключатель «−  N  +» для конструктора тарифа */
+.stepper { display: flex; align-items: center; gap: 12px; margin-left: auto; }
+.stepper button {
+  width: 34px; height: 34px; border: 0; border-radius: 10px;
+  background: var(--sec-bg); color: var(--text);
+  font-size: 20px; line-height: 1; cursor: pointer;
+}
+.stepper button[disabled] { opacity: .35; }
+.stepper .n { min-width: 22px; text-align: center; font-weight: 700; font-size: 17px; }
+
+.opts { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.opt {
+  flex: 1 1 calc(50% - 8px);
+  padding: 12px; border: 1.5px solid var(--line); border-radius: 12px;
+  background: transparent; color: var(--text); font: inherit; cursor: pointer;
+  text-align: center;
+}
+.opt.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.opt .k { font-weight: 600; }
+.opt .s { display: block; font-size: 12px; color: var(--hint); margin-top: 2px; }
+
+/* ── Мелочи ───────────────────────────────────────────────────────────── */
+.note { color: var(--hint); font-size: 13px; line-height: 1.4; margin-top: 10px; }
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px; word-break: break-all; color: var(--hint);
+  background: var(--sec-bg); border-radius: 10px; padding: 10px; margin-top: 10px;
+}
+.qr { display: block; width: 62%; max-width: 260px; margin: 14px auto 4px; border-radius: 12px; background: #fff; padding: 8px; }
+.empty { text-align: center; color: var(--hint); padding: 26px 10px; }
+.empty .em { font-size: 34px; display: block; margin-bottom: 8px; }
+.hidden { display: none !important; }
+
+/* ── Нижние вкладки ───────────────────────────────────────────────────── */
+.tabs {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 5;
+  display: grid; grid-template-columns: repeat(4, 1fr);
+  padding: 6px 4px calc(6px + env(safe-area-inset-bottom));
+  background: color-mix(in srgb, var(--bg) 92%, transparent);
+  backdrop-filter: blur(12px);
+  border-top: 1px solid var(--line);
+}
+.tab {
+  border: 0; background: none; cursor: pointer;
+  color: var(--hint); font: inherit; font-size: 11px;
+  display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 4px 0;
+}
+.tab span { font-size: 20px; line-height: 1; filter: grayscale(1); opacity: .75; }
+.tab.on { color: var(--accent); font-weight: 600; }
+.tab.on span { filter: none; opacity: 1; }
+
+/* ── Всплывающая подсказка ────────────────────────────────────────────── */
+.toast {
+  position: fixed; left: 50%; bottom: calc(84px + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  max-width: 88%; padding: 11px 16px; border-radius: 12px;
+  background: rgba(0,0,0,.86); color: #fff; font-size: 14px; text-align: center;
+  z-index: 20; animation: pop .22s ease;
+}
+@keyframes pop { from { opacity: 0; transform: translate(-50%, 8px); } }
+
+.list-enter { animation: fade .22s ease; }
+@keyframes fade { from { opacity: 0; transform: translateY(6px); } }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}

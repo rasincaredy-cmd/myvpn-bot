@@ -106,12 +106,23 @@ async def _alert_admins_chargeback(row) -> None:
 def build_app() -> web.Application:
     app = web.Application()
     app.router.add_post(_WEBHOOK_PATH, _handle_platega)
+    if settings.miniapp_url:
+        # Мини-приложение живёт на этом же порту: наружу его выставляет тот же
+        # nginx, и второй слушатель означал бы второй сертификат и второй порт
+        # в брандмауэре ради той же самой страницы.
+        from bot.miniapp import add_routes
+
+        add_routes(app)
     return app
 
 
 async def run() -> None:
-    """Поднимает приёмник, если он включён настройкой. Падение сервера не
-    должно ронять бота: платежи в этом случае доберёт поллинг."""
+    """Поднимает локальный веб-сервер, если он включён настройкой.
+
+    На нём висят приём уведомлений об оплате и мини-приложение. Падение сервера
+    не должно ронять бота: платежи в этом случае доберёт поллинг, а без
+    мини-приложения бот остаётся полностью рабочим — все его разделы на месте.
+    """
     if not settings.webhook_port:
         return
     try:
@@ -123,6 +134,7 @@ async def run() -> None:
         logger.exception("Приёмник уведомлений не поднялся")
         return
     logger.info(
-        "Webhook listener started on 127.0.0.1:{}{}",
-        settings.webhook_port, _WEBHOOK_PATH,
+        "Локальный веб-сервер на 127.0.0.1:{} — приём оплат{}",
+        settings.webhook_port,
+        " и мини-приложение" if settings.miniapp_url else "",
     )

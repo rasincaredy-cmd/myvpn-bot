@@ -65,7 +65,7 @@ def _safe_filename_base(name: str) -> str:
     return cleaned or "vpn"
 
 
-def _conf_filename(server: Server, label: str) -> str:
+def conf_filename(server: Server, label: str) -> str:
     from bot.handlers.configs import config_display_base_raw
 
     base = _safe_filename_base(config_display_base_raw(server))
@@ -249,7 +249,7 @@ async def cb_config_format_device(call: CallbackQuery, session: AsyncSession) ->
                 )
             )
         else:
-            filename = _conf_filename(server, peer.label)
+            filename = conf_filename(server, peer.label)
             media.append(
                 InputMediaDocument(
                     media=BufferedInputFile(conf.encode("utf-8"), filename=filename),
@@ -314,7 +314,7 @@ async def cb_config_format(call: CallbackQuery, session: AsyncSession) -> None:
     chat_id = call.message.chat.id
 
     if kind == "file":
-        filename = _conf_filename(server, peer.label)
+        filename = conf_filename(server, peer.label)
         await bot.send_document(
             chat_id,
             document=BufferedInputFile(conf.encode("utf-8"), filename=filename),

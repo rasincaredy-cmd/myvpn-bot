@@ -11,7 +11,7 @@ from bot.db.base import init_db
 from bot.handlers import register_handlers
 from bot.loader import bot, dp
 from bot.middlewares import setup_middlewares
-from bot.utils.menu_commands import set_bot_commands
+from bot.utils.menu_commands import set_bot_commands, set_menu_button
 
 
 def _setup_logging() -> None:
@@ -34,6 +34,7 @@ async def _on_startup() -> None:
     setup_middlewares(dp)
     register_handlers(dp)
     await set_bot_commands(bot)
+    await set_menu_button(bot)
     asyncio.create_task(scheduler.run())
     await webserver.run()
     me = await bot.get_me()

@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Moschata VPN</title>
+<link rel="stylesheet" href="/app/app.css?v={{v}}">
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+</head>
+<body>
+<div id="boot" class="boot"><div class="spinner"></div></div>
+<main id="screen" hidden></main>
+
+<nav id="tabs" class="tabs" hidden>
+  <button class="tab" data-tab="home"><span>🏠</span>Главная</button>
+  <button class="tab" data-tab="devices"><span>📱</span>Устройства</button>
+  <button class="tab" data-tab="bypass"><span>⚡</span>Резерв</button>
+  <button class="tab" data-tab="money"><span>💳</span>Оплата</button>
+</nav>
+
+<div id="toast" class="toast" hidden></div>
+<script src="/app/app.js?v={{v}}"></script>
+</body>
+</html>

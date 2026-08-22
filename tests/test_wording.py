@@ -23,6 +23,16 @@ SCAN_GLOBS = [
     "bot/services/*.py",
     "bot/utils/menu_commands.py",
     "bot/middlewares/*.py",
+    "bot/miniapp/*.py",
+]
+
+# Страница мини-приложения — не питон, ast её не разберёт. Текст в ней смотрим
+# целиком: комментарии там тоже стоит держать чистыми, их видно через «исходный
+# код страницы» в любом браузере.
+STATIC_FILES = [
+    "bot/miniapp/static/index.html",
+    "bot/miniapp/static/app.js",
+    "bot/miniapp/static/app.css",
 ]
 
 # Админские экраны: их видит только Влад, формулировки там остаются.
@@ -311,3 +321,17 @@ def test_wording_guard_finds_violations() -> None:
         "Страж не увидел стоп-слово. "
         "Если тест упал — сломан механизм _scan, а не продуктовый текст."
     )
+
+
+class TestMiniappPage:
+    """Страница мини-приложения — такой же текст для юзера, как экраны бота."""
+
+    @pytest.mark.parametrize("rel", STATIC_FILES)
+    def test_page_has_no_forbidden_words(self, rel: str) -> None:
+        text = (ROOT / rel).read_text(encoding="utf-8")
+        hits = sorted({m.group(0) for m in FORBIDDEN.finditer(text)})
+        assert not hits, f"{rel}: запрещённые слова {hits}"
+
+    def test_the_guard_would_notice(self) -> None:
+        """Молчащий страж выглядит как страж, которому нечего сказать."""
+        assert FORBIDDEN.search("Резервное подключение обходит блокировки")

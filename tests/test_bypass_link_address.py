@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.db import repo
+from bot.services import bypass_issue
 from bot.db.models import PeerStatus, ServerStatus
 from bot.handlers import wdtt as h
 from bot.services.crypto import encrypt
@@ -150,6 +151,9 @@ class TestIssuedLinkIgnoresDaemonGuess:
             }
 
         monkeypatch.setattr(h, "SSHClient", lambda creds: _FakeSSH())
+        # Выдача ходит по SSH из services/bypass_issue (см. его докстринг):
+        # правила выдачи общие у бота и мини-приложения, значит и мок там же.
+        monkeypatch.setattr(bypass_issue, "SSHClient", lambda creds: _FakeSSH())
         monkeypatch.setattr(h.repo, "creds_from_server", lambda s: None)
         monkeypatch.setattr(h.wdtt_svc, "create_access", fake_create)
         monkeypatch.setattr(h.settings, "wdtt_vk_hashes", "hash1")

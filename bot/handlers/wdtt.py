@@ -7,7 +7,6 @@
 """
 from __future__ import annotations
 
-import math
 from datetime import datetime, timezone
 
 from aiogram import F, Router
@@ -35,8 +34,8 @@ from bot.keyboards.inline import (
     wdtt_user_list_kb,
     wdtt_vk_choice_kb,
 )
-from bot.services import wdtt as wdtt_svc
-from bot.services.crypto import decrypt, encrypt
+from bot.services import bypass_issue, wdtt as wdtt_svc
+from bot.services.crypto import decrypt
 from bot.services.ssh import SSHClient, SSHError
 from bot.states.install import WdttStates
 from bot.texts import t, ui
@@ -105,50 +104,19 @@ def _app_block(platform: str) -> str:
     )
 
 
-async def _link_for(session: AsyncSession, access) -> str:
-    """Ссылка доступа с АКТУАЛЬНЫМ адресом сервера из его карточки.
-
-    Ссылка сохраняется один раз при выдаче и после смены IP у хостера держит
-    мёртвый адрес. Конфиг VPN такой болезни не знает — он каждый раз собирается
-    заново из server.host; здесь делаем то же самое. Одна точка на бота и на
-    админку: поддержка обязана видеть ровно ту ссылку, что ушла юзеру."""
-    uri = decrypt(access.uri_enc)
-    server = await repo.get_server(session, access.server_id)
-    return wdtt_svc.link_with_host(uri, server.host) if server else uri
+_link_for = bypass_issue.link_for
 
 
 def _sub_active(user) -> bool:
     return user.sub_expires_at is None or as_utc(user.sub_expires_at) > datetime.now(timezone.utc)
 
 
-async def _wdtt_location_groups(session: AsyncSession, user=None):
-    """Локация → READY-сервера с включённым обходом и СВОБОДНОЙ ёмкостью
-    (wdtt_max_accesses; NULL — безлимит). Заполненные сервера юзеру не предлагаются,
-    приватные — только админам/«друзьям» (гейт в list_ready_servers).
-    Возвращает (группы, загрузка по серверам, есть_ли_wdtt_сервера_вообще)."""
-    servers = [
-        s for s in await repo.list_ready_servers(session, for_user=user)
-        if s.wdtt_enabled
-    ]
-    load = await repo.count_active_wdtt_by_server(session)
-    free = [
-        s for s in servers
-        if s.wdtt_max_accesses is None or load.get(s.id, 0) < s.wdtt_max_accesses
-    ]
-    return repo.group_by_location(free), load, bool(servers)
-
-
-def _least_loaded(group, load: dict[int, int]):
-    """Наименее загруженный сервер группы — равномерное распределение внутри локации."""
-    return min(group, key=lambda s: load.get(s.id, 0))
-
-
-def _sub_days_left(user) -> int:
-    """Дней до конца подписки для ctl -days; 0 = бессрочно."""
-    if user.sub_expires_at is None:
-        return 0
-    delta = as_utc(user.sub_expires_at) - datetime.now(timezone.utc)
-    return max(1, math.ceil(delta.total_seconds() / 86400))
+# Помощники выдачи живут в services/bypass_issue: с 22.08.2026 их зовёт ещё и
+# мини-приложение, а ёмкость сервера и срок доступа обязаны считаться одинаково
+# на всех путях выдачи.
+_wdtt_location_groups = bypass_issue.location_groups
+_least_loaded = bypass_issue.least_loaded
+_sub_days_left = bypass_issue.sub_days_left
 
 
 def _mark(status: PeerStatus) -> str:
@@ -379,19 +347,7 @@ async def cb_wdtt_my_revoke(call: CallbackQuery, session: AsyncSession) -> None:
 
 # ======================= Создание доступа (FSM) =============================
 
-async def _standalone_label(session: AsyncSession, user_id: int) -> str:
-    """Имя обхода, выданного без устройства.
-
-    Пустым оно быть не может: уходит на сервер обхода в `ctl add -label`, стоит
-    заголовком карточки и подставляется в суффикс ПК-ссылки. Номер берём
-    наименьший свободный, а не «сколько всего + 1», — иначе после удаления
-    второго из трёх обходов новый снова назвался бы вторым.
-    """
-    taken = {a.label for a in await repo.list_wdtt_for_user(session, user_id)}
-    n = 1
-    while f"Резервное подключение {n}" in taken:
-        n += 1
-    return f"Резервное подключение {n}"
+_standalone_label = bypass_issue.standalone_label
 
 
 async def _ask_device(call: CallbackQuery, state: FSMContext, session: AsyncSession, user) -> None:
@@ -576,33 +532,22 @@ async def cb_wdtt_platform(call: CallbackQuery, state: FSMContext, session: Asyn
         await call.message.edit_text("Сервер или устройство недоступны.", reply_markup=back_to_menu())
         await call.answer()
         return
-    label = device.label if device is not None else await _standalone_label(session, user.id)
-    # Ёмкость перепроверяем в момент создания: пока юзер шёл по шагам,
-    # последний слот на сервере мог занять кто-то другой.
-    if server.wdtt_max_accesses is not None:
-        load = await repo.count_active_wdtt_by_server(session)
-        if load.get(server.id, 0) >= server.wdtt_max_accesses:
-            await call.message.edit_text(
-                "Свободные места только что закончились — "
-                "попробуй ещё раз чуть позже.",
-                reply_markup=back_to_menu(),
-            )
-            await call.answer()
-            return
-
     # Своя VK-ссылка юзера (если выбрал) переопределяет ссылку сервиса из конфига.
-    vk_hashes = data.get("vk_hash") or settings.wdtt_vk_hashes
+    vk_hashes = data.get("vk_hash")
     await call.message.edit_text(t.wdtt_creating)
     try:
-        async with SSHClient(repo.creds_from_server(server)) as ssh:
-            res = await wdtt_svc.create_access(
-                ssh,
-                days=_sub_days_left(user),
-                label=label,
-                vk_hashes=vk_hashes,
-                ports=server.wdtt_ports,
-                binary=settings.wdtt_binary_path,
-            )
+        access, link = await bypass_issue.issue(
+            session, user,
+            server=server, device=device, platform=platform, vk_hashes=vk_hashes,
+        )
+    except bypass_issue.NoCapacity:
+        await call.message.edit_text(
+            "Свободные места только что закончились — "
+            "попробуй ещё раз чуть позже.",
+            reply_markup=back_to_menu(),
+        )
+        await call.answer()
+        return
     except SSHError as exc:
         # Сырой exc юзеру не показываем — техножаргон на английском пугает.
         logger.warning("wdtt create failed: {}", exc)
@@ -620,38 +565,7 @@ async def cb_wdtt_platform(call: CallbackQuery, state: FSMContext, session: Asyn
         await call.message.edit_text(t.error_generic, reply_markup=back_to_menu())
         await call.answer()
         return
-
-    # Адрес в ссылку ставим свой: сервер обхода мог запомнить прежний IP и
-    # отдавать его до перезапуска демона (см. wdtt_svc.link_with_host).
-    link = wdtt_svc.link_with_host(res["link"], server.host)
-    if platform == "pc":
-        link = f"{link}#{label}"
-    access = await repo.create_wdtt_access(
-        session,
-        server_id=server.id,
-        user_id=user.id,
-        device_id=device.id if device is not None else None,
-        label=label,
-        uri_enc=encrypt(link),
-        password_enc=encrypt(res["password"]),
-        expires_at=None,  # срок гейтит подписка на уровне устройства
-        platform=platform,
-        # Своя ссылка юзера или сервисная — поддержке это первый вопрос при
-        # разборе «у меня обход не работает».
-        vk_own=bool(data.get("vk_hash")),
-    )
-    # Выдача обхода — такое же событие доступа, как выдача конфига VPN: без неё
-    # в истории юзера обход появляется из ниоткуда и исчезает при отзыве.
-    # Одной транзакцией с самой выдачей: пароль уже на сервере, и запись не
-    # должна потеряться, если ниже упадёт отправка сообщения.
-    await repo.log_action(
-        session, AuditAction.CONFIG_ISSUED,
-        actor_tg_id=user.tg_id,
-        target_user_id=user.id,
-        target_type="wdtt",
-        target_id=access.id,
-        details=f"Обход БС «{label}» на сервере «{server.name}» ({platform})",  # wording: ok — аудит-лог админа
-    )
+    label = access.label
     await session.commit()
 
     labels = await repo.server_labels_map(session)

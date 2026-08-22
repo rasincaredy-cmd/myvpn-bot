@@ -50,9 +50,9 @@ class TestFilenameStillClean:
     def test_filename_has_no_escapes(self) -> None:
         """В имя файла экранирование попасть не должно: там нужен читаемый
         текст, а не «&lt;». Amnezia называет конфиг по имени файла."""
-        from bot.handlers.config_delivery import _conf_filename
+        from bot.handlers.config_delivery import conf_filename
 
-        name = _conf_filename(_server("🇳🇱 Нидерланды"), "phone")
+        name = conf_filename(_server("🇳🇱 Нидерланды"), "phone")
         assert "&" not in name
         assert name.endswith(".conf")
 

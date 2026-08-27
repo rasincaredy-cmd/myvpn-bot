@@ -37,8 +37,9 @@ class TestNotice:
     def _no_telegram(self, monkeypatch):
         self.sent: list[str] = []
 
-        async def fake_notify(text: str) -> None:
+        async def fake_notify(text: str) -> bool:
             self.sent.append(text)
+            return True
 
         monkeypatch.setattr(health, "_notify_admins", fake_notify)
 
@@ -84,3 +85,27 @@ class TestNotice:
         await health._upstream_release_notice(state)
         assert self.sent == []
         assert state["qwdtt_release"] == "v1.4.2"
+
+    @pytest.mark.asyncio
+    async def test_undelivered_news_is_repeated_next_round(self, monkeypatch) -> None:
+        """Новость даётся один раз на версию, поэтому недоставленная новость
+        пропала бы навсегда: версию запоминаем только после доставки."""
+        self._pin(monkeypatch, "v1.4.3")
+        state = {"qwdtt_release": "v1.4.2"}
+
+        link = {"alive": False}
+
+        async def flaky_notify(text: str) -> bool:
+            if not link["alive"]:
+                return False
+            self.sent.append(text)
+            return True
+
+        monkeypatch.setattr(health, "_notify_admins", flaky_notify)
+        await health._upstream_release_notice(state)
+        assert state["qwdtt_release"] == "v1.4.2"
+
+        link["alive"] = True
+        await health._upstream_release_notice(state)   # связь вернулась
+        assert self.sent and "v1.4.3" in self.sent[0]
+        assert state["qwdtt_release"] == "v1.4.3"

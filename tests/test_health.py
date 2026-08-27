@@ -165,7 +165,7 @@ def test_ban_of_a_stranger_is_not_an_alert():
     авария. На нодах таких банов сотни."""
     alerts = health.evaluate(
         snap(banned=("121.227.31.13",), own_ip="31.77.148.187",
-             manager_ip="31.77.157.162"),
+             manager_ip="31.77.157.162", watchdog="active"),
         2294,
     )
     assert alerts == []
@@ -569,3 +569,164 @@ class TestWdttVersionDrift:
         out = "---SERVICES---\nwdtt active\n---WDTTBIN---\n" + "c" * 64 + "\n"
         snap = build_snapshot(1, "nl1", out, units=["wdtt"])
         assert snap.wdtt_sha == "c" * 64
+
+
+# ── Доставка тревог ──────────────────────────────────────────────────────────
+#
+# 27.08.2026 у машины бота на шесть минут пропал интернет. Бот честно заметил,
+# что германская нода не отвечает, сформировал тревогу — и не смог её
+# отправить, потому что Телеграм был недостижим по той же причине. При этом
+# тревога записалась в состояние как отправленная, поэтому, когда связь
+# вернулась, админ получил ровно одно сообщение: «✅ Отпустило» от проблемы,
+# о которой ему никто не сказал.
+
+
+class _Server:
+    """Нода, какой её видит обход: больше run_round ничего не спрашивает."""
+
+    id = 2
+    name = "Германия"
+    wg_interface = "awg0"
+    wdtt_enabled = False
+
+    def __init__(self) -> None:
+        from bot.db.models import ServerStatus
+
+        self.status = ServerStatus.READY
+
+
+class _DeadSSH:
+    """Нода, до которой не долетают пакеты."""
+
+    def __init__(self, creds) -> None:
+        pass
+
+    async def __aenter__(self):
+        raise OSError("Тайм-аут подключения к 31.77.148.187:22")
+
+    async def __aexit__(self, *exc) -> bool:
+        return False
+
+
+class _LiveSSH:
+    def __init__(self, creds) -> None:
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc) -> bool:
+        return False
+
+    async def run(self, cmd: str):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(stdout=PROBE, stderr="", exit_status=0)
+
+
+@pytest.fixture
+def round_env(monkeypatch, tmp_path):
+    """Один обход без сети, Телеграма и БД. `deliver` — дошло ли сообщение."""
+    from types import SimpleNamespace
+
+    from bot.db import repo
+    from bot.services import ssh as ssh_mod
+
+    env = SimpleNamespace(sent=[], deliver=False, ssh=_DeadSSH)
+
+    monkeypatch.setattr(health, "_STATE_FILE", tmp_path / "health_state.json")
+    monkeypatch.setattr(health, "cert_path", lambda: None)
+
+    async def fake_notify(text: str) -> bool:
+        if not env.deliver:
+            return False
+        env.sent.append(text)
+        return True
+
+    async def no_news(state: dict) -> None:
+        return None
+
+    async def list_all(session):
+        return [_Server()]
+
+    monkeypatch.setattr(health, "_notify_admins", fake_notify)
+    monkeypatch.setattr(health, "_upstream_release_notice", no_news)
+    monkeypatch.setattr(repo, "list_all_servers", list_all)
+    monkeypatch.setattr(repo, "creds_from_server", lambda server: None)
+    monkeypatch.setattr(ssh_mod, "SSHClient", lambda creds: env.ssh(creds))
+    return env
+
+
+async def test_undelivered_alert_is_not_remembered_as_sent(round_env):
+    """Не дошло — значит не отправлено: иначе следующим сообщением админ
+    получит «Отпустило» от тревоги, которой он не видел."""
+    await health.run_round(None)
+    assert round_env.sent == []
+    assert health._load_state()["active"] == {}
+
+
+async def test_alert_is_retried_when_the_link_is_back(round_env):
+    await health.run_round(None)              # связи нет, тревога не ушла
+    round_env.deliver = True
+    await health.run_round(None)              # связь вернулась
+    assert any("Сервер не отвечает" in text for text in round_env.sent)
+
+
+async def test_undelivered_all_clear_is_retried(round_env):
+    """«Отпустило» тоже обязано дойти: иначе тревога останется висеть в
+    голове у админа, а бот будет считать её закрытой."""
+    round_env.deliver = True
+    await health.run_round(None)              # тревога ушла
+    round_env.ssh = _LiveSSH                  # нода ответила
+    round_env.deliver = False
+    await health.run_round(None)              # отбой не ушёл
+    assert "2:ssh" in health._load_state()["active"]
+
+    round_env.deliver = True
+    await health.run_round(None)
+    assert any("Отпустило" in text for text in round_env.sent)
+    assert health._load_state()["active"] == {}
+
+
+# ── Сторож за машиной бота ───────────────────────────────────────────────────
+
+def test_probe_asks_whether_the_watchdog_ticks():
+    from bot.services import watchdog
+
+    assert watchdog.TIMER_NAME in health.probe_command(UNITS)
+
+
+def test_snapshot_reads_the_watchdog_state():
+    s = health.build_snapshot(
+        1, "Германия", PROBE + "---WATCHDOG---\nactive\n", units=UNITS
+    )
+    assert s.watchdog == "active"
+
+
+def _foreign(**over) -> health.Snapshot:
+    """Нода, у которой бот в гостях: её адрес и адрес бота — разные."""
+    return snap(own_ip="31.77.148.187", manager_ip="31.77.157.162", **over)
+
+
+def test_dead_watchdog_on_a_foreign_node_is_an_alert():
+    keys = [a.key for a in health.evaluate(_foreign(watchdog="inactive"), None)]
+    assert "1:watchdog" in keys
+
+
+def test_silent_watchdog_answer_is_also_an_alert():
+    """Пустой ответ — «сервер не сказал»: молчащий сторож ничем не лучше
+    отсутствующего, а узнать о нём больше неоткуда."""
+    keys = [a.key for a in health.evaluate(_foreign(watchdog=""), None)]
+    assert "1:watchdog" in keys
+
+
+def test_ticking_watchdog_is_silence():
+    keys = [a.key for a in health.evaluate(_foreign(watchdog="active"), None)]
+    assert "1:watchdog" not in keys
+
+
+def test_bot_own_machine_is_not_asked_to_watch_itself():
+    """Машина без интернета не расскажет о том, что у неё нет интернета."""
+    same = snap(own_ip="31.77.157.162", manager_ip="31.77.157.162", watchdog="")
+    keys = [a.key for a in health.evaluate(same, None)]
+    assert "1:watchdog" not in keys

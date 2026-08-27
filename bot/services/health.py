@@ -29,6 +29,7 @@ from cryptography import x509
 from loguru import logger
 
 from bot.config import settings
+from bot.services import watchdog
 from bot.texts import ui
 
 _STATE_FILE = settings.data_dir / "health_state.json"
@@ -71,6 +72,7 @@ class Snapshot:
     own_ip: str = ""
     manager_ip: str = ""   # адрес, с которого пришёл бот
     wdtt_sha: str = ""     # отпечаток программы резервного подключения
+    watchdog: str = ""     # состояние таймера сторожа за машиной бота
 
 
 _SECTION_RE = re.compile(r"^---([A-Z0-9]+)---$")
@@ -203,6 +205,8 @@ def build_snapshot(
     snap.manager_ip = mine[0] if mine else ""
     binsha = [ln.strip() for ln in sec.get("WDTTBIN", []) if ln.strip()]
     snap.wdtt_sha = binsha[0] if binsha else ""
+    guard = [ln.strip() for ln in sec.get("WATCHDOG", []) if ln.strip()]
+    snap.watchdog = guard[0] if guard else ""
     return snap
 
 
@@ -258,7 +262,11 @@ def probe_command(units: list[str]) -> str:
         # с чем прямо здесь: эталон лежит на машине бота, поэтому сравнение —
         # в run(), а сюда попадает только факт.
         f"echo '---WDTTBIN---'; sha256sum {settings.wdtt_binary_path} "
-        "2>/dev/null | cut -d' ' -f1 || true"
+        "2>/dev/null | cut -d' ' -f1 || true; "
+        # Сторож за машиной бота живёт на чужих нодах и молчит, пока всё
+        # хорошо, — значит, о его собственной смерти узнать больше неоткуда.
+        f"echo '---WATCHDOG---'; systemctl is-active {watchdog.TIMER_NAME} "
+        "2>/dev/null || true"
     )
 
 
@@ -396,6 +404,24 @@ def evaluate(snap: Snapshot, prev_udp_errors: int | None) -> list[Alert]:
                         f"(порог {UDP_ERR_ALERT}). У клиентов это рвущиеся "
                         "звонки и отваливающееся видео."),
             ))
+
+    # 7. Сторож за машиной бота. Спрашиваем только у чужих нод: на самой
+    # машине бота сторож не нужен (себя не посторожишь), и там его отсутствие
+    # не беда, а норма. Пустой ответ — «сервер не сказал», это тоже отказ:
+    # молчащий сторож ничем не лучше отсутствующего, а узнать о нём больше
+    # неоткуда — он и есть последняя линия.
+    if snap.own_ip and snap.manager_ip and snap.own_ip != snap.manager_ip:
+        if snap.watchdog != "active":
+            alerts.append(Alert(
+                key=f"{sid}:watchdog", level="warn",
+                title="Сторож за машиной бота не работает",
+                detail=("Эта нода должна присматривать за машиной бота и "
+                        "писать, когда та замолчит. Сейчас не присматривает: "
+                        "если бот или его сеть лягут, сообщить будет некому.\n"
+                        "Починить: карточка сервера → «🛡 Защита» → "
+                        "«🔧 Привести в порядок»."),
+            ))
+
     return alerts
 
 
@@ -493,9 +519,13 @@ async def _upstream_release_notice(state: dict) -> None:
     if tag is None:
         return
     seen = state.get("qwdtt_release")
-    state["qwdtt_release"] = tag
     if seen and seen != tag:
-        await _notify_admins(upstream.release_message(tag))
+        # Новость даётся один раз на версию, поэтому запоминаем версию
+        # только после доставки: недоставленная новость иначе пропала бы
+        # навсегда.
+        if not await _notify_admins(upstream.release_message(tag)):
+            return
+    state["qwdtt_release"] = tag
 
 
 def _load_state() -> dict:
@@ -561,14 +591,28 @@ def units_for(server) -> list[str]:
     return units
 
 
-async def _notify_admins(text: str) -> None:
+async def _notify_admins(text: str) -> bool:
+    """True — сообщение дошло хотя бы до одного админа.
+
+    Ответ важен: недоставленная тревога не должна считаться отправленной.
+    27.08.2026 у машины бота на шесть минут пропал интернет — тревога о
+    неотвечающей ноде не ушла (Телеграм был недостижим по той же причине),
+    но записалась в состояние, и админ получил только «Отпустило» от
+    проблемы, о которой ему никто не сказал.
+
+    Ни одного админа в настройках — доставлять некому, и это не повод
+    держать тревогу вечно неотправленной.
+    """
     from bot.loader import bot
 
+    delivered = False
     for admin_id in settings.admin_ids:
         try:
             await bot.send_message(admin_id, text, disable_web_page_preview=True)
+            delivered = True
         except Exception as exc:
             logger.warning("Тревога админу {} не ушла: {}", admin_id, exc)
+    return delivered or not settings.admin_ids
 
 
 def format_alert(server_name: str, alert: Alert) -> str:
@@ -645,16 +689,27 @@ async def run_round(session) -> None:
     titles = {key: rec.get("title", key) for key, rec in active.items()}
     server_of = {key: rec.get("server", "") for key, rec in active.items()}
 
+    # Снимок состояния ДО решения: если сообщение не дошло, запись
+    # возвращается как была, и следующий обход попробует ещё раз. Для новой
+    # тревоги это значит «забыть», для повторной — не съесть час тишины.
+    before = {key: dict(rec) for key, rec in active.items()}
+
     to_send, resolved = decide(state, collected, now)
     for alert in to_send:
         active[alert.key]["server"] = names.get(alert.key, "")
-        await _notify_admins(format_alert(names.get(alert.key, "?"), alert))
+        if await _notify_admins(format_alert(names.get(alert.key, "?"), alert)):
+            continue
+        if alert.key in before:
+            active[alert.key] = before[alert.key]
+        else:
+            active.pop(alert.key, None)
     for key in resolved:
-        await _notify_admins(
+        # Не дошло — ключ остаётся активным, и отбой уйдёт следующим обходом.
+        if await _notify_admins(
             f"✅ <b>Отпустило</b>\n🖥 {server_of.get(key) or '?'}\n\n"
             f"«{titles.get(key, key)}» — больше не наблюдается."
-        )
-        active.pop(key, None)
+        ):
+            active.pop(key, None)
 
     state["last_run"] = now.isoformat()
     _save_state(state)

@@ -73,9 +73,24 @@ async def _asset(request: web.Request) -> web.Response:
     )
 
 
+async def _alive(request: web.Request) -> web.Response:
+    """Отклик для сторожа на соседней ноде: жив ли процесс бота.
+
+    Ни базы, ни подписи: сторож должен отличать «бот молчит» от «база занята»,
+    а адрес и так открыт наружу — отвечать здесь нечем, кроме слова «ok».
+
+    Живёт внутри /app потому, что nginx проксирует боту именно этот путь:
+    отдельный путь наверху потребовал бы правки nginx на каждой установке.
+    """
+    return web.Response(text="ok", headers={"Cache-Control": "no-store"})
+
+
 def add_routes(app: web.Application) -> None:
     app.router.add_get("/app", _index)
     app.router.add_get("/app/", _index)
+    # Раньше /app/{name}: первым совпадает тот, кто зарегистрирован раньше,
+    # иначе отклик уехал бы в раздачу файлов и вернул 404.
+    app.router.add_get("/app/alive", _alive)
     app.router.add_get("/app/{name}", _asset)
 
     app.router.add_get("/api/state", acc.state)

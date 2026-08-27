@@ -26,7 +26,7 @@ from bot.keyboards.inline import (
     main_menu,
 )
 from bot.loader import bot
-from bot.services import amnezia, hardening, wdtt_install
+from bot.services import amnezia, hardening, watchdog, wdtt_install
 from bot.services.crypto import encrypt
 from bot.services.ssh import SSHClient, SSHCredentials, SSHError
 from bot.states.install import InstallStates
@@ -427,6 +427,23 @@ async def step_run(
         logger.warning("Приведение к эталону сорвалось: {}", exc)
         security_line = "⚠️ Защита: не удалась, проверь кнопкой «🛡 Защита»"
 
+    # Сторож за машиной бота. Ставится последним: он ходит наружу, а фаервол
+    # к этому моменту уже построен. Не встал — сервер всё равно готов, просто
+    # о смерти бота эта нода не расскажет; о самом стороже потом напомнят
+    # тревоги.
+    await progress("Ставлю сторожа за машиной бота...")
+    try:
+        async with SSHClient(creds) as ssh:
+            installed = await watchdog.install(ssh, node_name=server.name)
+        guard_line = (
+            "👁 Сторож: присматривает за машиной бота"
+            if installed
+            else "👁 Сторож: не нужен — бот живёт на этой же машине"
+        )
+    except Exception as exc:  # noqa: BLE001 — сервер уже установлен
+        logger.warning("Сторож на новом сервере не встал: {}", exc)
+        guard_line = f"⚠️ Сторож: не встал ({ui.safe(exc)})"
+
     user = await repo.get_or_create_user(
         session,
         tg_id=call.from_user.id,
@@ -440,6 +457,6 @@ async def step_run(
     await bot.send_message(
         chat_id,
         t.install_done.format(name=server.name)
-        + f"\n\n{security_line}\n{bypass_line}",
+        + f"\n\n{security_line}\n{bypass_line}\n{guard_line}",
         reply_markup=main_menu(user.is_admin, await build_menu_state(session, user)),
     )

@@ -23,7 +23,7 @@ from bot.keyboards.inline import (
     server_card,
     servers_list,
 )
-from bot.services import amnezia, hardening
+from bot.services import amnezia, hardening, watchdog
 from bot.services.ssh import SSHClient, SSHError
 from bot.states.install import ServerEditStates
 from bot.texts import t, ui
@@ -371,6 +371,28 @@ async def cb_server_del_ok(call: CallbackQuery, session: AsyncSession) -> None:
 
 # --- Защита сервера (эталон безопасности) -------------------------------------
 
+# Что показать про сторожа за машиной бота. Отсутствие сторожа на самой
+# машине бота — норма, а не беда: себя не посторожишь.
+_GUARD_LINE = {
+    "ok": "👁 Сторож: присматривает за машиной бота",
+    "off": ("👁 Сторож: не работает — если бот или его сеть лягут, "
+            "сообщить будет некому"),
+    "self": "👁 Сторож: не нужен — бот живёт на этой же машине",
+}
+
+
+async def _watchdog_state(ssh) -> str:
+    """Ключ для _GUARD_LINE. Молчание сервера считаем отказом: сторож —
+    последняя линия, и «наверное, работает» тут не годится."""
+    try:
+        if await watchdog.is_bot_host(ssh):
+            return "self"
+        return "ok" if await watchdog.is_running(ssh) else "off"
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Не удалось спросить сторожа: {}", exc)
+        return "off"
+
+
 @router.callback_query(F.data.startswith(f"{CB_SERVERS}:harden:"))
 async def cb_server_harden(call: CallbackQuery, session: AsyncSession) -> None:
     """Показать, соответствует ли сервер эталону. Ничего не меняет."""
@@ -385,6 +407,10 @@ async def cb_server_harden(call: CallbackQuery, session: AsyncSession) -> None:
     try:
         async with SSHClient(creds) as ssh:
             report = await hardening.check(ssh)
+            # Сторож живёт на этом же экране: он тоже про «узнаем ли мы,
+            # когда станет плохо», и отдельная кнопка ради одной строки
+            # только удлинила бы карточку.
+            guard = await _watchdog_state(ssh)
     # Important-4: ловим Exception целиком, как это уже делает установка
     # (bot/handlers/install.py). Ошибки asyncssh наследуются напрямую от
     # Exception, а не от OSError: SFTPError (кончилось место в /root,
@@ -408,11 +434,12 @@ async def cb_server_harden(call: CallbackQuery, session: AsyncSession) -> None:
             "🛡 <b>Защита сервера</b>\n\n"
             f"Найдено несоответствий: {len(report.failed)}\n\n{problems}"
         )
+    text += f"\n\n{_GUARD_LINE[guard]}"
 
     from aiogram.utils.keyboard import InlineKeyboardBuilder as IKB
 
     kb = IKB()
-    if not report.compliant:
+    if not report.compliant or guard == "off":
         kb.button(
             text="🔧 Привести в порядок",
             callback_data=f"{CB_SERVERS}:hardenrun:{server_id}",
@@ -445,11 +472,21 @@ async def cb_server_harden_run(call: CallbackQuery, session: AsyncSession) -> No
             await msg.edit_text(f"🛡 {text}")
 
     creds = repo.creds_from_server(server)
+    guard_note = ""
     try:
         async with SSHClient(creds) as ssh:
             report = await hardening.harden(
                 ssh, session, server_id, wg_port=server.wg_port, progress=progress
             )
+            await progress("Ставлю сторожа за машиной бота...")
+            try:
+                installed = await watchdog.install(ssh, node_name=server.name)
+                guard_note = _GUARD_LINE["ok" if installed else "self"]
+            # Сторож не встал — это не повод считать неудачей всё приведение
+            # к эталону: остальное уже сделано, и админ должен это увидеть.
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Сторож на сервере id={} не встал: {}", server_id, exc)
+                guard_note = f"👁 Сторож: не встал — {ui.safe(exc)}"
     # Important-4: см. комментарий в проверке выше. Здесь это важнее вдвое:
     # приведение к эталону идёт минутами, и обрыв связи посреди него
     # (asyncssh.ConnectionLost) — обычное дело, а не редкость.
@@ -470,6 +507,8 @@ async def cb_server_harden_run(call: CallbackQuery, session: AsyncSession) -> No
             "🛡 <b>Частично</b>\n\nОсталось несоответствий: "
             f"{len(report.failed)}\n\n{problems}"
         )
+    if guard_note:
+        text += f"\n\n{guard_note}"
     from aiogram.utils.keyboard import InlineKeyboardBuilder as IKB
 
     kb = IKB()

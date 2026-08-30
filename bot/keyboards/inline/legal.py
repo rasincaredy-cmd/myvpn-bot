@@ -8,9 +8,14 @@ from bot.keyboards.inline.menu import back_target
 from bot.keyboards.inline.prefixes import CB_BAL, CB_LEGAL
 
 
-def consent_kb() -> InlineKeyboardMarkup:
+def consent_kb(ref: str | None = None) -> InlineKeyboardMarkup:
     """Документы ссылками + «Согласен»/«Не согласен». Ссылки показываем, только
-    если адреса заданы: кнопка с пустым url ломает отправку сообщения."""
+    если адреса заданы: кнопка с пустым url ломает отправку сообщения.
+
+    `ref` — код пригласившего из реф-ссылки. Он едет прямо на кнопке, потому
+    что первый `/start ref_код` гейт перехватывает: после «Согласен» взять код
+    больше неоткуда (см. bot/middlewares/consent.py).
+    """
     from bot.config import settings
 
     kb = InlineKeyboardBuilder()
@@ -18,7 +23,8 @@ def consent_kb() -> InlineKeyboardMarkup:
         kb.button(text="📜 Пользовательское соглашение", url=settings.legal_terms_url)
     if settings.legal_privacy_url:
         kb.button(text="📄 Политика конфиденциальности", url=settings.legal_privacy_url)
-    kb.button(text="Согласен", callback_data=f"{CB_LEGAL}:accept", style="success")
+    accept = f"{CB_LEGAL}:accept:{ref}" if ref else f"{CB_LEGAL}:accept"
+    kb.button(text="Согласен", callback_data=accept, style="success")
     kb.button(text="Не согласен", callback_data=f"{CB_LEGAL}:decline", style="danger")
     kb.adjust(1, 1, 2)
     return kb.as_markup()

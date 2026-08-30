@@ -110,7 +110,7 @@ def gate(monkeypatch):
 
     monkeypatch.setattr(Message, "answer", _answer, raising=False)
     monkeypatch.setattr(CallbackQuery, "answer", _answer, raising=False)
-    monkeypatch.setattr(mod, "consent_kb", lambda: None)
+    monkeypatch.setattr(mod, "consent_kb", lambda ref=None: None)
 
     def _with_user(user):
         async def _get(session, tg_id):

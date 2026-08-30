@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import re
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import Any
@@ -26,9 +27,33 @@ from bot.texts import t
 CONSENT_SINCE = datetime(2026, 8, 5, tzinfo=timezone.utc)
 
 # Коллбэки самого экрана согласия — их гейт пропускает, иначе принять условия
-# было бы невозможно.
-_ALLOWED_PREFIX = f"{CB_LEGAL}:"
-_ALLOWED = {f"{CB_LEGAL}:accept", f"{CB_LEGAL}:decline"}
+# было бы невозможно. «Согласен» проверяем по началу: с 30.08.2026 на кнопке
+# едет ещё и код пригласившего.
+_ACCEPT = f"{CB_LEGAL}:accept"
+_ALLOWED = {_ACCEPT, f"{CB_LEGAL}:decline"}
+
+# Токен из реф-ссылки: латиница, цифры и подчёркивание. Всё остальное в
+# callback_data не пускаем — её лимит 64 байта, а кириллица съедает по два.
+_TOKEN_RE = re.compile(r"^[A-Za-z0-9_]{1,32}$")
+
+
+def ref_token(event: TelegramObject) -> str | None:
+    """Код пригласившего из `/start ref_код` — или None, если его там нет.
+
+    Нужен здесь, а не в хендлере /start: у нового юзера гейт перехватывает
+    самое первое сообщение, и хендлер этот код никогда не увидит. Живой случай
+    29.08.2026 — люди с форумов дошли до бота, а «Приглашено» осталось нулём.
+    """
+    if not isinstance(event, Message):
+        return None
+    parts = (event.text or "").strip().split(maxsplit=1)
+    if len(parts) < 2 or parts[0].split("@")[0] != "/start":
+        return None
+    arg = parts[1].strip()
+    if not arg.startswith("ref_"):
+        return None
+    token = arg[4:]
+    return token if _TOKEN_RE.match(token) else None
 
 
 def needs_consent(user) -> bool:
@@ -70,8 +95,10 @@ class ConsentMiddleware(BaseMiddleware):
         if session is None or not isinstance(event, (Message, CallbackQuery)):
             return await handler(event, data)
 
-        if isinstance(event, CallbackQuery) and (event.data or "") in _ALLOWED:
-            return await handler(event, data)
+        if isinstance(event, CallbackQuery):
+            payload = event.data or ""
+            if payload in _ALLOWED or payload.startswith(f"{_ACCEPT}:"):
+                return await handler(event, data)
 
         from_user = event.from_user
         if from_user is None:
@@ -83,10 +110,13 @@ class ConsentMiddleware(BaseMiddleware):
 
         # Показываем экран условий вместо запрошенного действия. У юзера,
         # которого ещё нет в БД, get_or_create_user отработает в /start уже
-        # после согласия — здесь запись не создаём.
+        # после согласия — здесь запись не создаём. Код пригласившего забираем
+        # из перехваченного сообщения и вешаем на кнопку «Согласен»: другого
+        # места, где он доживёт до создания юзера, нет.
+        kb = consent_kb(ref_token(event))
         if isinstance(event, CallbackQuery):
             await event.answer()
-            await event.message.answer(t.consent_intro, reply_markup=consent_kb())
+            await event.message.answer(t.consent_intro, reply_markup=kb)
         else:
-            await event.answer(t.consent_intro, reply_markup=consent_kb())
+            await event.answer(t.consent_intro, reply_markup=kb)
         return None

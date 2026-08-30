@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from aiogram import F, Router
 from aiogram.types import CallbackQuery
+from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import settings
@@ -92,14 +93,36 @@ async def cb_tariffs(call: CallbackQuery) -> None:
     await call.answer()
 
 
-@router.callback_query(F.data == f"{CB_LEGAL}:accept")
+@router.callback_query(F.data.startswith(f"{CB_LEGAL}:accept"))
 async def cb_accept(call: CallbackQuery, session: AsyncSession) -> None:
+    """«Согласен» — здесь же засчитывается приглашение.
+
+    Новый юзер по реф-ссылке заводится ИМЕННО тут: его первый `/start ref_код`
+    гейт перехватил, до хендлера /start дело не дошло. Код приехал на кнопке
+    (см. bot/middlewares/consent.py) — если разбирать его не здесь, приглашение
+    теряется молча, что и случилось с людьми с форумов 29.08.2026.
+    """
+    existed = await repo.get_user_by_tg_id(session, call.from_user.id) is not None
     user = await repo.get_or_create_user(
         session,
         tg_id=call.from_user.id,
         username=call.from_user.username,
         full_name=call.from_user.full_name,
     )
+
+    prefix = f"{CB_LEGAL}:accept:"
+    token = call.data[len(prefix):] if (call.data or "").startswith(prefix) else ""
+    # Реферер только у по-настоящему новых — иначе давний юзер, впервые
+    # согласившийся с условиями, задним числом достался бы чужой ссылке.
+    if token and not existed and user.referrer_id is None:
+        from bot.services import referral
+
+        referrer = await referral.resolve(session, token)
+        if referrer is not None and referrer.id != user.id:
+            user.referrer_id = referrer.id
+            await session.commit()
+            logger.info("Referral: user {} invited by {}", user.id, referrer.id)
+
     await repo.accept_terms(session, user)
     await call.message.delete()
     # Импорт внутри функции: common.py импортирует клавиатуры, а те — конфиг;

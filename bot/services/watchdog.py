@@ -92,6 +92,10 @@ ENV_FILE=${WATCHDOG_ENV:-/etc/myvpn-watchdog.env}
 STATE=${WATCHDOG_STATE:-/var/lib/myvpn-watchdog}
 mkdir -p "$STATE"
 
+# До 03.09.2026 признак «админу уже сказали» звался alerted. Обновление
+# сторожа не должно проглотить отбой по тревоге, начатой старой версией.
+[ -f "$STATE/announced" ] || [ ! -f "$STATE/alerted" ] || cp "$STATE/alerted" "$STATE/announced"
+
 num() {
     v=$(cat "$1" 2>/dev/null)
     case "$v" in
@@ -117,38 +121,79 @@ send() {
 }
 
 now=$(date +%s)
+last=$(num $STATE/last_sent)
+flaps=$(num $STATE/flaps)
+
+# Одно сообщение в час, что бы ни происходило. Раньше ограничитель держал
+# только непрерывную аварию, а мигающей машине он был не писан: каждый цикл
+# «упало → поднялось» — это законная тревога плюс законный отбой, и
+# 03.09.2026 за вечер их набралось двенадцать.
+QUIET=3600
 
 if curl -fsS --max-time 10 -o /dev/null "$URL"; then
-    if [ "$(num $STATE/alerted)" -eq 1 ]; then
+    echo 0 > $STATE/fails
+    ok=$(( $(num $STATE/ok) + 1 ))
+    echo $ok > $STATE/ok
+
+    if [ "$(num $STATE/announced)" -eq 1 ]; then
+        extra=""
+        [ "$flaps" -gt 1 ] && extra="
+
+За последний час машина пропадала $flaps раз: она мигает, а не просто упала
+и поднялась."
         if send "✅ <b>Отпустило</b>
 🖥 сторожит $NODE
 
-«Бот не отвечает» — больше не наблюдается."; then
-            echo 0 > $STATE/alerted
+«Бот не отвечает» — больше не наблюдается.$extra"; then
+            echo 0 > $STATE/announced
+            echo $now > $STATE/last_sent
         fi
+        exit 0
     fi
-    echo 0 > $STATE/fails
+
+    # Мигание, о котором админ ещё не знает: падения были, но каждое пришлось
+    # на час тишины после прошлого сообщения. Молчать о них совсем нельзя —
+    # машина, пропадающая по разу в десять минут, для юзера почти мертва.
+    if [ "$flaps" -ge 2 ] && [ $(( now - last )) -ge $QUIET ]; then
+        if send "🟠 <b>Машина бота мигает</b>
+🖥 сторожит $NODE
+
+За последний час она пропадала $flaps раз, сейчас отвечает.
+
+Так ведёт себя не бот, а машина под ним. Смотри панель хостера."; then
+            echo 0 > $STATE/flaps
+            echo $now > $STATE/last_sent
+        fi
+        exit 0
+    fi
+
+    # Час ровной работы — отмигало, счётчик обнуляем.
+    [ $(( ok * EVERY )) -ge 60 ] && echo 0 > $STATE/flaps
     exit 0
 fi
 
+echo 0 > $STATE/ok
 fails=$(( $(num $STATE/fails) + 1 ))
 echo $fails > $STATE/fails
 [ "$fails" -ge "$MISSES" ] || exit 0
 
-# Повтор не чаще раза в час: авария бывает долгой, а тревога, приходящая
-# каждые две минуты, перестаёт читаться на третий раз.
-if [ "$(num $STATE/alerted)" -eq 1 ] && [ $(( now - $(num $STATE/last_sent) )) -lt 3600 ]; then
-    exit 0
-fi
+# Начало нового падения считаем ровно один раз, а не каждую проверку.
+[ "$fails" -eq "$MISSES" ] && { flaps=$(( flaps + 1 )); echo $flaps > $STATE/flaps; }
+
+[ $(( now - last )) -ge $QUIET ] || exit 0
+
+extra=""
+[ "$flaps" -gt 1 ] && extra="За последний час машина пропадала $flaps раз — она мигает.
+"
 
 if send "🔴 <b>Бот не отвечает</b>
 🖥 сторожит $NODE
 
 Страница мини-приложения молчит $(( fails * EVERY )) мин: $URL
 
-Сам бот сказать об этом не может — он и есть то, что молчит. Проверь машину
-бота и её сеть."; then
-    echo 1 > $STATE/alerted
+${extra}Сам бот сказать об этом не может — он и есть то, что молчит. Проверь
+машину бота и её сеть."; then
+    echo 1 > $STATE/announced
     echo $now > $STATE/last_sent
 fi
 """

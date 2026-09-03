@@ -201,6 +201,101 @@ def test_missing_settings_are_silence_not_a_crash(node: Node) -> None:
     assert node.sent == []
 
 
+def test_flapping_does_not_come_in_pairs(node: Node) -> None:
+    """03.09.2026: машина бота полтора часа пропадала и возвращалась каждые
+    пять-десять минут, и на каждый цикл сторож слал тревогу и отбой — двенадцать
+    сообщений за вечер. Второе падение внутри часа админ уже не узнаёт ничего
+    нового, поэтому оно молчит."""
+    node.host_up = False
+    node.tick()
+    node.tick()
+    node.host_up = True
+    node.tick()
+    assert len(node.sent) == 4                      # тревога и отбой, двоим
+
+    node.host_up = False
+    node.tick()
+    node.tick()
+    node.host_up = True
+    node.tick()
+    assert len(node.sent) == 4                      # про мигание — молчок
+
+
+def test_flapping_is_told_once_an_hour(node: Node) -> None:
+    """Молчок не вечный: машина, пропадающая по разу в десять минут, для
+    юзера почти мертва, и через час об этом говорится одним сообщением —
+    даже если прямо сейчас она отвечает."""
+    node.host_up = False
+    node.tick()
+    node.tick()
+    node.host_up = True
+    node.tick()
+
+    node.host_up = False                            # тихое падение
+    node.tick()
+    node.tick()
+    node.host_up = True
+    node.tick()
+
+    node.age_the_last_alert()
+    node.tick()
+    assert "мигает" in node.sent[-1]
+    assert "2 раз" in node.sent[-1]
+
+
+def test_alarm_and_all_clear_mention_the_flapping(node: Node) -> None:
+    """Разница между «упала один раз» и «падает весь вечер» — это разница
+    между «перезапусти» и «меняй машину», её нельзя терять."""
+    node.host_up = False
+    node.tick()
+    node.tick()
+    node.host_up = True
+    node.tick()
+    assert "мигает" not in node.sent[-1]             # одно падение — не мигание
+
+    node.host_up = False
+    node.tick()
+    node.tick()
+    node.age_the_last_alert()
+    node.tick()
+    assert "мигает" in node.sent[-1]
+
+    node.host_up = True
+    node.tick()
+    assert "Отпустило" in node.sent[-1]
+    assert "2 раз" in node.sent[-1]
+
+
+def test_an_hour_of_calm_forgets_the_flapping(node: Node) -> None:
+    node.host_up = False
+    node.tick()
+    node.tick()
+    node.host_up = True
+    for _ in range(30):                              # час ровной работы
+        node.tick()
+
+    node.age_the_last_alert()
+    node.host_up = False
+    node.tick()
+    node.tick()
+    assert "Бот не отвечает" in node.sent[-1]
+    assert "мигает" not in node.sent[-1]
+
+
+def test_upgrade_does_not_swallow_the_all_clear(node: Node) -> None:
+    """Сторож обновляется на живой ноде, посреди начатой тревоги: признак
+    «админу уже сказали» переехал в другой файл, и отбой обязан дойти."""
+    import time
+
+    node.state.mkdir(parents=True, exist_ok=True)
+    (node.state / "alerted").write_text("1")         # состояние старой версии
+    (node.state / "fails").write_text("2")
+    (node.state / "last_sent").write_text(str(int(time.time())))
+
+    node.tick()
+    assert "Отпустило" in node.sent[-1]
+
+
 # ── Сборка настроек ──────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize(

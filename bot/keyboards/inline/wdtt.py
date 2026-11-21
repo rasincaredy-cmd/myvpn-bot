@@ -7,6 +7,22 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from bot.keyboards.inline.prefixes import CB_BAL, CB_CANCEL, CB_MENU, CB_WDTT
 
 
+def wdtt_transport_choice_kb() -> InlineKeyboardMarkup:
+    """Выбор протокола/транспорта резервного подключения."""
+    kb = InlineKeyboardBuilder()
+    kb.button(
+        text="⚡ VK Звонки (qWDTT)",
+        callback_data=f"{CB_WDTT}:trans:vk",
+    )
+    kb.button(
+        text="📄 Яндекс.Документы (тихий)",
+        callback_data=f"{CB_WDTT}:trans:yandex",
+    )
+    kb.button(text="✖️ Отмена", callback_data=CB_CANCEL)
+    kb.adjust(1)
+    return kb.as_markup()
+
+
 def wdtt_vk_choice_kb() -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="⚡ Рекомендуемый вариант", callback_data=f"{CB_WDTT}:vk:svc")
@@ -16,13 +32,24 @@ def wdtt_vk_choice_kb() -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def wdtt_platform_kb() -> InlineKeyboardMarkup:
+def wdtt_yandex_choice_kb() -> InlineKeyboardMarkup:
+    """Выбор комнаты/документа для Яндекс.Документов."""
+    kb = InlineKeyboardBuilder()
+    kb.button(text="⚡ Рекомендуемый документ", callback_data=f"{CB_WDTT}:ydoc:svc")
+    kb.button(text="🔗 Свой документ Яндекс", callback_data=f"{CB_WDTT}:ydoc:own")
+    kb.button(text="✖️ Отмена", callback_data=CB_CANCEL)
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+def wdtt_platform_kb(transport: str = "vk") -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.button(text="🤖 Android", callback_data=f"{CB_WDTT}:plat:android")
-    kb.button(text="🍏 iOS",     callback_data=f"{CB_WDTT}:plat:ios")
-    kb.button(text="💻 ПК",      callback_data=f"{CB_WDTT}:plat:pc")
-    kb.button(text="✖️ Отмена",  callback_data=CB_CANCEL)
-    kb.adjust(3, 1)
+    if transport == "vk":
+        kb.button(text="🍏 iOS", callback_data=f"{CB_WDTT}:plat:ios")
+    kb.button(text="💻 ПК", callback_data=f"{CB_WDTT}:plat:pc")
+    kb.button(text="✖️ Отмена", callback_data=CB_CANCEL)
+    kb.adjust(2 if transport != "vk" else 3, 1)
     return kb.as_markup()
 
 

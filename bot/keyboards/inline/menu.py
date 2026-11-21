@@ -105,7 +105,7 @@ def main_menu(is_admin: bool, state: MenuState) -> InlineKeyboardMarkup:
     sizes.append(2)
 
     if is_admin:
-        kb.button(text="👮 Админ-панель", callback_data=f"{CB_PANEL}:main")
+        kb.button(text="🌐 Админ-панель (веб)", callback_data=f"{CB_PANEL}:web_link")
         sizes.append(1)
 
     kb.adjust(*sizes)

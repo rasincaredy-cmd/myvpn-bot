@@ -113,9 +113,11 @@ from bot.keyboards.inline.wdtt import (
     back_to_bypasses_kb,
     wdtt_pick_device_kb,
     wdtt_platform_kb,
+    wdtt_transport_choice_kb,
     wdtt_user_card_kb,
     wdtt_user_list_kb,
     wdtt_vk_choice_kb,
+    wdtt_yandex_choice_kb,
 )
 
 __all__ = [
@@ -213,7 +215,9 @@ __all__ = [
     "wdtt_nodes_kb",
     "wdtt_pick_device_kb",
     "wdtt_platform_kb",
+    "wdtt_transport_choice_kb",
     "wdtt_user_card_kb",
     "wdtt_user_list_kb",
     "wdtt_vk_choice_kb",
+    "wdtt_yandex_choice_kb",
 ]

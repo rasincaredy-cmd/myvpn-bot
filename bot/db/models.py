@@ -348,7 +348,9 @@ class WdttAccess(Base):
     label: Mapped[str] = mapped_column(String(64))
     # Платформа доступа (android/ios/pc) — показываем в карточке. NULL — легаси.
     platform: Mapped[str | None] = mapped_column(String(16))
-    # Чья VK-ссылка зашита в доступ: True — своя ссылка юзера, False — сервисная
+    # Транспорт резервного подключения: 'vk' (qWDTT/VK звонки) или 'yandex' (OpenFlux/Яндекс.Документы)
+    transport: Mapped[str | None] = mapped_column(String(16), default="vk", server_default="'vk'")
+    # Чья VK-ссылка или документ зашит в доступ: True — своя ссылка юзера, False — сервисная
     # из конфига. NULL — доступы, выданные до появления флага (не знаем).
     # Саму ссылку не храним: она внутри uri_enc, а тут нужен только ответ
     # «свой или сервиса» для поддержки.

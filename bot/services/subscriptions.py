@@ -97,7 +97,7 @@ async def build_subscription_data(
             except Exception:
                 continue
 
-        # 2. Загружаем активные обходы БС (qWDTT / wdtt)
+        # 2. Загружаем активные резервные подключения (qWDTT / Яндекс.Документы)
         wdtt_stmt = (
             select(WdttAccess, Server)
             .join(Server, WdttAccess.server_id == Server.id)
@@ -119,29 +119,46 @@ async def build_subscription_data(
                 password = decrypt(acc.password_enc)
                 full_uri = link_with_host(raw_uri, srv.host)
 
-                # Разбираем wdtt://host:dtls:wg:tun:pass:hash#label
-                vk_hash = ""
-                if "://" in full_uri:
-                    body_part = full_uri.split("://", 1)[1].partition("#")[0]
-                    parts = body_part.split(":")
-                    if len(parts) >= 6:
-                        vk_hash = parts[5]
-
+                transport = getattr(acc, "transport", "vk") or "vk"
                 loc_name = srv.location or srv.name
-                title = f"🛡 {loc_name} Резервное подключение ({acc.label})"
-                uris.append(full_uri)
 
-                # qWDTT-порт: по умолчанию используем RAW 56003 или DTLS 56000
-                peer_endpoint = f"{srv.host}:56003"
-                profiles_json.append({
-                    "name": title,
-                    "peer": peer_endpoint,
-                    "hashes": vk_hash or settings.wdtt_vk_hashes,
-                    "workers": 9,
-                    "port": 9000,
-                    "password": password,
-                    "trafficMb": round(acc.traffic_used_bytes / (1024 * 1024), 2),
-                })
+                if "openflux://" in full_uri or transport == "yandex":
+                    title = f"📄 {loc_name} Резервное подключение Яндекс ({acc.label})"
+                    uris.append(full_uri)
+                    profiles_json.append({
+                        "name": title,
+                        "type": "yandex_docs",
+                        "transport": "wss",
+                        "peer": "docs.yandex.ru:443",
+                        "password": password,
+                        "server": srv.host,
+                        "uri": full_uri,
+                        "trafficMb": round(acc.traffic_used_bytes / (1024 * 1024), 2),
+                    })
+                else:
+                    # Разбираем wdtt://host:dtls:wg:tun:pass:hash#label
+                    vk_hash = ""
+                    if "://" in full_uri:
+                        body_part = full_uri.split("://", 1)[1].partition("#")[0]
+                        parts = body_part.split(":")
+                        if len(parts) >= 6:
+                            vk_hash = parts[5]
+
+                    title = f"⚡ {loc_name} Резервное подключение ({acc.label})"
+                    uris.append(full_uri)
+
+                    # qWDTT-порт: по умолчанию используем RAW 56003 или DTLS 56000
+                    peer_endpoint = f"{srv.host}:56003"
+                    profiles_json.append({
+                        "name": title,
+                        "type": "qwdtt",
+                        "peer": peer_endpoint,
+                        "hashes": vk_hash or settings.wdtt_vk_hashes,
+                        "workers": 9,
+                        "port": 9000,
+                        "password": password,
+                        "trafficMb": round(acc.traffic_used_bytes / (1024 * 1024), 2),
+                    })
             except Exception:
                 continue
 

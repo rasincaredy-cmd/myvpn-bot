@@ -30,9 +30,11 @@ from bot.keyboards.inline import (
     server_card,
     wdtt_platform_kb,
     wdtt_pick_device_kb,
+    wdtt_transport_choice_kb,
     wdtt_user_card_kb,
     wdtt_user_list_kb,
     wdtt_vk_choice_kb,
+    wdtt_yandex_choice_kb,
 )
 from bot.services import bypass_issue, wdtt as wdtt_svc
 from bot.services.crypto import decrypt
@@ -150,7 +152,10 @@ async def cb_wdtt_my(call: CallbackQuery, state: FSMContext, session: AsyncSessi
     for a in page_items:
         plat = _PLATFORMS.get(a.platform, ("", ""))[0] if a.platform else ""
         label = f"{a.label} · {plat}" if plat else a.label
-        rows.append((a.id, _mark(a.status), label, labels.get(a.server_id, "?")))
+        transport = getattr(a, "transport", "vk") or "vk"
+        icon = "📄" if transport == "yandex" else "⚡"
+        mark = _mark(a.status) if a.status != PeerStatus.ACTIVE else icon
+        rows.append((a.id, mark, label, labels.get(a.server_id, "?")))
 
     # Лимит доступов юзер видит в шапке — как у устройств.
     can_create = _sub_active(user) and active_total < user.sub_max_bypass
@@ -193,11 +198,14 @@ async def cb_wdtt_my_open(call: CallbackQuery, session: AsyncSession) -> None:
     labels = await repo.server_labels_map(session)
     plat = _PLATFORMS.get(access.platform, ("—", ""))[0] if access.platform else "—"
     from bot.services import amnezia
-    # Чья VK-ссылка зашита в доступ (Блок «Мелочи 2»): со своей ссылкой обход
-    # перестаёт работать, если юзер создал новый звонок, — пусть видит сразу.
+    # Чья VK-ссылка или документ зашит в доступ
     vk = {True: "своя", False: "сервиса"}.get(access.vk_own)
+    transport = getattr(access, "transport", "vk") or "vk"
+    transport_title = "Яндекс.Документы (OpenFlux)" if transport == "yandex" else "VK Звонки (qWDTT)"
+    icon = "📄" if transport == "yandex" else "⚡"
     text = (
-        f"⚡ <b>{access.label}</b>\n"
+        f"{icon} <b>{access.label}</b>\n"
+        f"• Технология: <b>{transport_title}</b>\n"
         f"• Платформа: <b>{plat}</b>\n"
         + (f"• Адрес подключения: <b>{vk}</b>\n" if vk else "")
         + f"• 🌍 Локация: <b>{ui.safe(labels.get(access.server_id, '—'))}</b>\n"
@@ -230,6 +238,20 @@ async def cb_wdtt_my_link(call: CallbackQuery, session: AsyncSession) -> None:
         return
     if access.status != PeerStatus.ACTIVE:
         await call.answer("Доступ отозван", show_alert=True)
+        return
+    transport = getattr(access, "transport", "vk") or "vk"
+    if transport == "yandex":
+        app = "Moschata VPN / OpenFlux" if access.platform == "android" else "OpenFlux Desktop"
+        app_line = f"Импортируй её в приложение резервного подключения — <b>{app}</b>."
+        link_str = await _link_for(session, access)
+        text = (
+            f"🔗 <b>Твоя ссылка резервного подключения (Яндекс.Документы)</b>:\n\n"
+            f"<code>{link_str}</code>\n\n"
+            f"{app_line}\n"
+            "В приложении выбери добавление профиля → импорт ссылки из буфера."
+        )
+        await call.message.answer(text)
+        await call.answer("Отправил ссылку")
         return
     # Имя приложения — по платформе доступа; для старых доступов без платформы
     # остаётся общее перечисление.
@@ -350,21 +372,23 @@ async def cb_wdtt_my_revoke(call: CallbackQuery, session: AsyncSession) -> None:
 _standalone_label = bypass_issue.standalone_label
 
 
+async def _ask_transport(call: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(WdttStates.transport)
+    await call.message.edit_text(t.wdtt_ask_transport, reply_markup=wdtt_transport_choice_kb())
+    await call.answer()
+
+
 async def _ask_device(call: CallbackQuery, state: FSMContext, session: AsyncSession, user) -> None:
     """Шаг «к какому устройству привязать» — если привязывать не к чему, шага нет.
 
     Устройство для обхода — метка, а не владелец (решение Влада 4.08): тариф
     продаёт устройства и резервные подключения отдельными позициями, и «0
-    устройств + 1 подключение» — покупаемый тариф. Прежний тупик «Сначала
-    создай устройство» на таком тарифе не проходился вообще: устройство не
-    создать, лимит 0, а деньги уже списаны.
+    устройств + 1 подключение» — покупаемый тариф.
     """
     devices = await repo.list_devices_for_user(session, user.id, active_only=True)
     if not devices:
         await state.update_data(device_id=None)
-        await state.set_state(WdttStates.vk)
-        await call.message.edit_text(t.wdtt_ask_vk, reply_markup=wdtt_vk_choice_kb())
-        await call.answer()
+        await _ask_transport(call, state)
         return
     await state.set_state(WdttStates.pick_device)
     await call.message.edit_text(
@@ -469,9 +493,45 @@ async def cb_wdtt_pick_device(call: CallbackQuery, state: FSMContext, session: A
         await call.answer("Устройство недоступно", show_alert=True)
         return
     await state.update_data(device_id=device_id)
+    await _ask_transport(call, state)
+
+
+@router.callback_query(WdttStates.transport, F.data == f"{CB_WDTT}:trans:vk")
+async def cb_wdtt_trans_vk(call: CallbackQuery, state: FSMContext) -> None:
+    await state.update_data(transport="vk")
     await state.set_state(WdttStates.vk)
     await call.message.edit_text(t.wdtt_ask_vk, reply_markup=wdtt_vk_choice_kb())
     await call.answer()
+
+
+@router.callback_query(WdttStates.transport, F.data == f"{CB_WDTT}:trans:yandex")
+async def cb_wdtt_trans_yandex(call: CallbackQuery, state: FSMContext) -> None:
+    await state.update_data(transport="yandex")
+    await state.set_state(WdttStates.yandex_doc)
+    await call.message.edit_text(t.wdtt_ask_ydoc, reply_markup=wdtt_yandex_choice_kb())
+    await call.answer()
+
+
+@router.callback_query(WdttStates.yandex_doc, F.data == f"{CB_WDTT}:ydoc:svc")
+async def cb_wdtt_ydoc_svc(call: CallbackQuery, state: FSMContext) -> None:
+    await state.update_data(yandex_doc=None)
+    await state.set_state(WdttStates.platform)
+    await call.message.edit_text(t.wdtt_ask_platform, reply_markup=wdtt_platform_kb(transport="yandex"))
+    await call.answer()
+
+
+@router.callback_query(WdttStates.yandex_doc, F.data == f"{CB_WDTT}:ydoc:own")
+async def cb_wdtt_ydoc_own(call: CallbackQuery, state: FSMContext) -> None:
+    await call.message.edit_text(t.wdtt_ask_ydoc_link, reply_markup=cancel_only())
+    await call.answer()
+
+
+@router.message(WdttStates.yandex_doc, F.text)
+async def step_wdtt_ydoc_link(message: Message, state: FSMContext) -> None:
+    v = message.text.strip()
+    await state.update_data(yandex_doc=v)
+    await state.set_state(WdttStates.platform)
+    await message.answer(t.wdtt_ask_platform, reply_markup=wdtt_platform_kb(transport="yandex"))
 
 
 def _normalize_vk(raw: str) -> str:
@@ -486,7 +546,7 @@ def _normalize_vk(raw: str) -> str:
 async def cb_wdtt_vk_svc(call: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(vk_hash=None)  # None → возьмём ссылку сервиса из конфига
     await state.set_state(WdttStates.platform)
-    await call.message.edit_text(t.wdtt_ask_platform, reply_markup=wdtt_platform_kb())
+    await call.message.edit_text(t.wdtt_ask_platform, reply_markup=wdtt_platform_kb(transport="vk"))
     await call.answer()
 
 
@@ -507,7 +567,7 @@ async def step_wdtt_vk_link(message: Message, state: FSMContext) -> None:
         return
     await state.update_data(vk_hash=v)
     await state.set_state(WdttStates.platform)
-    await message.answer(t.wdtt_ask_platform, reply_markup=wdtt_platform_kb())
+    await message.answer(t.wdtt_ask_platform, reply_markup=wdtt_platform_kb(transport="vk"))
 
 
 @router.callback_query(WdttStates.platform, F.data.startswith(f"{CB_WDTT}:plat:"))
@@ -532,13 +592,16 @@ async def cb_wdtt_platform(call: CallbackQuery, state: FSMContext, session: Asyn
         await call.message.edit_text("Сервер или устройство недоступны.", reply_markup=back_to_menu())
         await call.answer()
         return
-    # Своя VK-ссылка юзера (если выбрал) переопределяет ссылку сервиса из конфига.
+    # Своя VK-ссылка или документ юзера (если выбрал)
     vk_hashes = data.get("vk_hash")
+    transport = data.get("transport", "vk")
+    yandex_doc = data.get("yandex_doc")
     await call.message.edit_text(t.wdtt_creating)
     try:
         access, link = await bypass_issue.issue(
             session, user,
-            server=server, device=device, platform=platform, vk_hashes=vk_hashes,
+            server=server, device=device, platform=platform,
+            vk_hashes=vk_hashes, transport=transport, yandex_doc=yandex_doc,
         )
     except bypass_issue.NoCapacity:
         await call.message.edit_text(
@@ -569,13 +632,27 @@ async def cb_wdtt_platform(call: CallbackQuery, state: FSMContext, session: Asyn
     await session.commit()
 
     labels = await repo.server_labels_map(session)
-    app_name = _PLATFORMS[platform][1]
-    await call.message.edit_text(
-        t.wdtt_created.format(
+    if transport == "yandex":
+        app_name = "Moschata VPN / OpenFlux" if platform == "android" else "OpenFlux Desktop"
+        app_url = "https://github.com/SpaceNeuroX/proxy-turn-vk-android/releases"
+        msg_text = (
+            f"📄 <b>Готово — резервное подключение создано</b>\n"
+            f"<i>{label} · {labels.get(server.id, server.name)}</i>\n\n"
+            f"1️⃣ Поставь приложение <b>{app_name}</b>:\n{app_url}\n\n"
+            f"2️⃣ Ссылка подключения (нажми, чтобы скопировать):\n"
+            f"<code>{link}</code>\n\n"
+            f"3️⃣ В приложении открой вкладку <b>«Профили»</b> → <b>«+»</b> → <b>«Из буфера»</b>.\n\n"
+            f"💡 Подключение работает через защищённый канал Яндекс.Документов (порт 443 TCP/TLS)."
+        )
+    else:
+        app_name = _PLATFORMS[platform][1]
+        msg_text = t.wdtt_created.format(
             label=label, server=labels.get(server.id, server.name),
             app=app_name, app_block=_app_block(platform), link=link,
             import_step=_import_step(platform),
-        ),
+        )
+    await call.message.edit_text(
+        msg_text,
         reply_markup=back_to_menu(),
     )
     await call.answer("Готово")

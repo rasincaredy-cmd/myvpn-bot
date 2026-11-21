@@ -31,7 +31,11 @@ from sqlalchemy import select
 
 
 async def seed_test_server():
-    """Создает тестовый сервер в тестовой БД, если его еще нет."""
+    """Создает тестовый сервер и тестового пользователя в тестовой БД, если их еще нет."""
+    from datetime import datetime, timedelta, timezone
+    from bot.db.models import Device, Peer, User, WdttAccess, PeerStatus
+    from bot.db import repo
+
     async with session_scope() as session:
         existing = (await session.execute(select(Server))).scalars().first()
         if existing is None:
@@ -65,6 +69,22 @@ async def seed_test_server():
             session.add(test_server)
             await session.commit()
             print("[*] Добавлен демонстрационный сервер в тестовую базу.")
+
+        # Убедимся, что у Влада есть тестовая запись юзера с активной подпиской
+        vlad_user = await repo.get_user_by_tg_id(session, 501009780)
+        if vlad_user is None:
+            vlad_user = await repo.get_or_create_user(
+                session,
+                tg_id=501009780,
+                username="vlados",
+                full_name="Влад",
+            )
+        vlad_user.sub_expires_at = datetime.now(timezone.utc) + timedelta(days=30)
+        vlad_user.sub_max_devices = 5
+        vlad_user.sub_max_bypass = 5
+        vlad_user.balance_kopecks = 50000
+        await session.commit()
+        print("[*] Пользователь Влад (501009780) инициализирован с активной подпиской.")
 
 
 async def start():

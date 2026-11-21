@@ -13,10 +13,24 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
+
 SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "hardening" / "harden.sh"
+
+
+def _get_bash() -> str:
+    found = shutil.which("bash")
+    if found:
+        return found
+    git_bash = Path("C:/Program Files/Git/bin/bash.exe")
+    if git_bash.exists():
+        return str(git_bash)
+    pytest.skip("bash not found")
+
 
 # Заглушка is_ipv4: в сценарии она объявлена выше вырезаемого блока.
 _IS_IPV4 = (
@@ -57,7 +71,7 @@ def _jail_line(tmp_path: Path, *, ssh_connection: str | None, own_ip: str) -> st
         + '\n[ "$MANAGER_IP" = "$OWN_IP" ] && MANAGER_IP=""\n'
         + _ECHO_JAIL
     )
-    res = subprocess.run(["bash", "-c", prog], capture_output=True, text=True, env=env)
+    res = subprocess.run([_get_bash(), "-c", prog], capture_output=True, text=True, env=env)
     assert res.returncode == 0, res.stderr
     return res.stdout.strip()
 
@@ -106,5 +120,5 @@ class TestManagerIpInWhitelist:
 
 
 def test_script_still_valid_bash() -> None:
-    res = subprocess.run(["bash", "-n", str(SCRIPT)], capture_output=True, text=True)
+    res = subprocess.run([_get_bash(), "-n", str(SCRIPT)], capture_output=True, text=True)
     assert res.returncode == 0, res.stderr

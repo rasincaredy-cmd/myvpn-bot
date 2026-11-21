@@ -39,11 +39,13 @@ class ServerEditStates(StatesGroup):
 
 
 class WdttStates(StatesGroup):
+    transport = State()   # выбор транспорта: vk (qWDTT) или yandex (Яндекс.Документы)
     platform = State()
     pick_server = State()
     pick_device = State()
-    vk = State()        # выбор: ссылка сервиса или своя
-    vk_link = State()   # ввод своей VK-ссылки
+    vk = State()          # выбор: ссылка сервиса или своя
+    vk_link = State()     # ввод своей VK-ссылки
+    yandex_doc = State()  # ввод ссылки/ID своего Яндекс.Документа
 
 
 class DeviceStates(StatesGroup):

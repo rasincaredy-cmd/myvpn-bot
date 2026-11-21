@@ -21,6 +21,7 @@ async def create_wdtt_access(
     device_id: int | None = None,
     platform: str | None = None,
     vk_own: bool | None = None,
+    transport: str | None = "vk",
 ) -> WdttAccess:
     access = WdttAccess(
         server_id=server_id,
@@ -33,6 +34,7 @@ async def create_wdtt_access(
         expires_at=expires_at,
         platform=platform,
         vk_own=vk_own,
+        transport=transport or "vk",
     )
     session.add(access)
     await session.flush()

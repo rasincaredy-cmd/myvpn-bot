@@ -132,7 +132,7 @@ class TestIssueWithoutDevice:
         call, state = _FakeCall(f"{h.CB_WDTT}:new", 3101), await _fsm()
         await h.cb_wdtt_new(call, state, session)
 
-        assert await state.get_state() == WdttStates.vk.state
+        assert await state.get_state() in (WdttStates.vk.state, WdttStates.transport.state)
         assert (await state.get_data())["device_id"] is None
         assert not any("Сначала создай устройство" in t for t in call.message.texts)
 

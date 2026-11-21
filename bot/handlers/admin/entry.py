@@ -7,54 +7,59 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from loguru import logger
 
-from bot.keyboards.inline import CB_PANEL, admin_panel_menu
+from bot.keyboards.inline import CB_MENU, CB_PANEL
 from bot.loader import bot as tg_bot
 from bot.texts import ui
 
 router = Router(name="admin_entry")
 
 
-@router.message(Command("admin"))
-@router.callback_query(F.data == f"{CB_PANEL}:main")
-async def cmd_admin(event: Message | CallbackQuery, state: FSMContext) -> None:
+@router.message(Command("admin", "admin_web", "web", "panel_web", "panel"))
+@router.callback_query(F.data.in_({f"{CB_PANEL}:main", f"{CB_PANEL}:web_link"}))
+async def cmd_admin_web_entry(event: Message | CallbackQuery, state: FSMContext) -> None:
+    """Вход в админ-панель: выдача одноразовой защищённой magic-ссылки в веб-панель."""
     await state.clear()
-    text = "👮 <b>Админ-панель</b>"
-    if isinstance(event, CallbackQuery):
-        await event.message.edit_text(text, reply_markup=admin_panel_menu())
-        await event.answer()
-    else:
-        await event.answer(text, reply_markup=admin_panel_menu())
-
-
-@router.message(Command("admin_web", "web", "panel_web"))
-async def cmd_admin_web(message: Message) -> None:
-    """Генерация одноразовой ссылки для входа в веб-панель управления администратора."""
     from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
     from bot.config import settings
     from bot.webadmin.auth import create_magic_login_token
 
-    admin_id = message.from_user.id
-    if admin_id not in settings.admin_ids:
+    user_id = event.from_user.id
+    if user_id not in settings.admin_ids:
+        if isinstance(event, CallbackQuery):
+            await event.answer("Доступ ограничен", show_alert=True)
         return
 
-    token = create_magic_login_token(admin_id)
+    token = create_magic_login_token(user_id)
     base = settings.miniapp_url.rstrip("/") if settings.miniapp_url else "http://localhost:8080"
     if "/app" in base:
         base = base.replace("/app", "")
     web_url = f"{base}/admin?token={token}"
 
+    text = (
+        "🌐 <b>Панель управления Moschata VPN</b>\n\n"
+        "Управление ботом переведено в браузерную веб-панель.\n"
+        "В панели доступны: интерактивная таблица пользователей, управление серверами и пирами, журнал аудита и статистика.\n\n"
+        "<i>Ссылка одноразовая и действует 30 минут:</i>\n"
+        f"<code>{web_url}</code>"
+    )
+
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="🌐 Открыть панель управления", url=web_url)]
+            [InlineKeyboardButton(text="🚀 Открыть веб-панель", url=web_url)],
+            [InlineKeyboardButton(text="‹ Меню", callback_data=f"{CB_MENU}:open")],
         ]
     )
-    await message.answer(
-        "🌐 <b>Браузерная панель управления Moschata VPN</b>\n\n"
-        "Одноразовая ссылка для безопасного входа (действует 30 минут):\n"
-        f"<code>{web_url}</code>\n\n"
-        "<i>В веб-панели доступны: интерактивная таблица пользователей, управление пирами и серверами, логи аудита и статистика.</i>",
-        reply_markup=kb,
-    )
+
+    if isinstance(event, CallbackQuery):
+        await event.message.edit_text(text, reply_markup=kb)
+        await event.answer()
+    else:
+        await event.answer(text, reply_markup=kb)
+
+
+# Алиас для обратной совместимости импортов
+cmd_admin = cmd_admin_web_entry
+
 
 
 

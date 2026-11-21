@@ -42,7 +42,7 @@ async def handle_subscription_feed(request: web.Request) -> web.Response:
     body, content_type, headers = subscriptions.format_subscription_response(
         data, requested_format=fmt
     )
-    return web.Response(text=body, content_type=content_type, headers=headers)
+    return web.Response(text=body, content_type=content_type, charset="utf-8", headers=headers)
 
 
 async def handle_subscription_info_page(request: web.Request) -> web.Response:
@@ -229,7 +229,7 @@ async def handle_subscription_info_page(request: web.Request) -> web.Response:
 </body>
 </html>
 """
-    return web.Response(text=html_content, content_type="text/html; charset=utf-8")
+    return web.Response(text=html_content, content_type="text/html", charset="utf-8")
 
 
 def add_sub_routes(app: web.Application) -> None:

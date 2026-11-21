@@ -52,12 +52,13 @@ async def handle_admin_index(request: web.Request) -> web.Response:
   </div>
 </body>
 </html>"""
-        return web.Response(text=unauth_html, content_type="text/html; charset=utf-8", status=401)
+        return web.Response(text=unauth_html, content_type="text/html", charset="utf-8", status=401)
 
     html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
     return web.Response(
         text=html,
-        content_type="text/html; charset=utf-8",
+        content_type="text/html",
+        charset="utf-8",
         headers={"Cache-Control": "no-store, no-cache"},
     )
 

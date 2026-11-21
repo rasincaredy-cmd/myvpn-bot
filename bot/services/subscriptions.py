@@ -23,7 +23,7 @@ from bot.services import amnezia
 from bot.services.amnezia import AmneziaParams, build_peer_conf
 from bot.services.crypto import decrypt
 from bot.services.wdtt import link_with_host
-from bot.utils.timefmt import fmt_msk
+from bot.utils.timefmt import as_utc, fmt_msk
 
 
 async def build_subscription_data(
@@ -32,7 +32,8 @@ async def build_subscription_data(
 ) -> dict[str, Any]:
     """Формирует структурированные данные подписки пользователя со всеми активными конфигурациями."""
     now = datetime.now(timezone.utc)
-    is_expired = bool(user.sub_expires_at and user.sub_expires_at <= now)
+    expires_utc = as_utc(user.sub_expires_at) if user.sub_expires_at else None
+    is_expired = bool(expires_utc and expires_utc <= now)
     is_active = (not user.is_blocked) and (not is_expired)
 
     used_bytes = await repo.sub_traffic_used(session, user)
@@ -172,8 +173,8 @@ async def build_subscription_data(
         "trafficLimitMb": limit_mb,
         "trafficUsedBytes": used_bytes,
         "trafficLimitBytes": limit_bytes or 0,
-        "expiresAt": user.sub_expires_at.isoformat() if user.sub_expires_at else None,
-        "expiresTimestamp": int(user.sub_expires_at.timestamp()) if user.sub_expires_at else 0,
+        "expiresAt": expires_utc.isoformat() if expires_utc else None,
+        "expiresTimestamp": int(expires_utc.timestamp()) if expires_utc else 0,
         "updatedAt": now.isoformat(),
         "version": 1,
         "servers": servers_json,
@@ -204,16 +205,16 @@ def format_subscription_response(
             lines.append(u)
         body = "\n\n".join(lines)
         headers["Content-Disposition"] = 'inline; filename="moschata.txt"'
-        return body, "text/plain; charset=utf-8", headers
+        return body, "text/plain", headers
 
     if requested_format == "base64":
         lines = data["uris"]
         text_payload = "\n".join(lines)
         body = base64.b64encode(text_payload.encode("utf-8")).decode("ascii")
         headers["Content-Disposition"] = 'inline; filename="moschata_sub.txt"'
-        return body, "text/plain; charset=utf-8", headers
+        return body, "text/plain", headers
 
     # По умолчанию JSON:
     body = json.dumps(data, ensure_ascii=False, indent=2)
     headers["Content-Disposition"] = 'inline; filename="moschata.json"'
-    return body, "application/json; charset=utf-8", headers
+    return body, "application/json", headers

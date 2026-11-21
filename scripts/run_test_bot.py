@@ -40,9 +40,9 @@ async def seed_test_server():
         existing = (await session.execute(select(Server))).scalars().first()
         if existing is None:
             params = AmneziaParams(
-                jc=4, jmin=50, jmax=1000,
-                s1=0, s2=0,
-                h1=1, h2=2, h3=3, h4=4
+                Jc=4, Jmin=50, Jmax=1000,
+                S1=0, S2=0,
+                H1=1, H2=2, H3=3, H4=4
             )
             test_server = Server(
                 name="🇳🇱 Нидерланды (Тест)",

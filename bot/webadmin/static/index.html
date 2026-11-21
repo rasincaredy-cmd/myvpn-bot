@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Moschata VPN — Панель управления</title>
+  <link rel="stylesheet" href="/admin/static/admin.css?v=1">
+</head>
+<body>
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="brand-icon">🦫</span>
+      <span class="brand-title">Moschata Control</span>
+      <span class="brand-badge">PRO</span>
+    </div>
+
+    <nav class="nav-menu">
+      <div class="nav-item active" data-tab="overview">
+        <span class="icon">📊</span>
+        <span>Сводка</span>
+      </div>
+      <div class="nav-item" data-tab="servers">
+        <span class="icon">🖥️</span>
+        <span>Серверы</span>
+      </div>
+      <div class="nav-item" data-tab="users">
+        <span class="icon">👥</span>
+        <span>Пользователи</span>
+      </div>
+      <div class="nav-item" data-tab="tariffs">
+        <span class="icon">⚙️</span>
+        <span>Тарифы</span>
+      </div>
+      <div class="nav-item" data-tab="broadcast">
+        <span class="icon">📢</span>
+        <span>Рассылка</span>
+      </div>
+      <div class="nav-item" data-tab="audit">
+        <span class="icon">📜</span>
+        <span>Аудит</span>
+      </div>
+    </nav>
+
+    <div class="sidebar-footer">
+      <span>v2.1 • AmneziaWG + qWDTT</span>
+    </div>
+  </aside>
+
+  <!-- Main Content Area -->
+  <main class="content-area">
+    <header class="topbar">
+      <h1 class="page-title" id="current-page-title">Сводка сервиса</h1>
+      <div class="topbar-actions">
+        <a href="https://t.me/MoschataVPN_bot" target="_blank" class="btn btn-secondary btn-sm">💬 Открыть бота</a>
+      </div>
+    </header>
+
+    <div class="view-container">
+      <!-- 1. Overview Tab -->
+      <section id="tab-overview" class="tab-pane active">
+        <div class="metrics-grid">
+          <div class="card">
+            <div class="card-label">Всего пользователей</div>
+            <div class="card-value" id="stat-total-users">-</div>
+            <div class="card-sub">Платят: <b id="stat-paid-users">-</b> • Триал: <b id="stat-trial-users">-</b></div>
+          </div>
+          <div class="card">
+            <div class="card-label">Выручка (30 дней)</div>
+            <div class="card-value" style="color: var(--accent);" id="stat-revenue">-</div>
+            <div class="card-sub">Истекли: <b id="stat-expired-users">-</b></div>
+          </div>
+          <div class="card">
+            <div class="card-label">Суммарный трафик</div>
+            <div class="card-value" id="stat-traffic">-</div>
+            <div class="card-sub">Сеть AmneziaWG + qWDTT</div>
+          </div>
+          <div class="card">
+            <div class="card-label">Активные сессии</div>
+            <div class="card-value" id="stat-peers">-</div>
+            <div class="card-sub">Обходов БС: <b id="stat-bypass">-</b></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3 style="font-size: 15px; margin-bottom: 12px;">🛡️ Архитектурный статус инфраструктуры</h3>
+          <p style="color: var(--text-secondary); line-height: 1.6; font-size: 13px;">
+            Все запросы авторизуются по админскому Telegram ID. Поддерживается прямое управление пирами на серверах через SSH, мониторинг qWDTT raw/direct портов (56003/56002), учёт трафика с защитой от сбросов счётчиков и авто-отзыв истекших подписок.
+          </p>
+        </div>
+      </section>
+
+      <!-- 2. Servers Tab -->
+      <section id="tab-servers" class="tab-pane">
+        <div class="table-wrapper">
+          <div class="table-header-bar">
+            <h3 style="font-size: 15px;">Парк серверов и локаций</h3>
+            <button class="btn btn-secondary btn-sm" onclick="loadServers()">🔄 Обновить</button>
+          </div>
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Сервер / Хост</th>
+                <th>Статус</th>
+                <th>AmneziaWG (Пиры)</th>
+                <th>Обход БС (qWDTT)</th>
+                <th>Доступ</th>
+                <th>Действия</th>
+              </tr>
+            </thead>
+            <tbody id="servers-table-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- 3. Users Tab -->
+      <section id="tab-users" class="tab-pane">
+        <div class="table-wrapper">
+          <div class="table-header-bar">
+            <div style="display: flex; gap: 12px; flex: 1; max-width: 500px;">
+              <input type="text" id="user-search-input" placeholder="Поиск по ID, @username, имени или реф-коду..." oninput="onUserSearchInput()" style="flex: 1;">
+              <select id="user-filter-select" onchange="loadUsers(true)">
+                <option value="all">Все юзеры</option>
+                <option value="active">Активные</option>
+                <option value="paid">Платные</option>
+                <option value="trial">Триал</option>
+                <option value="expired">Истекшие</option>
+                <option value="blocked">Заблокированные</option>
+                <option value="vip">Друзья (VIP)</option>
+              </select>
+            </div>
+            <span id="users-pagination-info" class="card-sub"></span>
+          </div>
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Пользователь</th>
+                <th>Статус</th>
+                <th>Срок подписки</th>
+                <th>Баланс</th>
+                <th>Трафик</th>
+                <th>Действия</th>
+              </tr>
+            </thead>
+            <tbody id="users-table-body"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- 4. Tariffs Tab -->
+      <section id="tab-tariffs" class="tab-pane">
+        <div class="card" style="max-width: 600px;">
+          <h3 style="font-size: 16px; margin-bottom: 20px;">Настройки тарифов и конструктора</h3>
+          <div class="form-group">
+            <label class="form-label">Базовая цена первой позиции (₽/мес)</label>
+            <input type="number" id="tariff-price-first" readonly>
+          </div>
+          <div class="form-row">
+            <div class="form-group" style="flex: 1;">
+              <label class="form-label">Доп. устройство (+₽/мес)</label>
+              <input type="number" id="tariff-price-device" readonly>
+            </div>
+            <div class="form-group" style="flex: 1;">
+              <label class="form-label">Доп. обход БС (+₽/мес)</label>
+              <input type="number" id="tariff-price-bypass" readonly>
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group" style="flex: 1;">
+              <label class="form-label">Срок триала (дней)</label>
+              <input type="number" id="tariff-trial-days" readonly>
+            </div>
+            <div class="form-group" style="flex: 1;">
+              <label class="form-label">Лимит триала (ГБ)</label>
+              <input type="number" id="tariff-trial-traffic" readonly>
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Реферальное вознаграждение (%)</label>
+            <input type="number" id="tariff-referral" readonly>
+          </div>
+          <p class="card-sub">Значения читаются из настроек (.env) и применяются в биллинге автоматически.</p>
+        </div>
+      </section>
+
+      <!-- 5. Broadcast Tab -->
+      <section id="tab-broadcast" class="tab-pane">
+        <div class="card" style="max-width: 650px;">
+          <h3 style="font-size: 16px; margin-bottom: 16px;">Массовая рассылка сообщений в Telegram</h3>
+          <div class="form-group">
+            <label class="form-label">Целевая аудитория</label>
+            <select id="broadcast-target">
+              <option value="all">Все пользователи (кроме заблокированных)</option>
+              <option value="active">Только активные клиенты</option>
+              <option value="inactive">Только с истекшей подпиской</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Текст сообщения (поддерживается HTML)</label>
+            <textarea id="broadcast-text" rows="6" placeholder="Привет! Важное обновление серверов..."></textarea>
+          </div>
+          <button class="btn btn-primary" onclick="sendBroadcast()">🚀 Запустить рассылку</button>
+        </div>
+      </section>
+
+      <!-- 6. Audit Tab -->
+      <section id="tab-audit" class="tab-pane">
+        <div class="table-wrapper">
+          <div class="table-header-bar">
+            <h3 style="font-size: 15px;">Журнал системных событий и действий администраторов</h3>
+            <button class="btn btn-secondary btn-sm" onclick="loadAudit()">🔄 Обновить</button>
+          </div>
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Время (МСК)</th>
+                <th>Событие</th>
+                <th>Админ (TG)</th>
+                <th>Цель</th>
+                <th>Детали</th>
+              </tr>
+            </thead>
+            <tbody id="audit-table-body"></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <!-- Server Modal -->
+  <div id="modal-server" class="modal-overlay">
+    <div class="modal">
+      <div class="modal-header">
+        <h3 class="modal-title">Настройки сервера</h3>
+        <button class="close-btn" onclick="closeModal('modal-server')">&times;</button>
+      </div>
+      <input type="hidden" id="edit-server-id">
+      <div class="form-group">
+        <label class="form-label">Имя сервера</label>
+        <input type="text" id="edit-server-name">
+      </div>
+      <div class="form-group">
+        <label class="form-label">Отображаемая локация (с флагом)</label>
+        <input type="text" id="edit-server-location" placeholder="🇩🇪 Германия">
+      </div>
+      <div class="form-group">
+        <label class="form-label">DNS серверы</label>
+        <input type="text" id="edit-server-dns" placeholder="1.1.1.1, 1.0.0.1">
+      </div>
+      <div class="form-row">
+        <div class="form-group" style="flex: 1;">
+          <label class="form-label">Максимум пиров (лимит)</label>
+          <input type="number" id="edit-server-max-peers" placeholder="Без лимита">
+        </div>
+        <div class="form-group" style="flex: 1;">
+          <label class="form-label">Максимум обходов БС</label>
+          <input type="number" id="edit-server-max-bypass" placeholder="Без лимита">
+        </div>
+      </div>
+      <div class="form-group" style="flex-direction: row; gap: 20px; margin: 12px 0;">
+        <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+          <input type="checkbox" id="edit-server-wdtt"> Включить обход БС (qWDTT)
+        </label>
+        <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+          <input type="checkbox" id="edit-server-private"> 🔒 Приватный сервер (только VIP)
+        </label>
+      </div>
+      <div style="display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px;">
+        <button class="btn btn-secondary" onclick="closeModal('modal-server')">Отмена</button>
+        <button class="btn btn-primary" onclick="saveServerSettings()">Сохранить</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- User Card Modal -->
+  <div id="modal-user" class="modal-overlay">
+    <div class="modal" style="max-width: 650px;">
+      <div class="modal-header">
+        <h3 class="modal-title" id="user-card-title">Карточка пользователя</h3>
+        <button class="close-btn" onclick="closeModal('modal-user')">&times;</button>
+      </div>
+      <input type="hidden" id="user-card-id">
+
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 16px; font-size: 13px;">
+        <div>TG ID: <b class="mono" id="user-card-tg-id">-</b></div>
+        <div>Баланс: <b class="mono" id="user-card-balance">-</b></div>
+        <div>Срок: <b class="mono" id="user-card-expires">-</b></div>
+        <div>Трафик: <b class="mono" id="user-card-traffic">-</b></div>
+        <div>Лимиты: <b class="mono" id="user-card-limits">-</b></div>
+      </div>
+
+      <!-- Subscription URL Box -->
+      <div class="form-group" style="margin-bottom: 16px;">
+        <label class="form-label">Персональная ссылка подписки (для Moschata VPN / Amnezia Clean):</label>
+        <div style="display: flex; gap: 8px;">
+          <input type="text" id="user-card-sub-url" class="mono" readonly style="flex: 1; font-size: 11px;">
+          <button class="btn btn-secondary btn-sm" onclick="copySubUrl()">Скопировать</button>
+        </div>
+      </div>
+
+      <!-- Quick Actions -->
+      <div style="display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px;">
+        <button class="btn btn-secondary btn-sm" onclick="quickExtendSub(30)">+30 дней</button>
+        <button class="btn btn-secondary btn-sm" onclick="quickExtendSub(90)">+90 дней</button>
+        <button class="btn btn-secondary btn-sm" onclick="quickUserAction('adjust_balance')">💰 Баланс</button>
+        <button class="btn btn-secondary btn-sm" onclick="quickUserAction('toggle_vip')">⭐ VIP / Друг</button>
+        <button class="btn btn-secondary btn-sm" onclick="quickUserAction('toggle_block')">🚫 Блок</button>
+        <button class="btn btn-secondary btn-sm" onclick="quickUserAction('rotate_sub_token')">🔄 Сменить ссылку</button>
+      </div>
+
+      <!-- Lists -->
+      <div style="border-top: 1px solid var(--border-subtle); padding-top: 12px; max-height: 200px; overflow-y: auto;">
+        <h4 style="font-size: 12px; color: var(--text-muted); text-transform: uppercase; margin-bottom: 6px;">Устройства и конфиги</h4>
+        <ul id="user-devices-list" style="list-style: none; font-size: 12px; margin-bottom: 8px;"></ul>
+        <ul id="user-peers-list" style="list-style: none; font-size: 12px; margin-bottom: 8px;"></ul>
+        <ul id="user-bypass-list" style="list-style: none; font-size: 12px;"></ul>
+      </div>
+
+      <div style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--border-subtle); padding-top: 16px; margin-top: 16px;">
+        <button class="btn btn-danger btn-sm" onclick="wipeUserConfirm()">🗑 Полностью стереть из БД</button>
+        <button class="btn btn-secondary" onclick="closeModal('modal-user')">Закрыть</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/admin/static/admin.js?v=1"></script>
+</body>
+</html>

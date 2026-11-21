@@ -157,6 +157,8 @@ def subscription_kb(
     if can_switch:
         kb.button(text="⚙️ Сменить тариф", callback_data=f"{CB_BAL}:extend")
         sizes.append(1)
+    kb.button(text="🔗 Ссылка подписки (1 клик)", callback_data=f"{CB_SUB}:link")
+    sizes.append(1)
     if autopay is not None:
         # Во всю ширину: в паре кнопка получает половину экрана, и обрезается у
         # неё ровно хвост — то самое «ВКЛ/выкл», ради которого её и читают

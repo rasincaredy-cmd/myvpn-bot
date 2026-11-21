@@ -113,6 +113,15 @@ def build_app() -> web.Application:
         from bot.miniapp import add_routes
 
         add_routes(app)
+
+    # Прямые ссылки на подписки (/sub/{token}) для Amnezia Clean и Moschata VPN:
+    from bot.services.subscriptions_http import add_sub_routes
+    add_sub_routes(app)
+
+    # Веб-панель администратора (/admin):
+    from bot.webadmin import add_webadmin_routes
+    add_webadmin_routes(app)
+
     return app
 
 

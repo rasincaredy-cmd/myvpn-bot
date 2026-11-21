@@ -19,6 +19,7 @@ from bot.db import repo
 from bot.db.models import PeerStatus
 from bot.keyboards.inline import (
     CB_DEVICE,
+    CB_MENU,
     CB_SUB,
     back_to_devices_kb,
     back_to_menu,
@@ -565,3 +566,45 @@ async def cb_sub_my(call: CallbackQuery, session: AsyncSession) -> None:
         ),
     )
     await call.answer()
+
+
+@router.callback_query(F.data == f"{CB_SUB}:link")
+async def cb_sub_link(call: CallbackQuery, session: AsyncSession) -> None:
+    """Выдача персональной ссылки на подписку для автообновления в клиентах."""
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+    from bot.config import settings
+
+    user = await repo.get_or_create_user(
+        session,
+        tg_id=call.from_user.id,
+        username=call.from_user.username,
+        full_name=call.from_user.full_name,
+    )
+    token = await repo.get_or_create_sub_token(session, user.id)
+
+    base = settings.miniapp_url.rstrip("/") if settings.miniapp_url else "http://localhost:8080"
+    if "/app" in base:
+        base = base.replace("/app", "")
+    sub_url = f"{base}/sub/{token}"
+
+    text = (
+        "🔗 <b>Ваша ссылка на подписку:</b>\n\n"
+        f"<code>{sub_url}</code>\n\n"
+        "💡 <i>Нажмите на ссылку, чтобы скопировать её в буфер обмена.</i>\n\n"
+        "<b>📱 Как использовать в 1 клик:</b>\n"
+        "1. Откройте приложение <b>Moschata VPN</b> или <b>Amnezia Clean</b>.\n"
+        "2. Перейдите в раздел <b>«Профили» → «+» → «Из ссылки»</b> (или «Подписка»).\n"
+        "3. Вставьте скопированную ссылку.\n\n"
+        "Все доступные локации VPN и режимы <b>Резервного подключения (qWDTT)</b> "
+        "добавятся мгновенно и будут автоматически обновляться при смене серверов!"
+    )
+
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🌐 Открыть в браузере", url=f"{sub_url}/info")
+    kb.button(text="‹ Подписка", callback_data=f"{CB_SUB}:my")
+    kb.button(text="‹ Меню", callback_data=f"{CB_MENU}:open")
+    kb.adjust(1, 2)
+
+    await call.message.edit_text(text, reply_markup=kb.as_markup())
+    await call.answer()
+

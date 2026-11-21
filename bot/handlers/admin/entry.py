@@ -26,6 +26,38 @@ async def cmd_admin(event: Message | CallbackQuery, state: FSMContext) -> None:
         await event.answer(text, reply_markup=admin_panel_menu())
 
 
+@router.message(Command("admin_web", "web", "panel_web"))
+async def cmd_admin_web(message: Message) -> None:
+    """Генерация одноразовой ссылки для входа в веб-панель управления администратора."""
+    from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+    from bot.config import settings
+    from bot.webadmin.auth import create_magic_login_token
+
+    admin_id = message.from_user.id
+    if admin_id not in settings.admin_ids:
+        return
+
+    token = create_magic_login_token(admin_id)
+    base = settings.miniapp_url.rstrip("/") if settings.miniapp_url else "http://localhost:8080"
+    if "/app" in base:
+        base = base.replace("/app", "")
+    web_url = f"{base}/admin?token={token}"
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🌐 Открыть панель управления", url=web_url)]
+        ]
+    )
+    await message.answer(
+        "🌐 <b>Браузерная панель управления Moschata VPN</b>\n\n"
+        "Одноразовая ссылка для безопасного входа (действует 30 минут):\n"
+        f"<code>{web_url}</code>\n\n"
+        "<i>В веб-панели доступны: интерактивная таблица пользователей, управление пирами и серверами, логи аудита и статистика.</i>",
+        reply_markup=kb,
+    )
+
+
+
 @router.callback_query(F.data == f"{CB_PANEL}:backup_now")
 async def cb_panel_backup(call: CallbackQuery) -> None:
     """Ручной бэкап: тот же архив, что ночной, — всем админам. Ночной маркер

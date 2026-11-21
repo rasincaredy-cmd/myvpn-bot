@@ -1,5 +1,6 @@
 # --- Secrets ---
 .env
+test_bot.env
 *.pem
 *.key
 id_rsa*

@@ -1,6 +1,7 @@
 """Юзеры: регистрация с авто-триалом, выборки для панели и рассылки, блокировка."""
 from __future__ import annotations
 
+import secrets
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import case, select, update
@@ -143,3 +144,42 @@ async def accept_terms(session: AsyncSession, user: User) -> None:
         return
     user.terms_accepted_at = datetime.now(timezone.utc)
     await session.commit()
+
+
+def generate_sub_token() -> str:
+    """Генерирует криптостойкий URL-safe токен для ссылки подписки."""
+    return secrets.token_urlsafe(32)
+
+
+async def get_or_create_sub_token(session: AsyncSession, user_id: int) -> str:
+    """Возвращает существующий токен подписки юзера или создаёт новый."""
+    user = await session.get(User, user_id)
+    if user is None:
+        raise ValueError(f"User {user_id} not found")
+    if user.sub_token:
+        return user.sub_token
+    token = generate_sub_token()
+    user.sub_token = token
+    await session.commit()
+    return token
+
+
+async def get_user_by_sub_token(session: AsyncSession, token: str) -> User | None:
+    """Ищет юзера по токену подписки."""
+    if not token or not token.strip():
+        return None
+    return (
+        await session.execute(select(User).where(User.sub_token == token.strip()))
+    ).scalar_one_or_none()
+
+
+async def rotate_sub_token(session: AsyncSession, user_id: int) -> str:
+    """Сбрасывает старый токен подписки и генерирует новый (например, при компрометации)."""
+    user = await session.get(User, user_id)
+    if user is None:
+        raise ValueError(f"User {user_id} not found")
+    token = generate_sub_token()
+    user.sub_token = token
+    await session.commit()
+    return token
+

@@ -118,6 +118,9 @@ class User(Base):
     # выглядит там мусором. Nullable: код выдаётся при первом заходе в раздел,
     # а старым юзерам колонку добавит авто-миграция пустой.
     ref_code: Mapped[str | None] = mapped_column(String(32), index=True, unique=True)
+    # Персональный токен подписки для клиентов Amnezia Clean / Moschata VPN Android / V2Ray:
+    # URL вида https://host/sub/<sub_token>
+    sub_token: Mapped[str | None] = mapped_column(String(64), index=True, unique=True)
     # Автопродление при истечении: если хватает баланса — планировщик списывает
     # месяц текущего тарифа вместо отзыва устройств. Юзер может выключить.
     autopay: Mapped[bool] = mapped_column(

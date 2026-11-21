@@ -35,20 +35,31 @@ async def cmd_admin_web_entry(event: Message | CallbackQuery, state: FSMContext)
         base = base.replace("/app", "")
     web_url = f"{base}/admin?token={token}"
 
+    from bot.utils.validators import get_lan_ip, is_valid_button_url
+
+    lan_ip = get_lan_ip()
+    port = settings.webhook_port or 8080
+    lan_url = f"http://{lan_ip}:{port}/admin?token={token}"
+
+    is_public = is_valid_button_url(web_url)
+
     text = (
         "🌐 <b>Панель управления Moschata VPN</b>\n\n"
         "Управление ботом переведено в браузерную веб-панель.\n"
         "В панели доступны: интерактивная таблица пользователей, управление серверами и пирами, журнал аудита и статистика.\n\n"
-        "<i>Ссылка одноразовая и действует 30 минут:</i>\n"
-        f"<code>{web_url}</code>"
+        "<b>Ссылка для входа на ПК:</b>\n"
+        f"<code>{web_url}</code>\n\n"
+        "<b>Ссылка для входа с телефона (в домашней Wi-Fi сети):</b>\n"
+        f"<code>{lan_url}</code>\n\n"
+        "<i>Ссылки одноразовые и действуют 30 минут. Нажми на ссылку, чтобы скопировать.</i>"
     )
 
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="🚀 Открыть веб-панель", url=web_url)],
-            [InlineKeyboardButton(text="‹ Меню", callback_data=f"{CB_MENU}:open")],
-        ]
-    )
+    buttons = []
+    if is_public:
+        buttons.append([InlineKeyboardButton(text="🚀 Открыть веб-панель", url=web_url)])
+    buttons.append([InlineKeyboardButton(text="‹ Меню", callback_data=f"{CB_MENU}:open")])
+
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
 
     if isinstance(event, CallbackQuery):
         await event.message.edit_text(text, reply_markup=kb)

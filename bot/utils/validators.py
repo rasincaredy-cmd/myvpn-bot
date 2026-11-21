@@ -48,6 +48,50 @@ def is_valid_ssh_user(value: str) -> bool:
     return bool(v) and v.isascii() and re.match(r"^[a-z_][a-z0-9_-]{0,31}$", v) is not None
 
 
+def is_valid_button_url(url: str) -> bool:
+    """Проверяет, примет ли Telegram Bot API этот URL для InlineKeyboardButton(url=...).
+
+    Telegram server валидирует URL кнопки и возвращает ошибку 'Wrong HTTP URL', если:
+    - URL указывает на localhost, 127.0.0.1, 0.0.0.0
+    - Хост является «голым» IP-адресом (например, http://192.168.0.5:8080)
+    - Хост не содержит точки или валидной доменной зоны.
+    """
+    if not url:
+        return False
+    from urllib.parse import urlparse
+    try:
+        p = urlparse(url)
+        if p.scheme not in ("http", "https", "tg"):
+            return False
+        host = p.hostname or ""
+        if not host or host in ("localhost", "127.0.0.1", "0.0.0.0"):
+            return False
+        try:
+            ipaddress.ip_address(host)
+            return False
+        except ValueError:
+            pass
+        return "." in host
+    except Exception:
+        return False
+
+
+def get_lan_ip() -> str:
+    """Возвращает IP-адрес хоста в локальной сети (например, 192.168.0.5)."""
+    import socket
+    try:
+        hostname = socket.gethostname()
+        for info in socket.getaddrinfo(hostname, None, socket.AF_INET):
+            ip = info[4][0]
+            if ip.startswith("192.168.") or ip.startswith("172."):
+                return ip
+            if ip.startswith("10.") and not ip.startswith("10.8."):
+                return ip
+    except Exception:
+        pass
+    return "192.168.0.5"
+
+
 import re
 from datetime import datetime, timedelta, timezone
 

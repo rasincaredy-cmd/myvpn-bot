@@ -137,13 +137,13 @@ async def run() -> None:
     try:
         runner = web.AppRunner(build_app(), access_log=None)
         await runner.setup()
-        site = web.TCPSite(runner, "127.0.0.1", settings.webhook_port)
+        site = web.TCPSite(runner, "0.0.0.0", settings.webhook_port)
         await site.start()
     except Exception:
         logger.exception("Приёмник уведомлений не поднялся")
         return
     logger.info(
-        "Локальный веб-сервер на 127.0.0.1:{} — приём оплат{}",
+        "Локальный веб-сервер на 0.0.0.0:{} — приём оплат{}",
         settings.webhook_port,
         " и мини-приложение" if settings.miniapp_url else "",
     )

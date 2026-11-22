@@ -319,7 +319,12 @@ async def api_user_detail(request: web.Request) -> web.Response:
         traffic_used = await repo.sub_traffic_used(session, user)
 
         devices_json = [
-            {"id": d.id, "label": d.label, "status": d.status.value, "created_at": fmt_msk(d.created_at)}
+            {
+                "id": d.id,
+                "label": d.label,
+                "status": d.status.value if hasattr(d.status, "value") else str(d.status),
+                "created_at": fmt_msk(d.created_at),
+            }
             for d in devices
         ]
         peers_json = [
@@ -329,8 +334,8 @@ async def api_user_detail(request: web.Request) -> web.Response:
                 "device_id": p.device_id,
                 "label": p.label,
                 "ip": p.ip,
-                "status": p.status.value,
-                "traffic_used_mb": round(p.traffic_used_bytes / (1024 * 1024), 2),
+                "status": p.status.value if hasattr(p.status, "value") else str(p.status),
+                "traffic_used_mb": round((p.traffic_used_bytes or 0) / (1024 * 1024), 2),
                 "created_at": fmt_msk(p.created_at),
             }
             for p in peers
@@ -342,8 +347,8 @@ async def api_user_detail(request: web.Request) -> web.Response:
                 "device_id": w.device_id,
                 "label": w.label,
                 "platform": w.platform or "",
-                "status": w.status.value,
-                "traffic_used_mb": round(w.traffic_used_bytes / (1024 * 1024), 2),
+                "status": w.status.value if hasattr(w.status, "value") else str(w.status),
+                "traffic_used_mb": round((w.traffic_used_bytes or 0) / (1024 * 1024), 2),
                 "created_at": fmt_msk(w.created_at),
             }
             for w in wdtt_list

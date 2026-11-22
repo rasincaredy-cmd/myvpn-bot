@@ -26,9 +26,11 @@ def msk_to_utc(naive_msk: datetime) -> datetime:
     return naive_msk.replace(tzinfo=MSK).astimezone(timezone.utc)
 
 
-def fmt_msk(dt: datetime, with_time: bool = True, *, fmt: str | None = None) -> str:
+def fmt_msk(dt: datetime | None, with_time: bool = True, *, fmt: str | None = None) -> str:
     """Дата/время в МСК. fmt — явный формат для мест, где нужен свой (например,
     список операций: там год только мешает)."""
+    if dt is None:
+        return ""
     local = as_utc(dt).astimezone(MSK)
     return local.strftime(fmt or ("%d.%m.%Y %H:%M" if with_time else "%d.%m.%Y"))
 

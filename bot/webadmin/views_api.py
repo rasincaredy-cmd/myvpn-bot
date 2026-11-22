@@ -27,7 +27,7 @@ from bot.db.models import (
 )
 from bot.services import amnezia, pricing
 from bot.services.pricing import fmt_rub
-from bot.utils.timefmt import fmt_msk
+from bot.utils.timefmt import as_utc, fmt_msk
 
 
 async def get_overview_data(session: AsyncSession) -> dict[str, Any]:
@@ -195,6 +195,97 @@ async def api_server_update(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
+async def get_users_list_data(
+    session: AsyncSession,
+    q: str = "",
+    status_filter: str = "all",
+    offset: int = 0,
+    limit: int = 25,
+) -> dict[str, Any]:
+    """Формирует список пользователей с фильтрацией, поиском и пагинацией."""
+    now = datetime.now(timezone.utc)
+    stmt = select(User)
+
+    if q:
+        if q.isdigit():
+            stmt = stmt.where((User.id == int(q)) | (User.tg_id == int(q)))
+        else:
+            like_str = f"%{q.lstrip('@')}%"
+            stmt = stmt.where(
+                (User.username.ilike(like_str))
+                | (User.full_name.ilike(like_str))
+                | (User.ref_code.ilike(like_str))
+            )
+
+    if status_filter == "active":
+        stmt = stmt.where(
+            User.is_blocked.is_(False),
+            (User.sub_expires_at.is_(None)) | (User.sub_expires_at > now),
+        )
+    elif status_filter == "paid":
+        stmt = stmt.where(
+            User.is_blocked.is_(False),
+            User.is_trial.is_(False),
+            (User.sub_expires_at.is_(None)) | (User.sub_expires_at > now),
+        )
+    elif status_filter == "trial":
+        stmt = stmt.where(
+            User.is_blocked.is_(False),
+            User.is_trial.is_(True),
+            User.sub_expires_at > now,
+        )
+    elif status_filter == "expired":
+        stmt = stmt.where(
+            User.is_blocked.is_(False),
+            User.sub_expires_at.isnot(None),
+            User.sub_expires_at <= now,
+        )
+    elif status_filter == "blocked":
+        stmt = stmt.where(User.is_blocked.is_(True))
+    elif status_filter == "vip":
+        stmt = stmt.where(User.is_vip.is_(True))
+
+    total_stmt = select(func.count()).select_from(stmt.subquery())
+    total = (await session.execute(total_stmt)).scalar() or 0
+
+    users = list((
+        await session.execute(
+            stmt.order_by(User.id.desc()).offset(offset).limit(limit)
+        )
+    ).scalars())
+
+    items = []
+    for u in users:
+        traffic_used = await repo.sub_traffic_used(session, u)
+        is_expired = bool(u.sub_expires_at and as_utc(u.sub_expires_at) <= now)
+        items.append({
+            "id": u.id,
+            "tg_id": u.tg_id,
+            "username": u.username or "",
+            "full_name": u.full_name or "",
+            "balance_rub": round(u.balance_kopeks / 100, 2),
+            "is_trial": u.is_trial,
+            "is_vip": u.is_vip,
+            "is_staff": u.is_staff,
+            "is_blocked": u.is_blocked,
+            "is_expired": is_expired,
+            "sub_expires_at": u.sub_expires_at.isoformat() if u.sub_expires_at else None,
+            "sub_expires_msk": fmt_msk(u.sub_expires_at) if u.sub_expires_at else "Бессрочно",
+            "sub_max_devices": u.sub_max_devices,
+            "sub_max_bypass": u.sub_max_bypass,
+            "traffic_used_mb": round(traffic_used / (1024 * 1024), 2),
+            "traffic_limit_mb": (
+                round(u.sub_traffic_limit_bytes / (1024 * 1024), 2)
+                if u.sub_traffic_limit_bytes else 0
+            ),
+            "ref_code": u.ref_code or "",
+            "sub_token": u.sub_token or "",
+            "created_at_msk": fmt_msk(u.created_at),
+        })
+
+    return {"total": total, "items": items, "offset": offset, "limit": limit}
+
+
 async def api_users_list(request: web.Request) -> web.Response:
     """Список пользователей с фильтрацией, поиском и пагинацией."""
     q = request.query.get("q", "").strip()
@@ -202,89 +293,16 @@ async def api_users_list(request: web.Request) -> web.Response:
     offset = int(request.query.get("offset", 0))
     limit = min(int(request.query.get("limit", 25)), 100)
 
-    now = datetime.now(timezone.utc)
-
     async with session_scope() as session:
-        stmt = select(User)
+        data = await get_users_list_data(
+            session,
+            q=q,
+            status_filter=status_filter,
+            offset=offset,
+            limit=limit,
+        )
 
-        if q:
-            if q.isdigit():
-                stmt = stmt.where((User.id == int(q)) | (User.tg_id == int(q)))
-            else:
-                like_str = f"%{q.lstrip('@')}%"
-                stmt = stmt.where(
-                    (User.username.ilike(like_str))
-                    | (User.full_name.ilike(like_str))
-                    | (User.ref_code.ilike(like_str))
-                )
-
-        if status_filter == "active":
-            stmt = stmt.where(
-                User.is_blocked.is_(False),
-                (User.sub_expires_at.is_(None)) | (User.sub_expires_at > now),
-            )
-        elif status_filter == "paid":
-            stmt = stmt.where(
-                User.is_blocked.is_(False),
-                User.is_trial.is_(False),
-                (User.sub_expires_at.is_(None)) | (User.sub_expires_at > now),
-            )
-        elif status_filter == "trial":
-            stmt = stmt.where(
-                User.is_blocked.is_(False),
-                User.is_trial.is_(True),
-                User.sub_expires_at > now,
-            )
-        elif status_filter == "expired":
-            stmt = stmt.where(
-                User.is_blocked.is_(False),
-                User.sub_expires_at.isnot(None),
-                User.sub_expires_at <= now,
-            )
-        elif status_filter == "blocked":
-            stmt = stmt.where(User.is_blocked.is_(True))
-        elif status_filter == "vip":
-            stmt = stmt.where(User.is_vip.is_(True))
-
-        total_stmt = select(func.count()).select_from(stmt.subquery())
-        total = (await session.execute(total_stmt)).scalar() or 0
-
-        users = list((
-            await session.execute(
-                stmt.order_by(User.id.desc()).offset(offset).limit(limit)
-            )
-        ).scalars())
-
-        items = []
-        for u in users:
-            traffic_used = await repo.sub_traffic_used(session, u)
-            is_expired = bool(u.sub_expires_at and u.sub_expires_at <= now)
-            items.append({
-                "id": u.id,
-                "tg_id": u.tg_id,
-                "username": u.username or "",
-                "full_name": u.full_name or "",
-                "balance_rub": round(u.balance_kopeks / 100, 2),
-                "is_trial": u.is_trial,
-                "is_vip": u.is_vip,
-                "is_staff": u.is_staff,
-                "is_blocked": u.is_blocked,
-                "is_expired": is_expired,
-                "sub_expires_at": u.sub_expires_at.isoformat() if u.sub_expires_at else None,
-                "sub_expires_msk": fmt_msk(u.sub_expires_at) if u.sub_expires_at else "Бессрочно",
-                "sub_max_devices": u.sub_max_devices,
-                "sub_max_bypass": u.sub_max_bypass,
-                "traffic_used_mb": round(traffic_used / (1024 * 1024), 2),
-                "traffic_limit_mb": (
-                    round(u.sub_traffic_limit_bytes / (1024 * 1024), 2)
-                    if u.sub_traffic_limit_bytes else 0
-                ),
-                "ref_code": u.ref_code or "",
-                "sub_token": u.sub_token or "",
-                "created_at_msk": fmt_msk(u.created_at),
-            })
-
-    return web.json_response({"total": total, "items": items, "offset": offset, "limit": limit})
+    return web.json_response(data)
 
 
 async def api_user_detail(request: web.Request) -> web.Response:

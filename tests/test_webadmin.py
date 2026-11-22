@@ -44,3 +44,19 @@ async def test_api_overview(session: AsyncSession) -> None:
     assert "finance" in data
     assert data["users"]["total"] >= 1
 
+
+@pytest.mark.asyncio
+async def test_api_users_list_handles_naive_datetime(session: AsyncSession) -> None:
+    from datetime import datetime
+    # Имитируем наивную дату из SQLite
+    naive_dt = datetime(2026, 12, 31, 23, 59, 59)
+    user = await repo.get_or_create_user(session, tg_id=888002, username="naive_tester", full_name="Naive")
+    user.sub_expires_at = naive_dt
+    await session.commit()
+
+    data = await views_api.get_users_list_data(session)
+    assert data["total"] >= 1
+    item = next(u for u in data["items"] if u["tg_id"] == 888002)
+    assert item["is_expired"] is False
+
+

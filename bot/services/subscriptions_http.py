@@ -59,7 +59,8 @@ async def handle_subscription_info_page(request: web.Request) -> web.Response:
     status_color = "#10B981" if data["is_active"] else "#EF4444"
     status_text = "Активна" if data["is_active"] else ("Заблокирована" if data["is_blocked"] else "Истекла")
 
-    full_url = str(request.url.with_path(f"/sub/{token}").with_query(""))
+    proto = request.headers.get("X-Forwarded-Proto", request.scheme)
+    full_url = str(request.url.with_scheme(proto).with_path(f"/sub/{token}").with_query(""))
 
     html_content = f"""<!DOCTYPE html>
 <html lang="ru">

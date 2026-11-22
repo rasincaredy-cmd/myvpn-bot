@@ -593,19 +593,26 @@ async def cb_sub_link(call: CallbackQuery, session: AsyncSession) -> None:
     port = settings.webhook_port or 8080
     lan_sub_url = f"http://{lan_ip}:{port}/sub/{token}"
 
-    text = (
-        "🔗 <b>Ваша ссылка на подписку:</b>\n\n"
-        f"<code>{sub_url}</code>\n\n"
-        "<b>Для подключения с телефона в домашней сети:</b>\n"
-        f"<code>{lan_sub_url}</code>\n\n"
-        "💡 <i>Нажмите на ссылку, чтобы скопировать её в буфер обмена.</i>\n\n"
-        "<b>📱 Как использовать в 1 клик:</b>\n"
-        "1. Откройте приложение <b>Moschata VPN</b> или <b>Amnezia Clean</b>.\n"
-        "2. Перейдите в раздел <b>«Профили» → «+» → «Из ссылки»</b> (или «Подписка»).\n"
-        "3. Вставьте скопированную ссылку.\n\n"
+    is_public = is_valid_button_url(sub_url)
+    text_lines = [
+        "🔗 <b>Ваша ссылка на подписку:</b>\n",
+        f"<code>{sub_url}</code>\n",
+    ]
+    if not is_public and lan_sub_url:
+        text_lines.append(
+            "<b>Для подключения с телефона в домашней сети:</b>\n"
+            f"<code>{lan_sub_url}</code>\n"
+        )
+    text_lines.extend([
+        "💡 <i>Нажмите на ссылку, чтобы скопировать её в буфер обмена.</i>\n",
+        "<b>📱 Как использовать в 1 клик:</b>",
+        "1. Откройте приложение <b>Moschata VPN</b> или <b>Amnezia Clean</b>.",
+        "2. Перейдите в раздел <b>«Профили» → «+» → «Из ссылки»</b> (или «Подписка»).",
+        "3. Вставьте скопированную ссылку.\n",
         "Все доступные локации VPN и режимы <b>Резервного подключения</b> "
         "добавятся мгновенно и будут автоматически обновляться при смене серверов!"
-    )
+    ])
+    text = "\n".join(text_lines)
 
     kb = InlineKeyboardBuilder()
     if is_valid_button_url(sub_url):

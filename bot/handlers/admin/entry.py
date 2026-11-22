@@ -43,16 +43,29 @@ async def cmd_admin_web_entry(event: Message | CallbackQuery, state: FSMContext)
 
     is_public = is_valid_button_url(web_url)
 
-    text = (
-        "🌐 <b>Панель управления Moschata VPN</b>\n\n"
-        "Управление ботом переведено в браузерную веб-панель.\n"
-        "В панели доступны: интерактивная таблица пользователей, управление серверами и пирами, журнал аудита и статистика.\n\n"
-        "<b>Ссылка для входа на ПК:</b>\n"
-        f"<code>{web_url}</code>\n\n"
-        "<b>Ссылка для входа с телефона (в домашней Wi-Fi сети):</b>\n"
-        f"<code>{lan_url}</code>\n\n"
+    text_parts = [
+        "🌐 <b>Панель управления Moschata VPN</b>\n",
+        "Управление ботом переведено в браузерную веб-панель.",
+        "В панели доступны: интерактивная таблица пользователей, управление серверами и пирами, журнал аудита и статистика.\n",
+    ]
+
+    if is_public:
+        text_parts.append(
+            "<b>Ссылка для входа:</b>\n"
+            f"<code>{web_url}</code>\n"
+        )
+    else:
+        text_parts.append(
+            "<b>Ссылка для входа на ПК:</b>\n"
+            f"<code>{web_url}</code>\n\n"
+            "<b>Ссылка для входа с телефона (в домашней Wi-Fi сети):</b>\n"
+            f"<code>{lan_url}</code>\n"
+        )
+
+    text_parts.append(
         "<i>Ссылки одноразовые и действуют 30 минут. Нажми на ссылку, чтобы скопировать.</i>"
     )
+    text = "\n".join(text_parts)
 
     buttons = []
     if is_public:

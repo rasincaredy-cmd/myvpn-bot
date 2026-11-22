@@ -67,11 +67,11 @@ def is_valid_button_url(url: str) -> bool:
         if not host or host in ("localhost", "127.0.0.1", "0.0.0.0"):
             return False
         try:
-            ipaddress.ip_address(host)
-            return False
+            ip = ipaddress.ip_address(host)
+            return not (ip.is_private or ip.is_loopback or ip.is_reserved or ip.is_unspecified)
         except ValueError:
             pass
-        return "." in host
+        return "." in host and host != "localhost"
     except Exception:
         return False
 

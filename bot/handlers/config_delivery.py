@@ -46,7 +46,10 @@ async def build_conf_for_peer(
     server = await repo.get_server(session, peer.server_id)
     if server is None:
         return None
-    params = amnezia.AmneziaParams.from_json(server.awg_params_json)
+    params = (
+        amnezia.AmneziaParams.from_json(server.awg_params_json)
+        if server.awg_params_json else amnezia.generate_amnezia_params()
+    )
     conf = amnezia.build_peer_conf(
         peer_private_key=decrypt(peer.private_key_enc),
         peer_ip=peer.ip,

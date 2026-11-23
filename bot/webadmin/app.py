@@ -97,3 +97,14 @@ def add_webadmin_routes(app: web.Application) -> None:
     app.router.add_get("/admin/api/tariffs", auth.require_admin(views_api.api_tariffs_get))
     app.router.add_get("/admin/api/audit", auth.require_admin(views_api.api_audit_list))
     app.router.add_post("/admin/api/broadcast", auth.require_admin(views_api.api_broadcast_send))
+
+    # Устройства и обходы юзеров
+    app.router.add_post("/admin/api/users/{id}/devices/{device_id}/send_config", auth.require_admin(views_api.api_user_device_send_config))
+    app.router.add_post("/admin/api/users/{id}/devices/{device_id}/revoke", auth.require_admin(views_api.api_user_device_revoke))
+    app.router.add_post("/admin/api/users/{id}/bypass/{access_id}/revoke", auth.require_admin(views_api.api_user_bypass_revoke))
+
+    # Обслуживание серверов
+    app.router.add_get("/admin/api/servers/{id}/harden_check", auth.require_admin(views_api.api_server_harden_check))
+    app.router.add_post("/admin/api/servers/{id}/sync_peers", auth.require_admin(views_api.api_server_sync_peers))
+    app.router.add_post("/admin/api/servers/{id}/wdtt_update", auth.require_admin(views_api.api_server_wdtt_update))
+    app.router.add_get("/admin/api/servers/{id}/wdtt_probe", auth.require_admin(views_api.api_server_wdtt_probe))

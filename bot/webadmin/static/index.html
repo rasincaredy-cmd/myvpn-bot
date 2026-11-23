@@ -302,26 +302,66 @@
       </div>
 
       <!-- Quick Actions -->
-      <div style="display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px;">
-        <button class="btn btn-secondary btn-sm" onclick="quickExtendSub(30)">+30 дней</button>
-        <button class="btn btn-secondary btn-sm" onclick="quickExtendSub(90)">+90 дней</button>
+      <div style="display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px;">
+        <button class="btn btn-secondary btn-sm" onclick="quickExtendSub(30)">+30д</button>
+        <button class="btn btn-secondary btn-sm" onclick="quickExtendSub(90)">+90д</button>
+        <button class="btn btn-secondary btn-sm" onclick="quickSubAction('gift_month')">🎁 Месяц</button>
+        <button class="btn btn-secondary btn-sm" onclick="quickSubAction('give_trial')">✨ Триал (7д)</button>
+        <button class="btn btn-secondary btn-sm" onclick="quickSubAction('set_perpetual')">♾️ Бессрочно</button>
+        <button class="btn btn-secondary btn-sm" onclick="quickSubAction('turn_off')">⛔ Отключить</button>
+        <button class="btn btn-secondary btn-sm" onclick="quickSetLimits()">📱 Лимиты</button>
+        <button class="btn btn-secondary btn-sm" onclick="quickSubAction('reset_traffic')">📊 Сброс трафика</button>
         <button class="btn btn-secondary btn-sm" onclick="quickUserAction('adjust_balance')">💰 Баланс</button>
-        <button class="btn btn-secondary btn-sm" onclick="quickUserAction('toggle_vip')">⭐ VIP / Друг</button>
+        <button class="btn btn-secondary btn-sm" onclick="quickUserAction('toggle_vip')">⭐ VIP</button>
         <button class="btn btn-secondary btn-sm" onclick="quickUserAction('toggle_block')">🚫 Блок</button>
         <button class="btn btn-secondary btn-sm" onclick="quickUserAction('rotate_sub_token')">🔄 Сменить ссылку</button>
       </div>
 
       <!-- Lists -->
-      <div style="border-top: 1px solid var(--border-subtle); padding-top: 12px; max-height: 200px; overflow-y: auto;">
-        <h4 style="font-size: 12px; color: var(--text-muted); text-transform: uppercase; margin-bottom: 6px;">Устройства и конфиги</h4>
-        <ul id="user-devices-list" style="list-style: none; font-size: 12px; margin-bottom: 8px;"></ul>
-        <ul id="user-peers-list" style="list-style: none; font-size: 12px; margin-bottom: 8px;"></ul>
-        <ul id="user-bypass-list" style="list-style: none; font-size: 12px;"></ul>
+      <div style="border-top: 1px solid var(--border-subtle); padding-top: 12px; max-height: 250px; overflow-y: auto;">
+        <h4 style="font-size: 12px; color: var(--text-muted); text-transform: uppercase; margin-bottom: 8px;">Устройства VPN (AmneziaWG)</h4>
+        <div id="user-devices-list" style="margin-bottom: 12px;"></div>
+
+        <h4 style="font-size: 12px; color: var(--text-muted); text-transform: uppercase; margin-bottom: 8px;">Резервные подключения (qWDTT)</h4>
+        <div id="user-bypass-list"></div>
       </div>
 
       <div style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--border-subtle); padding-top: 16px; margin-top: 16px;">
         <button class="btn btn-danger btn-sm" onclick="wipeUserConfirm()">🗑 Полностью стереть из БД</button>
         <button class="btn btn-secondary" onclick="closeModal('modal-user')">Закрыть</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Server Hardening Modal -->
+  <div id="modal-server-harden" class="modal-overlay">
+    <div class="modal" style="max-width: 600px;">
+      <div class="modal-header">
+        <h3 class="modal-title" id="harden-modal-title">Проверка безопасности сервера</h3>
+        <button class="close-btn" onclick="closeModal('modal-server-harden')">&times;</button>
+      </div>
+      <div id="harden-modal-content">
+        <div style="text-align: center; padding: 20px;">⏳ Опрашиваю сервер...</div>
+      </div>
+      <div style="display: flex; justify-content: flex-end; margin-top: 16px;">
+        <button class="btn btn-secondary" onclick="closeModal('modal-server-harden')">Закрыть</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Server Sync Peers Modal -->
+  <div id="modal-server-peers" class="modal-overlay">
+    <div class="modal" style="max-width: 600px;">
+      <div class="modal-header">
+        <h3 class="modal-title" id="sync-peers-modal-title">Сверка пиров интерфейса awg0</h3>
+        <button class="close-btn" onclick="closeModal('modal-server-peers')">&times;</button>
+      </div>
+      <div id="sync-peers-modal-content">
+        <div style="text-align: center; padding: 20px;">⏳ Считываю данные интерфейса...</div>
+      </div>
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 16px;">
+        <button class="btn btn-danger btn-sm" id="btn-clean-orphans" style="display: none;" onclick="runCleanOrphans()">🧹 Удалить осиротевшие пиры</button>
+        <button class="btn btn-secondary" onclick="closeModal('modal-server-peers')">Закрыть</button>
       </div>
     </div>
   </div>

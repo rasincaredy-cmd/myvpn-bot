@@ -83,17 +83,12 @@ def wdtt_user_list_kb(
     return kb.as_markup()
 
 
-def wdtt_user_card_kb(access_id: int, can_get: bool) -> InlineKeyboardMarkup:
+def wdtt_user_card_kb(access_id: int, can_get: bool, show_unbind: bool = False) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     if can_get:
         kb.button(text="🔗 Получить ссылку", callback_data=f"{CB_WDTT}:mylink:{access_id}")
-        # Отвязка от устройства — рядом со ссылкой, а не в поддержке: человек с
-        # новым телефоном видит от приложения «неверный пароль» и первым делом
-        # идёт именно сюда, за ссылкой.
-        # Подпись короткая: длинная обрезается на телефоне многоточием, и
-        # человек не видит, что кнопка вообще про смену устройства.
-        kb.button(text="📱 Сменить устройство",
-                  callback_data=f"{CB_WDTT}:myunbind:{access_id}")
+        if show_unbind:
+            kb.button(text="📱 Сменить устройство", callback_data=f"{CB_WDTT}:myunbind:{access_id}")
         kb.button(text="🗑 Удалить", callback_data=f"{CB_WDTT}:myrevoke:{access_id}",
                   style="danger")
     kb.button(text="‹ Подключения", callback_data=f"{CB_WDTT}:my")

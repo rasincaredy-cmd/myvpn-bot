@@ -399,12 +399,32 @@ async def api_user_subscription(request: web.Request) -> web.Response:
         if user is None:
             raise web.HTTPNotFound(text="User not found")
 
-        max_dev = int(body["max_devices"]) if "max_devices" in body else None
-        max_byp = int(body["max_bypass"]) if "max_bypass" in body else None
+        max_dev = int(body["max_devices"]) if "max_devices" in body and body["max_devices"] is not None else None
+        max_byp = int(body["max_bypass"]) if "max_bypass" in body and body["max_bypass"] is not None else None
 
         touch_expires = False
         expires_at = None
-        if "add_days" in body:
+        action = body.get("action")
+
+        if action == "gift_month":
+            touch_expires = True
+            mark_paid = True
+            current_exp = as_utc(user.sub_expires_at) if user.sub_expires_at else now
+            base_time = max(now, current_exp)
+            expires_at = base_time + timedelta(days=30)
+        elif action == "give_trial":
+            touch_expires = True
+            mark_trial = True
+            max_dev = 1
+            max_byp = 1
+            expires_at = now + timedelta(days=7)
+        elif action == "turn_off":
+            touch_expires = True
+            expires_at = now - timedelta(seconds=1)
+        elif action == "set_perpetual":
+            touch_expires = True
+            expires_at = None
+        elif "add_days" in body:
             touch_expires = True
             days = int(body["add_days"])
             current_exp = as_utc(user.sub_expires_at) if user.sub_expires_at else now
@@ -417,9 +437,9 @@ async def api_user_subscription(request: web.Request) -> web.Response:
                 # ISO формат
                 expires_at = datetime.fromisoformat(raw_exp.replace("Z", "+00:00"))
 
-        reset_traffic = bool(body.get("reset_traffic", False))
-        mark_paid = bool(body.get("mark_paid", False))
-        mark_trial = bool(body.get("mark_trial", False))
+        reset_traffic = bool(body.get("reset_traffic", False)) or action == "reset_traffic"
+        mark_paid = bool(body.get("mark_paid", False)) or action == "gift_month"
+        mark_trial = bool(body.get("mark_trial", False)) or action == "give_trial"
 
         await repo.set_subscription(
             session,
@@ -645,3 +665,276 @@ async def api_broadcast_send(request: web.Request) -> web.Response:
 
     asyncio.create_task(_send_all())
     return web.json_response({"ok": True, "target_count": len(users)})
+
+
+async def api_user_device_send_config(request: web.Request) -> web.Response:
+    """Отправка .conf файла устройства в Telegram пользователю или выдача содержимого."""
+    user_id = int(request.match_info["id"])
+    device_id = int(request.match_info["device_id"])
+    admin_id = request.get("admin_id", 0)
+
+    from aiogram.types import BufferedInputFile
+    from bot.handlers.config_delivery import build_conf_for_peer, conf_filename
+    from bot.loader import bot as tg_bot
+
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+    peer_id_req = body.get("peer_id")
+    send_to_user = bool(body.get("send_to_user", True))
+
+    async with session_scope() as session:
+        user = await session.get(User, user_id)
+        if user is None:
+            raise web.HTTPNotFound(text="User not found")
+        device = await repo.get_device(session, device_id)
+        if device is None or device.user_id != user.id:
+            raise web.HTTPNotFound(text="Device not found")
+
+        peers = await repo.list_peers_for_device(session, device.id)
+        active_peers = [
+            p for p in peers
+            if p.status == PeerStatus.ACTIVE or (hasattr(p.status, "value") and p.status.value == "ACTIVE") or str(p.status) == "ACTIVE"
+        ]
+        if not active_peers:
+            return web.json_response({"error": "У устройства нет активных локаций (пиров)"}, status=400)
+
+        target_peer = None
+        if peer_id_req:
+            target_peer = next((p for p in active_peers if p.id == int(peer_id_req)), None)
+        if target_peer is None:
+            target_peer = active_peers[0]
+
+        built = await build_conf_for_peer(session, target_peer)
+        if built is None:
+            return web.json_response({"error": "Сервер локации не найден"}, status=404)
+        server, conf_text = built
+        fname = conf_filename(server, device.label)
+
+        sent = False
+        if send_to_user:
+            try:
+                doc = BufferedInputFile(conf_text.encode("utf-8"), filename=fname)
+                await tg_bot.send_document(
+                    user.tg_id,
+                    doc,
+                    caption=f"📄 Файл конфигурации для устройства <b>{device.label}</b> ({server.location or server.name}).",
+                )
+                sent = True
+            except Exception as e:
+                logger.error("Failed to send config to user {}: {}", user.tg_id, e)
+
+        await repo.log_action(
+            session,
+            AuditAction.CONFIG_ISSUED,
+            actor_tg_id=admin_id if admin_id else None,
+            actor_is_admin=True,
+            target_user_id=user.id,
+            target_type="device",
+            target_id=device.id,
+            details=f"Админ через веб-панель запросил конфиг «{device.label}» ({fname})" + (" и отправил в TG юзеру" if sent else ""),
+        )
+        await session.commit()
+
+    return web.json_response({
+        "ok": True,
+        "filename": fname,
+        "sent_to_user": sent,
+        "conf": conf_text,
+    })
+
+
+async def api_user_device_revoke(request: web.Request) -> web.Response:
+    """Удаление (отзыв) устройства пользователя."""
+    user_id = int(request.match_info["id"])
+    device_id = int(request.match_info["device_id"])
+    admin_id = request.get("admin_id", 0)
+
+    from bot.services import teardown
+
+    async with session_scope() as session:
+        user = await session.get(User, user_id)
+        if user is None:
+            raise web.HTTPNotFound(text="User not found")
+        device = await repo.get_device(session, device_id)
+        if device is None or device.user_id != user.id:
+            raise web.HTTPNotFound(text="Device not found")
+
+        label = device.label
+        await teardown.delete_device(
+            session,
+            device,
+            actor_tg_id=admin_id if admin_id else None,
+            actor_is_admin=True,
+            details=f"Устройство «{label}» удалено админом через веб-панель",
+        )
+        await session.commit()
+
+    return web.json_response({"ok": True, "label": label})
+
+
+async def api_user_bypass_revoke(request: web.Request) -> web.Response:
+    """Удаление (отзыв) резервного подключения (обхода) пользователя."""
+    user_id = int(request.match_info["id"])
+    access_id = int(request.match_info["access_id"])
+    admin_id = request.get("admin_id", 0)
+
+    from bot.services import teardown
+
+    async with session_scope() as session:
+        user = await session.get(User, user_id)
+        if user is None:
+            raise web.HTTPNotFound(text="User not found")
+        access = await repo.get_wdtt_access(session, access_id)
+        if access is None or access.user_id != user.id:
+            raise web.HTTPNotFound(text="Bypass access not found")
+
+        label = access.label
+        await teardown.revoke_bypass(
+            session,
+            access,
+            actor_tg_id=admin_id if admin_id else None,
+            actor_is_admin=True,
+            details=f"Обход БС «{label}» удалён админом через веб-панель",
+        )
+        await session.commit()
+
+    return web.json_response({"ok": True, "label": label})
+
+
+async def api_server_harden_check(request: web.Request) -> web.Response:
+    """Проверка защищённости сервера (hardening) и таймера сторожа."""
+    server_id = int(request.match_info["id"])
+    from bot.services import hardening
+    from bot.services.ssh import SSHClient, SSHError
+
+    async with session_scope() as session:
+        server = await repo.get_server(session, server_id)
+        if server is None:
+            raise web.HTTPNotFound(text="Server not found")
+
+        try:
+            async with SSHClient(repo.creds_from_server(server)) as ssh:
+                report = await hardening.check(ssh)
+                watchdog_res = await ssh.run("systemctl is-active myvpn-watchdog.timer")
+                watchdog_active = (watchdog_res.stdout or "").strip() == "active"
+        except SSHError as exc:
+            return web.json_response({"error": f"SSH connection failed: {exc}"}, status=502)
+
+    return web.json_response({
+        "ok": True,
+        "compliant": report.compliant,
+        "passed": report.ok,
+        "failed": report.failed,
+        "raw": report.raw,
+        "watchdog_active": watchdog_active,
+    })
+
+
+async def api_server_sync_peers(request: web.Request) -> web.Response:
+    """Сверка активных пиров интерфейса awg0 с БД и удаление осиротевших пиров."""
+    server_id = int(request.match_info["id"])
+    clean = False
+    try:
+        body = await request.json()
+        clean = bool(body.get("clean", False))
+    except Exception:
+        pass
+
+    from bot.services.ssh import SSHClient, SSHError
+
+    async with session_scope() as session:
+        server = await repo.get_server(session, server_id)
+        if server is None:
+            raise web.HTTPNotFound(text="Server not found")
+
+        db_peers = await repo.list_peers_for_server(session, server.id)
+        db_pubkeys = {
+            p.public_key for p in db_peers
+            if p.status == PeerStatus.ACTIVE or (hasattr(p.status, "value") and p.status.value == "ACTIVE") or str(p.status) == "ACTIVE"
+        }
+
+        try:
+            async with SSHClient(repo.creds_from_server(server)) as ssh:
+                server_peers = await amnezia.get_peer_traffic(ssh)
+                server_pubkeys = {p.public_key for p in server_peers}
+
+                orphans = list(server_pubkeys - db_pubkeys)
+                missing = list(db_pubkeys - server_pubkeys)
+
+                cleaned_count = 0
+                if clean and orphans:
+                    for pub in orphans:
+                        try:
+                            await amnezia.remove_peer_on_server(ssh, public_key=pub)
+                            cleaned_count += 1
+                        except Exception as e:
+                            logger.warning("Failed to remove orphan peer {}: {}", pub, e)
+        except SSHError as exc:
+            return web.json_response({"error": f"SSH connection failed: {exc}"}, status=502)
+
+    return web.json_response({
+        "ok": True,
+        "server_peers_count": len(server_peers),
+        "db_peers_count": len(db_peers),
+        "orphans": orphans,
+        "missing": missing,
+        "cleaned_count": cleaned_count,
+    })
+
+
+async def api_server_wdtt_update(request: web.Request) -> web.Response:
+    """Обновление бинарника резервного подключения (qWDTT) на ноде."""
+    server_id = int(request.match_info["id"])
+    from bot.services import wdtt_update
+    from bot.services.ssh import SSHClient, SSHError
+
+    async with session_scope() as session:
+        server = await repo.get_server(session, server_id)
+        if server is None:
+            raise web.HTTPNotFound(text="Server not found")
+
+        try:
+            async with SSHClient(repo.creds_from_server(server)) as ssh:
+                result = await wdtt_update.update(ssh)
+        except SSHError as exc:
+            return web.json_response({"error": f"SSH connection failed: {exc}"}, status=502)
+
+    return web.json_response({
+        "ok": result.ok,
+        "detail": result.detail,
+        "rolled_back": result.rolled_back,
+    })
+
+
+async def api_server_wdtt_probe(request: web.Request) -> web.Response:
+    """Опрос статуса и версии qWDTT на ноде."""
+    server_id = int(request.match_info["id"])
+    from bot.services import wdtt_update
+    from bot.services.ssh import SSHClient, SSHError
+
+    async with session_scope() as session:
+        server = await repo.get_server(session, server_id)
+        if server is None:
+            raise web.HTTPNotFound(text="Server not found")
+
+        try:
+            async with SSHClient(repo.creds_from_server(server)) as ssh:
+                probe = await wdtt_update.probe(ssh)
+                ref = wdtt_update.reference_sha256()
+        except SSHError as exc:
+            return web.json_response({"error": f"SSH connection failed: {exc}"}, status=502)
+
+    return web.json_response({
+        "ok": True,
+        "installed": probe.installed,
+        "active": probe.active,
+        "socket_ok": probe.socket_ok,
+        "modes_on": probe.modes_on,
+        "short_sha": probe.short,
+        "ref_sha": (ref or "")[:8],
+        "is_latest": bool(ref and probe.sha256 == ref),
+        "accesses": probe.accesses,
+    })

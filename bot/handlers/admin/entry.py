@@ -74,11 +74,20 @@ async def cmd_admin_web_entry(event: Message | CallbackQuery, state: FSMContext)
 
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
 
-    if isinstance(event, CallbackQuery):
-        await event.message.edit_text(text, reply_markup=kb)
-        await event.answer()
-    else:
-        await event.answer(text, reply_markup=kb)
+    try:
+        if isinstance(event, CallbackQuery):
+            await event.message.edit_text(text, reply_markup=kb)
+            await event.answer()
+        else:
+            await event.answer(text, reply_markup=kb)
+    except Exception:
+        # Надёжный фоллбэк: если Telegram API отклонил URL кнопки, шлём без неё
+        safe_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="‹ Меню", callback_data=f"{CB_MENU}:open")]])
+        if isinstance(event, CallbackQuery):
+            await event.message.edit_text(text, reply_markup=safe_kb)
+            await event.answer()
+        else:
+            await event.answer(text, reply_markup=safe_kb)
 
 
 # Алиас для обратной совместимости импортов

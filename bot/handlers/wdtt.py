@@ -219,10 +219,6 @@ async def cb_wdtt_my_open(call: CallbackQuery, session: AsyncSession) -> None:
             "\n\n⏸ <i>Отключён до продления подписки. Прежняя ссылка оживёт "
             "при продлении сама — удалять доступ не нужно.</i>"
         )
-    else:
-        # Про отвязку человек должен прочитать ДО того, как решит, что ссылка
-        # битая: приложение говорит «неверный пароль», а дело в устройстве.
-        text += t.wdtt_unbind_hint
     await call.message.edit_text(
         text, reply_markup=wdtt_user_card_kb(access.id, can_get=access.status == PeerStatus.ACTIVE)
     )

@@ -207,4 +207,129 @@ async def test_api_user_subscription_revokes_devices_when_expired(session: Async
     assert peer.status == PeerStatus.REVOKED
 
 
+@pytest.mark.asyncio
+async def test_api_user_device_send_config_and_revoke(session: AsyncSession, monkeypatch) -> None:
+    from contextlib import asynccontextmanager
+    from aiohttp.test_utils import make_mocked_request
+    from bot.db.models import Device, Peer, PeerStatus, ServerStatus, User
+    from bot.services import amnezia
+    from bot.services.crypto import encrypt
+    import json
+
+    @asynccontextmanager
+    async def fake_session_scope():
+        yield session
+    monkeypatch.setattr("bot.webadmin.views_api.session_scope", fake_session_scope)
+
+    user = await repo.get_or_create_user(session, tg_id=888005, username="dev_test", full_name="Device Tester")
+    server = await repo.create_server(
+        session, name="s_dev", host="1.1.1.3", wg_port=585,
+        owner_tg_id=111, status=ServerStatus.READY,
+        server_public_key="pub3", server_endpoint="1.1.1.3:585",
+        awg_params_json=amnezia.generate_amnezia_params().to_json(),
+    )
+    device = await repo.create_device(session, user_id=user.id, label="laptop")
+    device.status = PeerStatus.ACTIVE
+    peer = Peer(
+        server_id=server.id, user_id=user.id, device_id=device.id,
+        label="laptop", ip="10.8.0.4", public_key="pp3",
+        private_key_enc=encrypt("priv3"), status=PeerStatus.ACTIVE,
+    )
+    session.add(peer)
+    await session.commit()
+
+    # 1. Send config
+    req_cfg = make_mocked_request(
+        "POST",
+        f"/admin/api/users/{user.id}/devices/{device.id}/send_config",
+        match_info={"id": str(user.id), "device_id": str(device.id)},
+    )
+    req_cfg["admin_id"] = 111
+    async def fake_json():
+        return {"send_to_user": False}
+    req_cfg.json = fake_json
+
+    resp_cfg = await views_api.api_user_device_send_config(req_cfg)
+    assert resp_cfg.status == 200
+    data_cfg = json.loads(resp_cfg.text)
+    assert data_cfg["ok"] is True
+    assert "Interface" in data_cfg["conf"]
+    assert "laptop" in data_cfg["filename"]
+
+    # 2. Revoke device
+    class FakeSSH:
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *args):
+            pass
+    monkeypatch.setattr("bot.services.teardown.SSHClient", lambda *a, **k: FakeSSH())
+    async def fake_remove_peer(*args, **kwargs):
+        pass
+    monkeypatch.setattr("bot.services.amnezia.remove_peer_on_server", fake_remove_peer)
+
+    req_rev = make_mocked_request(
+        "POST",
+        f"/admin/api/users/{user.id}/devices/{device.id}/revoke",
+        match_info={"id": str(user.id), "device_id": str(device.id)},
+    )
+    req_rev["admin_id"] = 111
+    resp_rev = await views_api.api_user_device_revoke(req_rev)
+    assert resp_rev.status == 200
+    data_rev = json.loads(resp_rev.text)
+    assert data_rev["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_api_user_bypass_revoke(session: AsyncSession, monkeypatch) -> None:
+    from contextlib import asynccontextmanager
+    from aiohttp.test_utils import make_mocked_request
+    from bot.db.models import PeerStatus, ServerStatus, WdttAccess
+    import json
+
+    @asynccontextmanager
+    async def fake_session_scope():
+        yield session
+    monkeypatch.setattr("bot.webadmin.views_api.session_scope", fake_session_scope)
+
+    user = await repo.get_or_create_user(session, tg_id=888006, username="bp_test", full_name="Bypass Tester")
+    server = await repo.create_server(
+        session, name="s_bp", host="1.1.1.4", wg_port=585,
+        owner_tg_id=111, status=ServerStatus.READY,
+        server_public_key="pub4", server_endpoint="1.1.1.4:585",
+        wdtt_enabled=True,
+    )
+    from bot.services.crypto import encrypt
+    access = await repo.create_wdtt_access(
+        session,
+        user_id=user.id,
+        server_id=server.id,
+        label="bp_phone",
+        platform="android",
+        uri_enc=encrypt("uri"),
+        password_enc=encrypt("pass"),
+        expires_at=None,
+    )
+    access.status = PeerStatus.ACTIVE
+    await session.commit()
+
+    async def fake_remove_bypass(*args, **kwargs):
+        return True
+    monkeypatch.setattr("bot.services.teardown._remove_bypass_on_server", fake_remove_bypass)
+
+    req = make_mocked_request(
+        "POST",
+        f"/admin/api/users/{user.id}/bypass/{access.id}/revoke",
+        match_info={"id": str(user.id), "access_id": str(access.id)},
+    )
+    req["admin_id"] = 111
+    resp = await views_api.api_user_bypass_revoke(req)
+    assert resp.status == 200
+    data = json.loads(resp.text)
+    assert data["ok"] is True
+    # Проверяем, что запись удалена
+    check = await repo.get_wdtt_access(session, access.id)
+    assert check is None
+
+
+
 

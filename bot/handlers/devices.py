@@ -617,10 +617,54 @@ async def cb_sub_link(call: CallbackQuery, session: AsyncSession) -> None:
     kb = InlineKeyboardBuilder()
     if is_valid_button_url(sub_url):
         kb.button(text="🌐 Открыть в браузере", url=f"{sub_url}/info")
+    kb.button(text="🔄 Сменить ссылку", callback_data=f"{CB_SUB}:rotate")
     kb.button(text="‹ Подписка", callback_data=f"{CB_SUB}:my")
     kb.button(text="‹ Меню", callback_data=f"{CB_MENU}:open")
-    kb.adjust(1 if is_valid_button_url(sub_url) else 0, 2)
+    kb.adjust(1 if is_valid_button_url(sub_url) else 0, 1, 2)
 
     await call.message.edit_text(text, reply_markup=kb.as_markup())
     await call.answer()
+
+
+@router.callback_query(F.data == f"{CB_SUB}:rotate")
+async def cb_sub_rotate(call: CallbackQuery, session: AsyncSession) -> None:
+    """Ротация персональной ссылки на подписку."""
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+    from bot.config import settings
+    from bot.utils.validators import is_valid_button_url
+
+    user = await repo.get_or_create_user(
+        session,
+        tg_id=call.from_user.id,
+        username=call.from_user.username,
+        full_name=call.from_user.full_name,
+    )
+    new_token = await repo.rotate_sub_token(session, user.id)
+
+    base = settings.miniapp_url.rstrip("/") if settings.miniapp_url else "http://localhost:8080"
+    if "/app" in base:
+        base = base.replace("/app", "")
+    sub_url = f"{base}/sub/{new_token}"
+
+    text_lines = [
+        "🔄 <b>Ваша ссылка на подписку обновлена!</b>\n",
+        f"<code>{sub_url}</code>\n",
+        "⚠️ <i>Прежняя ссылка аннулирована. Вставьте новую ссылку в ваше приложение Moschata VPN или Amnezia Clean.</i>\n",
+        "💡 <i>Нажмите на ссылку, чтобы скопировать её.</i>\n\n",
+        "Все доступные локации VPN и режимы <b>Резервного подключения</b> "
+        "добавятся мгновенно и будут автоматически обновляться!"
+    ]
+    text = "\n".join(text_lines)
+
+    kb = InlineKeyboardBuilder()
+    if is_valid_button_url(sub_url):
+        kb.button(text="🌐 Открыть в браузере", url=f"{sub_url}/info")
+    kb.button(text="🔄 Сменить ещё раз", callback_data=f"{CB_SUB}:rotate")
+    kb.button(text="‹ Подписка", callback_data=f"{CB_SUB}:my")
+    kb.button(text="‹ Меню", callback_data=f"{CB_MENU}:open")
+    kb.adjust(1 if is_valid_button_url(sub_url) else 0, 1, 2)
+
+    await call.message.edit_text(text, reply_markup=kb.as_markup())
+    await call.answer("✅ Ссылка обновлена! Прежняя ссылка больше не действует.", show_alert=True)
+
 

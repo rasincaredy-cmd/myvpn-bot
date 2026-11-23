@@ -173,7 +173,7 @@ class TestButtons:
 
         data = [
             b.callback_data
-            for row in wdtt_user_card_kb(7, can_get=True).inline_keyboard
+            for row in wdtt_user_card_kb(7, can_get=True, show_unbind=True).inline_keyboard
             for b in row
         ]
         assert any(":myunbind:7" in d for d in data)

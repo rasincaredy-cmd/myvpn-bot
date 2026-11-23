@@ -110,7 +110,12 @@ async function loadServers() {
       <td>${wdttBadge}</td>
       <td>${privBadge}</td>
       <td>
-        <button class="btn btn-secondary btn-sm" onclick="openServerModal(${JSON.stringify(s).replace(/"/g, '&quot;')})">⚙️ Настроить</button>
+        <div style="display: flex; flex-wrap: wrap; gap: 4px;">
+          <button class="btn btn-secondary btn-sm" onclick="openServerModal(${JSON.stringify(s).replace(/"/g, '&quot;')})">⚙️ Настройки</button>
+          <button class="btn btn-secondary btn-sm" onclick="checkServerHarden(${s.id}, '${s.name}')">🛡 Защита</button>
+          <button class="btn btn-secondary btn-sm" onclick="syncServerPeers(${s.id}, '${s.name}')">🧹 Пиры</button>
+          ${s.wdtt_enabled ? `<button class="btn btn-secondary btn-sm" onclick="updateServerWdtt(${s.id}, '${s.name}')">⚡ qWDTT</button>` : ''}
+        </div>
       </td>
     `;
     tbody.appendChild(tr);
@@ -216,27 +221,57 @@ async function openUserModal(userId) {
   // Рендер пиров и устройств
   const devList = document.getElementById('user-devices-list');
   devList.innerHTML = '';
-  data.devices.forEach(d => {
-    const li = document.createElement('li');
-    li.innerHTML = `📱 <b>${d.label}</b> (${d.status}) — создан ${d.created_at}`;
-    devList.appendChild(li);
-  });
+  if (!data.devices || data.devices.length === 0) {
+    devList.innerHTML = '<div class="text-muted" style="font-size: 12px;">Нет добавленных устройств.</div>';
+  } else {
+    data.devices.forEach(d => {
+      const card = document.createElement('div');
+      card.className = 'item-card';
+      const isActive = d.status === 'ACTIVE' || d.status === 'active';
+      const statusBadge = isActive
+        ? '<span class="badge badge-success">Активен</span>'
+        : `<span class="badge badge-subtle">${d.status}</span>`;
 
-  const peerList = document.getElementById('user-peers-list');
-  peerList.innerHTML = '';
-  data.peers.forEach(p => {
-    const li = document.createElement('li');
-    li.innerHTML = `🔑 <b>${p.label}</b> | IP: ${p.ip} | Трафик: ${p.traffic_used_mb} МБ (${p.status})`;
-    peerList.appendChild(li);
-  });
+      card.innerHTML = `
+        <div class="item-info">
+          <div>📱 <b>${d.label}</b> ${statusBadge}</div>
+          <small class="text-muted">Создан: ${d.created_at}</small>
+        </div>
+        <div class="item-actions">
+          <button class="btn btn-secondary btn-sm" onclick="sendDeviceConfig(${data.id}, ${d.id}, '${d.label}')" title="Отправить .conf файл пользователю в Telegram">📤 В TG</button>
+          <button class="btn btn-secondary btn-sm" onclick="downloadDeviceConfig(${data.id}, ${d.id}, '${d.label}')" title="Скачать файл конфигурации">📥 .conf</button>
+          <button class="btn btn-danger btn-sm" onclick="revokeDevice(${data.id}, ${d.id}, '${d.label}')" title="Удалить устройство">🗑</button>
+        </div>
+      `;
+      devList.appendChild(card);
+    });
+  }
 
   const bypassList = document.getElementById('user-bypass-list');
   bypassList.innerHTML = '';
-  data.bypass.forEach(b => {
-    const li = document.createElement('li');
-    li.innerHTML = `🛡 <b>${b.label}</b> (${b.platform || 'all'}) | Трафик: ${b.traffic_used_mb} МБ (${b.status})`;
-    bypassList.appendChild(li);
-  });
+  if (!data.bypass || data.bypass.length === 0) {
+    bypassList.innerHTML = '<div class="text-muted" style="font-size: 12px;">Нет резервных подключений.</div>';
+  } else {
+    data.bypass.forEach(b => {
+      const card = document.createElement('div');
+      card.className = 'item-card';
+      const isActive = b.status === 'ACTIVE' || b.status === 'active';
+      const statusBadge = isActive
+        ? '<span class="badge badge-success">Активен</span>'
+        : `<span class="badge badge-subtle">${b.status}</span>`;
+
+      card.innerHTML = `
+        <div class="item-info">
+          <div>🛡 <b>${b.label}</b> (${b.platform || 'all'}) ${statusBadge}</div>
+          <small class="text-muted">Трафик: ${b.traffic_used_mb} МБ</small>
+        </div>
+        <div class="item-actions">
+          <button class="btn btn-danger btn-sm" onclick="revokeBypass(${data.id}, ${b.id}, '${b.label}')" title="Удалить подключение обхода">🗑 Удалить</button>
+        </div>
+      `;
+      bypassList.appendChild(card);
+    });
+  }
 
   openModal('modal-user');
 }
@@ -278,6 +313,227 @@ async function quickExtendSub(days) {
     alert(msg);
     openUserModal(userId);
     loadUsers();
+  }
+}
+
+async function quickSubAction(action) {
+  const userId = document.getElementById('user-card-id').value;
+  const labels = {
+    gift_month: 'подарить 30 дней подписки',
+    give_trial: 'выдать триал на 7 дней',
+    set_perpetual: 'сделать подписку бессрочной',
+    turn_off: 'отключить подписку и отозвать доступы',
+    reset_traffic: 'сбросить счётчик трафика'
+  };
+
+  if (!confirm(`Подтвердите действие: ${labels[action] || action}?`)) return;
+
+  const res = await api(`/users/${userId}/subscription`, {
+    method: 'POST',
+    body: JSON.stringify({ action })
+  });
+
+  if (res && res.ok) {
+    let msg = 'Подписка успешно обновлена!';
+    if (res.revived && (res.revived.devices || res.revived.bypass)) {
+      msg += ` Восстановлено: устройств ${res.revived.devices}, обходов ${res.revived.bypass}.`;
+    }
+    alert(msg);
+    openUserModal(userId);
+    loadUsers();
+  } else {
+    alert(res && res.error ? res.error : 'Произошла ошибка при изменении подписки');
+  }
+}
+
+async function quickSetLimits() {
+  const userId = document.getElementById('user-card-id').value;
+  const devStr = prompt('Максимум устройств (AmneziaWG, 1-10):', '2');
+  if (devStr === null) return;
+  const bypStr = prompt('Максимум обходов БС (qWDTT, 0-10):', '1');
+  if (bypStr === null) return;
+
+  const maxDev = parseInt(devStr, 10);
+  const maxByp = parseInt(bypStr, 10);
+
+  const res = await api(`/users/${userId}/subscription`, {
+    method: 'POST',
+    body: JSON.stringify({
+      max_devices: isNaN(maxDev) ? null : maxDev,
+      max_bypass: isNaN(maxByp) ? null : maxByp
+    })
+  });
+
+  if (res && res.ok) {
+    alert('Лимиты успешно обновлены!');
+    openUserModal(userId);
+    loadUsers();
+  }
+}
+
+async function sendDeviceConfig(userId, deviceId, label) {
+  if (!confirm(`Отправить .conf файл для «${label}» пользователю в Telegram?`)) return;
+  const res = await api(`/users/${userId}/devices/${deviceId}/send_config`, {
+    method: 'POST',
+    body: JSON.stringify({ send_to_user: true })
+  });
+  if (res && res.ok) {
+    if (res.sent_to_user) {
+      alert(`✅ Конфиг «${res.filename}» успешно отправлен в Telegram юзеру!`);
+    } else {
+      alert(`⚠️ Не удалось отправить сообщение в Telegram. Конфиг сформирован: ${res.filename}`);
+    }
+  } else {
+    alert(res && res.error ? res.error : 'Ошибка отправки конфига');
+  }
+}
+
+async function downloadDeviceConfig(userId, deviceId, label) {
+  const res = await api(`/users/${userId}/devices/${deviceId}/send_config`, {
+    method: 'POST',
+    body: JSON.stringify({ send_to_user: false })
+  });
+  if (res && res.ok && res.conf) {
+    const blob = new Blob([res.conf], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = res.filename || `${label}.conf`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } else {
+    alert(res && res.error ? res.error : 'Не удалось получить текст конфигурации');
+  }
+}
+
+async function revokeDevice(userId, deviceId, label) {
+  if (!confirm(`Вы действительно хотите удалить устройство «${label}»? Пиры на серверах будут сняты.`)) return;
+  const res = await api(`/users/${userId}/devices/${deviceId}/revoke`, { method: 'POST' });
+  if (res && res.ok) {
+    alert(`Устройство «${label}» удалено!`);
+    openUserModal(userId);
+    loadUsers();
+  } else {
+    alert(res && res.error ? res.error : 'Ошибка удаления устройства');
+  }
+}
+
+async function revokeBypass(userId, accessId, label) {
+  if (!confirm(`Вы действительно хотите отозвать резервное подключение «${label}»?`)) return;
+  const res = await api(`/users/${userId}/bypass/${accessId}/revoke`, { method: 'POST' });
+  if (res && res.ok) {
+    alert(`Подключение «${label}» отозвано!`);
+    openUserModal(userId);
+    loadUsers();
+  } else {
+    alert(res && res.error ? res.error : 'Ошибка отзыва подключения');
+  }
+}
+
+// ── Server Maintenance ─────────────────────────────────────
+let currentServerIdForSync = null;
+
+async function checkServerHarden(serverId, serverName) {
+  document.getElementById('harden-modal-title').innerText = `Защита: ${serverName} (#${serverId})`;
+  document.getElementById('harden-modal-content').innerHTML = '<div style="text-align: center; padding: 20px;">⏳ Выполняю аудит безопасности через SSH...</div>';
+  openModal('modal-server-harden');
+
+  const res = await api(`/servers/${serverId}/harden_check`);
+  if (!res) {
+    document.getElementById('harden-modal-content').innerHTML = '<div style="color: var(--danger); padding: 12px;">Ошибка подключения к серверу</div>';
+    return;
+  }
+
+  const statusColor = res.compliant ? 'var(--success)' : 'var(--warning)';
+  const statusText = res.compliant ? '✅ Соответствует эталону' : '⚠️ Обнаружены несоответствия';
+  const watchdogBadge = res.watchdog_active
+    ? '<span class="badge badge-success">● Активен</span>'
+    : '<span class="badge badge-danger">● Не запущен</span>';
+
+  let checksHtml = '';
+  if (res.passed && res.passed.length > 0) {
+    checksHtml += '<h4 style="font-size: 12px; color: var(--success); margin: 12px 0 6px;">Пройденные проверки:</h4><ul style="padding-left: 18px; font-size: 12px;">';
+    res.passed.forEach(p => { checksHtml += `<li>${p}</li>`; });
+    checksHtml += '</ul>';
+  }
+  if (res.failed && res.failed.length > 0) {
+    checksHtml += '<h4 style="font-size: 12px; color: var(--danger); margin: 12px 0 6px;">Замечания / несоответствия:</h4><ul style="padding-left: 18px; font-size: 12px;">';
+    res.failed.forEach(f => { checksHtml += `<li><b>${f}</b></li>`; });
+    checksHtml += '</ul>';
+  }
+
+  document.getElementById('harden-modal-content').innerHTML = `
+    <div style="font-size: 14px; margin-bottom: 8px;">Статус: <b style="color: ${statusColor};">${statusText}</b></div>
+    <div style="font-size: 13px; margin-bottom: 12px;">Сторож за машиной бота (Watchdog Timer): ${watchdogBadge}</div>
+    ${checksHtml}
+  `;
+}
+
+async function syncServerPeers(serverId, serverName) {
+  currentServerIdForSync = serverId;
+  document.getElementById('sync-peers-modal-title').innerText = `Сверка пиров: ${serverName} (#${serverId})`;
+  document.getElementById('sync-peers-modal-content').innerHTML = '<div style="text-align: center; padding: 20px;">⏳ Опрашиваю интерфейс awg0 через SSH...</div>';
+  document.getElementById('btn-clean-orphans').style.display = 'none';
+  openModal('modal-server-peers');
+
+  const res = await api(`/servers/${serverId}/sync_peers`, { method: 'POST' });
+  if (!res) {
+    document.getElementById('sync-peers-modal-content').innerHTML = '<div style="color: var(--danger); padding: 12px;">Ошибка подключения к серверу</div>';
+    return;
+  }
+
+  const orphansCount = res.orphans ? res.orphans.length : 0;
+  const missingCount = res.missing ? res.missing.length : 0;
+
+  let detailsHtml = `
+    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 16px; font-size: 13px;">
+      <div>Пиров в awg0 на сервере: <b class="mono">${res.server_peers_count}</b></div>
+      <div>Пиров в базе данных бота: <b class="mono">${res.db_peers_count}</b></div>
+      <div>Осиротевших (нет в БД): <b class="mono" style="color: ${orphansCount ? 'var(--danger)' : 'var(--success)'};">${orphansCount}</b></div>
+      <div>Отсутствующих на сервере: <b class="mono">${missingCount}</b></div>
+    </div>
+  `;
+
+  if (orphansCount > 0) {
+    detailsHtml += `<div style="margin-bottom: 12px; font-size: 12px; color: var(--text-secondary);">
+      Найдены пиры на интерфейсе сервера, которых нет среди активных в базе данных. Вы можете удалить их в 1 клик.
+    </div>`;
+    document.getElementById('btn-clean-orphans').style.display = 'inline-block';
+  } else {
+    detailsHtml += `<div style="color: var(--success); font-size: 13px;">✅ Интерфейс чист: посторонних пиров не обнаружено.</div>`;
+  }
+
+  document.getElementById('sync-peers-modal-content').innerHTML = detailsHtml;
+}
+
+async function runCleanOrphans() {
+  if (!currentServerIdForSync) return;
+  if (!confirm('Удалить все осиротевшие пиры с интерфейса сервера?')) return;
+
+  const res = await api(`/servers/${currentServerIdForSync}/sync_peers`, {
+    method: 'POST',
+    body: JSON.stringify({ clean: true })
+  });
+
+  if (res && res.ok) {
+    alert(`Очистка завершена! Удалено осиротевших пиров: ${res.cleaned_count}`);
+    closeModal('modal-server-peers');
+    loadServers();
+  } else {
+    alert(res && res.error ? res.error : 'Ошибка при очистке пиров');
+  }
+}
+
+async function updateServerWdtt(serverId, serverName) {
+  if (!confirm(`Обновить бинарник qWDTT на ноде «${serverName}» до эталона? Служба обхода будет перезапущена.`)) return;
+  const res = await api(`/servers/${serverId}/wdtt_update`, { method: 'POST' });
+  if (res && res.ok) {
+    alert(`✅ ${serverName}: ${res.detail}`);
+    loadServers();
+  } else {
+    alert(res && res.error ? res.error : `Ошибка обновления: ${res ? res.detail : 'нет ответа'}`);
   }
 }
 

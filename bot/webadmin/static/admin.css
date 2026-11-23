@@ -38,13 +38,18 @@
   padding: 0;
 }
 
+html {
+  height: 100%;
+}
+
 body {
   background: var(--bg-base);
   color: var(--text-primary);
   font-family: var(--font-sans);
   font-size: 14px;
   line-height: 1.5;
-  min-height: 100vh;
+  height: 100%;
+  max-height: 100vh;
   display: flex;
   overflow: hidden;
   -webkit-font-smoothing: antialiased;
@@ -53,12 +58,15 @@ body {
 /* Sidebar */
 aside.sidebar {
   width: 240px;
+  height: 100%;
+  max-height: 100vh;
   background: var(--bg-sidebar);
   border-right: 1px solid var(--border-subtle);
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
   user-select: none;
+  overflow-y: auto;
 }
 
 .brand {
@@ -140,6 +148,10 @@ nav.nav-menu {
 /* Main Area */
 main.content-area {
   flex: 1;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  max-height: 100vh;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -148,6 +160,7 @@ main.content-area {
 
 header.topbar {
   height: 64px;
+  flex-shrink: 0;
   border-bottom: 1px solid var(--border-subtle);
   display: flex;
   align-items: center;
@@ -170,8 +183,27 @@ header.topbar {
 
 .view-container {
   flex: 1;
+  min-height: 0;
+  height: calc(100vh - 64px);
   overflow-y: auto;
+  overflow-x: hidden;
   padding: 28px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-subtle) transparent;
+}
+
+.view-container::-webkit-scrollbar {
+  width: 8px;
+}
+.view-container::-webkit-scrollbar-track {
+  background: transparent;
+}
+.view-container::-webkit-scrollbar-thumb {
+  background: var(--border-subtle);
+  border-radius: 4px;
+}
+.view-container::-webkit-scrollbar-thumb:hover {
+  background: var(--border-hover);
 }
 
 .tab-pane {
@@ -230,8 +262,9 @@ header.topbar {
   background: var(--bg-surface);
   border: 1px solid var(--border-subtle);
   border-radius: 12px;
-  overflow: hidden;
+  overflow-x: auto;
   margin-top: 16px;
+  -webkit-overflow-scrolling: touch;
 }
 
 .table-header-bar {

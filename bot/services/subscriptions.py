@@ -123,6 +123,10 @@ async def build_subscription_data(
                 transport = getattr(acc, "transport", "vk") or "vk"
                 loc_name = srv.location or srv.name
 
+                label_str = (acc.label or "").lower()
+                is_pc = any(w in label_str for w in ("комп", "пк", "pc", "windows", "десктоп", "mac", "ноутбук"))
+                dev_type = "pc" if is_pc else "phone"
+
                 if "openflux://" in full_uri or transport == "yandex":
                     title = f"📄 {loc_name} Резервное подключение Яндекс ({acc.label})"
                     uris.append(full_uri)
@@ -134,6 +138,7 @@ async def build_subscription_data(
                         "password": password,
                         "server": srv.host,
                         "uri": full_uri,
+                        "device": dev_type,
                         "trafficMb": round(acc.traffic_used_bytes / (1024 * 1024), 2),
                     })
                 else:
@@ -148,8 +153,8 @@ async def build_subscription_data(
                     title = f"⚡ {loc_name} Резервное подключение ({acc.label})"
                     uris.append(full_uri)
 
-                    # qWDTT-порт: по умолчанию используем RAW 56003 или DTLS 56000
-                    peer_endpoint = f"{srv.host}:56003"
+                    # qWDTT-порт: стандартный DTLS-порт 56000
+                    peer_endpoint = f"{srv.host}:56000"
                     profiles_json.append({
                         "name": title,
                         "type": "qwdtt",
@@ -158,6 +163,7 @@ async def build_subscription_data(
                         "workers": 9,
                         "port": 9000,
                         "password": password,
+                        "device": dev_type,
                         "trafficMb": round(acc.traffic_used_bytes / (1024 * 1024), 2),
                     })
             except Exception:

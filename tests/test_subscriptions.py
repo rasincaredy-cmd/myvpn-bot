@@ -103,9 +103,10 @@ async def test_build_subscription_payload(session: AsyncSession) -> None:
 
     assert len(sub_data["profiles"]) == 1
     prof = sub_data["profiles"][0]
-    assert "48.102.173.96:56003" in prof["peer"]
+    assert "48.102.173.96:56000" in prof["peer"]
     assert prof["password"] == "pass123"
     assert prof["workers"] == 9
+    assert prof["device"] == "phone"
 
     # 6. Проверяем форматирование ответа
     body_json, ctype_json, headers_json = subscriptions.format_subscription_response(sub_data, "json")

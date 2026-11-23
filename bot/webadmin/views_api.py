@@ -15,6 +15,7 @@ from bot.config import settings
 from bot.db import repo
 from bot.db.base import session_scope
 from bot.db.models import (
+    AuditAction,
     AuditLog,
     Device,
     Peer,
@@ -26,6 +27,7 @@ from bot.db.models import (
     WdttAccess,
 )
 from bot.services import amnezia, pricing
+from bot.services import revive as revive_svc
 from bot.services.pricing import fmt_rub
 from bot.utils.timefmt import as_utc, fmt_msk
 
@@ -387,7 +389,10 @@ async def api_user_detail(request: web.Request) -> web.Response:
 async def api_user_subscription(request: web.Request) -> web.Response:
     """Управление подпиской юзера: изменение срока, лимитов, сброс расхода."""
     user_id = int(request.match_info["id"])
+    admin_id = request.get("admin_id", 0)
     body = await request.json()
+
+    now = datetime.now(timezone.utc)
 
     async with session_scope() as session:
         user = await session.get(User, user_id)
@@ -399,7 +404,13 @@ async def api_user_subscription(request: web.Request) -> web.Response:
 
         touch_expires = False
         expires_at = None
-        if "expires_at" in body:
+        if "add_days" in body:
+            touch_expires = True
+            days = int(body["add_days"])
+            current_exp = as_utc(user.sub_expires_at) if user.sub_expires_at else now
+            base_time = max(now, current_exp)
+            expires_at = base_time + timedelta(days=days)
+        elif "expires_at" in body:
             touch_expires = True
             raw_exp = body["expires_at"]
             if raw_exp:
@@ -421,9 +432,82 @@ async def api_user_subscription(request: web.Request) -> web.Response:
             mark_paid=mark_paid,
             mark_trial=mark_trial,
         )
+
+        turning_off = touch_expires and expires_at is not None and as_utc(expires_at) <= now
+        turning_on = touch_expires and (expires_at is None or as_utc(expires_at) > now)
+
+        revive_result = None
+        if turning_off:
+            await revive_svc.revoke_devices_for_user(
+                session,
+                user.id,
+                actor_tg_id=admin_id if admin_id else None,
+                actor_is_admin=True,
+                reason="подписка отключена через веб-панель",
+            )
+            await repo.log_action(
+                session,
+                AuditAction.SUB_REVOKED,
+                actor_tg_id=admin_id if admin_id else None,
+                actor_is_admin=True,
+                target_user_id=user.id,
+                details=f"Админ через веб-панель отключил подписку (срок {fmt_msk(expires_at)} МСК)",
+            )
+        else:
+            if turning_on or max_dev is not None or max_byp is not None:
+                revive_result = await revive_svc.revive_devices_for_user(session, user)
+
+            if touch_expires:
+                await repo.log_action(
+                    session,
+                    AuditAction.SUB_GRANTED,
+                    actor_tg_id=admin_id if admin_id else None,
+                    actor_is_admin=True,
+                    target_user_id=user.id,
+                    details=(
+                        f"Админ через веб-панель задал срок подписки: до {fmt_msk(expires_at)} МСК"
+                        if expires_at else "Админ через веб-панель сделал подписку бессрочной"
+                    ),
+                )
+
+        if max_dev is not None or max_byp is not None:
+            await repo.log_action(
+                session,
+                AuditAction.TARIFF_CHANGED,
+                actor_tg_id=admin_id if admin_id else None,
+                actor_is_admin=True,
+                target_user_id=user.id,
+                details=f"Тариф изменён через веб-панель: устройств {user.sub_max_devices}, обходов {user.sub_max_bypass}",
+            )
+
         await session.commit()
 
-    return web.json_response({"ok": True})
+        if turning_on:
+            sub_line = f"до {fmt_msk(expires_at)} МСК" if expires_at else "бессрочная"
+            notify = f"🎉 Подписка продлена ({sub_line})."
+            if revive_result and (revive_result.devices_restored or revive_result.bypass_restored):
+                notify += (
+                    "\n♻️ Твои устройства восстановлены — прежние конфиги и ссылки "
+                    "снова работают, ничего перенастраивать не нужно."
+                )
+            try:
+                from bot.loader import bot as tg_bot
+                await tg_bot.send_message(user.tg_id, notify)
+            except Exception:
+                pass
+
+        res_data: dict[str, Any] = {"ok": True}
+        if expires_at:
+            res_data["expires_at"] = expires_at.isoformat()
+            res_data["expires_msk"] = fmt_msk(expires_at)
+        if revive_result and revive_result.touched:
+            res_data["revived"] = {
+                "devices": revive_result.devices_restored,
+                "bypass": revive_result.bypass_restored,
+                "errors": revive_result.errors,
+            }
+
+    return web.json_response(res_data)
 
 
 async def api_user_action(request: web.Request) -> web.Response:

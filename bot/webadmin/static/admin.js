@@ -261,19 +261,21 @@ async function quickUserAction(action) {
 
 async function quickExtendSub(days) {
   const userId = document.getElementById('user-card-id').value;
-  const now = new Date();
-  const future = new Date(now.getTime() + days * 24 * 60 * 60 * 1000);
 
   const res = await api(`/users/${userId}/subscription`, {
     method: 'POST',
     body: JSON.stringify({
-      expires_at: future.toISOString(),
+      add_days: days,
       reset_traffic: true,
       mark_paid: true
     })
   });
   if (res && res.ok) {
-    alert(`Подписка успешно продлена на ${days} дней!`);
+    let msg = `Подписка успешно продлена на ${days} дней!`;
+    if (res.revived && (res.revived.devices || res.revived.bypass)) {
+      msg += ` Восстановлено: устройств ${res.revived.devices}, обходов ${res.revived.bypass}.`;
+    }
+    alert(msg);
     openUserModal(userId);
     loadUsers();
   }
